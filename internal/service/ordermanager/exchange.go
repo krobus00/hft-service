@@ -9,7 +9,7 @@ import (
 type ExchangeName string
 
 const (
-	ExchangeTokoCrypto ExchangeName = "TOKOCRYPTO"
+	ExchangeTokoCrypto ExchangeName = "tokocrypto"
 )
 
 type KlineData struct {

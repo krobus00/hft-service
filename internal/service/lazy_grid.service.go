@@ -26,7 +26,7 @@ type LazyGridConfig struct {
 
 func DefaultLazyGridConfig() LazyGridConfig {
 	return LazyGridConfig{
-		Symbol:         "SOLIDR",
+		Symbol:         "tkoidr",
 		GridPercent:    decimal.NewFromFloat(0.005), // 0.5% grid
 		BaseQuantity:   decimal.NewFromFloat(1),
 		TotalBudgetIDR: decimal.NewFromInt(1_000_000),
@@ -47,7 +47,7 @@ type LazyGridStrategy struct {
 
 func NewLazyGridStrategy(config LazyGridConfig, orderManager ordermanager.OrderManager) *LazyGridStrategy {
 	if config.Symbol == "" {
-		config.Symbol = "SOLIDR"
+		config.Symbol = "tkoidr"
 	}
 	if config.Exchange == "" {
 		config.Exchange = ordermanager.ExchangeTokoCrypto
@@ -103,8 +103,27 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 	lowerTrigger := s.reference.Mul(decimal.NewFromFloat(1).Sub(s.config.GridPercent))
 	upperTrigger := s.reference.Mul(decimal.NewFromFloat(1).Add(s.config.GridPercent))
 	gapGrids := gridDistance(s.reference, price, s.config.GridPercent)
+	logrus.WithFields(logrus.Fields{
+		"reference":      s.reference,
+		"currentPrice":   price,
+		"lowerGridPrice": lowerTrigger,
+		"upperGridPrice": upperTrigger,
+		"grid":           s.config.GridPercent,
+		"gapGrids":       gapGrids,
+	}).Debug("lazy-grid price band")
 
 	if price.LessThanOrEqual(lowerTrigger) {
+		logrus.WithFields(logrus.Fields{
+			"reference":    s.reference,
+			"currentPrice": price,
+			"lowerPrice":   lowerTrigger,
+			"upperPrice":   upperTrigger,
+			"grid":         s.config.GridPercent,
+			"gapGrids":     gapGrids,
+			"openLevels":   len(s.openLevelQuantites),
+			"maxLevels":    s.config.MaxLongLevels,
+		}).Debug("lazy-grid lower trigger hit")
+
 		openLevels := len(s.openLevelQuantites)
 		if openLevels >= s.config.MaxLongLevels {
 			s.reference = price
@@ -152,6 +171,16 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 	}
 
 	if price.GreaterThanOrEqual(upperTrigger) {
+		logrus.WithFields(logrus.Fields{
+			"reference":    s.reference,
+			"currentPrice": price,
+			"lowerPrice":   lowerTrigger,
+			"upperPrice":   upperTrigger,
+			"grid":         s.config.GridPercent,
+			"gapGrids":     gapGrids,
+			"openLevels":   len(s.openLevelQuantites),
+		}).Debug("lazy-grid upper trigger hit")
+
 		openLevels := len(s.openLevelQuantites)
 		if openLevels == 0 {
 			s.reference = price

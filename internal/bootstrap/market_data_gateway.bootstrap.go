@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/krobus00/hft-service/internal/config"
 	"github.com/sirupsen/logrus"
 )
 
@@ -60,7 +61,7 @@ func StartMarketDataGateway() {
 		}
 	}()
 
-	wait := gracefulShutdown(ctx, 30*time.Second, map[string]operation{
+	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
 		"ws connection": func(ctx context.Context) error {
 			cancel()
 

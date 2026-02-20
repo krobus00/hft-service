@@ -2,12 +2,10 @@ package bootstrap
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -124,29 +122,4 @@ func runWS(ctx context.Context, wsHost url.URL, initSub map[string]any, onMessag
 			}
 		}
 	}
-}
-
-func parseClosedKlinePrice(message []byte) (float64, bool) {
-	var payload struct {
-		Event string `json:"e"`
-		Kline struct {
-			Close    string `json:"c"`
-			IsClosed bool   `json:"x"`
-		} `json:"k"`
-	}
-
-	if err := json.Unmarshal(message, &payload); err != nil {
-		return 0, false
-	}
-
-	if payload.Event != "kline" || payload.Kline.Close == "" || !payload.Kline.IsClosed {
-		return 0, false
-	}
-
-	price, err := strconv.ParseFloat(payload.Kline.Close, 64)
-	if err != nil {
-		return 0, false
-	}
-
-	return price, true
 }

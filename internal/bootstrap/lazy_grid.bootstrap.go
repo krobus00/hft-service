@@ -7,16 +7,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/krobus00/hft-service/internal/config"
 	"github.com/krobus00/hft-service/internal/service"
 	"github.com/krobus00/hft-service/internal/service/ordermanager"
 	"github.com/sirupsen/logrus"
 )
 
 func StartLazyGridStrategy() {
-	tokocryptoExchange := ordermanager.NewTokocryptoExchange()
-	orderManager := ordermanager.NewOrderManagerService(tokocryptoExchange)
-	strategy := service.NewLazyGridStrategy(service.DefaultLazyGridConfig(), orderManager)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -24,6 +21,13 @@ func StartLazyGridStrategy() {
 		wsConn *websocket.Conn
 		mu     sync.RWMutex
 	)
+
+	tokocryptoExchange := ordermanager.NewTokocryptoExchange(config.Env.Exchanges[string(ordermanager.ExchangeTokoCrypto)], map[string]string{
+		"tkoidr": "TKO_IDR",
+	})
+
+	orderManager := ordermanager.NewOrderManagerService(tokocryptoExchange)
+	strategy := service.NewLazyGridStrategy(service.DefaultLazyGridConfig(), orderManager)
 
 	go func() {
 		for {
@@ -39,7 +43,7 @@ func StartLazyGridStrategy() {
 			tokoSub := map[string]any{
 				"method": "SUBSCRIBE",
 				"params": []string{
-					"solidr@kline_1m",
+					"tkoidr@kline_1m",
 				},
 				"id": 1,
 			}
@@ -48,7 +52,6 @@ func StartLazyGridStrategy() {
 				if err != nil {
 					return err
 				}
-				logrus.Info(klineData.Close, klineData.IsClosed)
 				strategy.OnPrice(ctx, klineData)
 				return nil
 			})
@@ -71,7 +74,7 @@ func StartLazyGridStrategy() {
 		}
 	}()
 
-	wait := gracefulShutdown(ctx, 30*time.Second, map[string]operation{
+	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
 		"ws connection": func(ctx context.Context) error {
 			cancel()
 
