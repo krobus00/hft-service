@@ -1,27 +1,20 @@
 /*
 Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-
 */
 package cmd
 
 import (
-	"fmt"
-
+	"github.com/krobus00/hft-service/internal/bootstrap"
 	"github.com/spf13/cobra"
 )
 
 // strategyCmd represents the strategy command
 var strategyCmd = &cobra.Command{
 	Use:   "strategy",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Short: "Run trading strategy",
+	Long:  `Run strategy workers such as lazy-grid using market data stream.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("strategy called")
+		bootstrap.StartLazyGridStrategy()
 	},
 }
 

@@ -7,10 +7,16 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/krobus00/hft-service/internal/service"
+	"github.com/krobus00/hft-service/internal/service/ordermanager"
 	"github.com/sirupsen/logrus"
 )
 
-func StartMarketDataGateway() {
+func StartLazyGridStrategy() {
+	tokocryptoExchange := ordermanager.NewTokocryptoExchange()
+	orderManager := ordermanager.NewOrderManagerService(tokocryptoExchange)
+	strategy := service.NewLazyGridStrategy(service.DefaultLazyGridConfig(), orderManager)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -38,7 +44,12 @@ func StartMarketDataGateway() {
 				"id": 1,
 			}
 			conn, err := runWS(ctx, tokoWs, tokoSub, func(ctx context.Context, message []byte) error {
-				logrus.Infof("received: %s", message)
+				klineData, err := tokocryptoExchange.HandleKlineData(ctx, message)
+				if err != nil {
+					return err
+				}
+				logrus.Info(klineData.Close, klineData.IsClosed)
+				strategy.OnPrice(ctx, klineData)
 				return nil
 			})
 			if err != nil {
