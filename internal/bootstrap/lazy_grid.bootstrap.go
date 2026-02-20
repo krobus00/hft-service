@@ -52,7 +52,12 @@ func StartLazyGridStrategy() {
 				if err != nil {
 					return err
 				}
-				strategy.OnPrice(ctx, klineData)
+				if err := strategy.OnPrice(ctx, klineData); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"close":    klineData.Close,
+						"isClosed": klineData.IsClosed,
+					}).Errorf("lazy-grid on price failed: %v", err)
+				}
 				return nil
 			})
 			if err != nil {

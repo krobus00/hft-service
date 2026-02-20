@@ -38,11 +38,10 @@ func DefaultLazyGridConfig() LazyGridConfig {
 }
 
 type LazyGridStrategy struct {
-	mu                 sync.Mutex
-	config             LazyGridConfig
-	orderManager       ordermanager.OrderManager
-	reference          decimal.Decimal
-	openLevelQuantites []decimal.Decimal
+	mu           sync.Mutex
+	config       LazyGridConfig
+	orderManager ordermanager.OrderManager
+	reference    decimal.Decimal
 }
 
 func NewLazyGridStrategy(config LazyGridConfig, orderManager ordermanager.OrderManager) *LazyGridStrategy {
@@ -90,14 +89,14 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 	defer s.mu.Unlock()
 
 	price := klineData.Close
-	if price.LessThanOrEqual(decimal.Zero) {
-		return fmt.Errorf("price must be greater than zero")
-	}
-
 	if s.reference.Equal(decimal.Zero) {
 		s.reference = price
 		logrus.WithField("reference", s.reference).Info("lazy-grid initialized")
 		return nil
+	}
+
+	if price.LessThanOrEqual(decimal.Zero) {
+		return fmt.Errorf("price must be greater than zero")
 	}
 
 	lowerTrigger := s.reference.Mul(decimal.NewFromFloat(1).Sub(s.config.GridPercent))
@@ -120,25 +119,24 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 			"upperPrice":   upperTrigger,
 			"grid":         s.config.GridPercent,
 			"gapGrids":     gapGrids,
-			"openLevels":   len(s.openLevelQuantites),
-			"maxLevels":    s.config.MaxLongLevels,
 		}).Debug("lazy-grid lower trigger hit")
 
-		openLevels := len(s.openLevelQuantites)
-		if openLevels >= s.config.MaxLongLevels {
-			s.reference = price
-			return nil
-		}
-
 		levelsToBuy := max(1, gapGrids)
-		remainingLevels := s.config.MaxLongLevels - openLevels
-		if levelsToBuy > remainingLevels {
-			levelsToBuy = remainingLevels
-		}
 
 		orderPrice := price
 		perLevelQuantity := s.resolvePerLevelQuantity(price)
 		orderQuantity := perLevelQuantity.Mul(decimal.NewFromInt(int64(levelsToBuy)))
+		logrus.WithFields(logrus.Fields{
+			"side":            ordermanager.OrderSideBuy,
+			"symbol":          s.config.Symbol,
+			"exchange":        s.config.Exchange,
+			"type":            s.config.OrderType,
+			"orderPrice":      orderPrice,
+			"orderQuantity":   orderQuantity,
+			"perLevelQty":     perLevelQuantity,
+			"levelsToExecute": levelsToBuy,
+			"source":          s.config.StrategySource,
+		}).Info("lazy-grid placing order")
 		if gapGrids > 1 {
 			logrus.WithFields(logrus.Fields{
 				"reference": s.reference,
@@ -160,11 +158,8 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 			Source:   s.config.StrategySource,
 		})
 		if err != nil {
+			logrus.Error(err)
 			return err
-		}
-
-		for i := 0; i < levelsToBuy; i++ {
-			s.openLevelQuantites = append(s.openLevelQuantites, perLevelQuantity)
 		}
 		s.reference = price
 		return nil
@@ -178,26 +173,24 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 			"upperPrice":   upperTrigger,
 			"grid":         s.config.GridPercent,
 			"gapGrids":     gapGrids,
-			"openLevels":   len(s.openLevelQuantites),
 		}).Debug("lazy-grid upper trigger hit")
 
-		openLevels := len(s.openLevelQuantites)
-		if openLevels == 0 {
-			s.reference = price
-			return nil
-		}
-
 		levelsToSell := max(1, gapGrids)
-		if levelsToSell > openLevels {
-			levelsToSell = openLevels
-		}
 
 		orderPrice := price
-		orderQuantity := decimal.Zero
-		startIdx := openLevels - levelsToSell
-		for i := startIdx; i < openLevels; i++ {
-			orderQuantity = orderQuantity.Add(s.openLevelQuantites[i])
-		}
+		perLevelQuantity := s.resolvePerLevelQuantity(price)
+		orderQuantity := perLevelQuantity.Mul(decimal.NewFromInt(int64(levelsToSell)))
+		logrus.WithFields(logrus.Fields{
+			"side":            ordermanager.OrderSideSell,
+			"symbol":          s.config.Symbol,
+			"exchange":        s.config.Exchange,
+			"type":            s.config.OrderType,
+			"orderPrice":      orderPrice,
+			"orderQuantity":   orderQuantity,
+			"perLevelQty":     perLevelQuantity,
+			"levelsToExecute": levelsToSell,
+			"source":          s.config.StrategySource,
+		}).Info("lazy-grid placing order")
 		if gapGrids > 1 {
 			logrus.WithFields(logrus.Fields{
 				"reference": s.reference,
@@ -219,10 +212,9 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 			Source:   s.config.StrategySource,
 		})
 		if err != nil {
+			logrus.Error(err)
 			return err
 		}
-
-		s.openLevelQuantites = s.openLevelQuantites[:startIdx]
 		s.reference = price
 	}
 
