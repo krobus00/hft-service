@@ -1,5 +1,5 @@
 /*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
+Copyright © 2026 Michael Putera Wardana <michaelputeraw@gmail.com>
 */
 package cmd
 
