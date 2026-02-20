@@ -8,10 +8,12 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/krobus00/hft-service/internal/config"
+	"github.com/krobus00/hft-service/internal/service"
+	"github.com/krobus00/hft-service/internal/service/ordermanager"
 	"github.com/sirupsen/logrus"
 )
 
-func StartMarketDataGateway() {
+func StartLazyGridStrategy() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -19,6 +21,13 @@ func StartMarketDataGateway() {
 		wsConn *websocket.Conn
 		mu     sync.RWMutex
 	)
+
+	tokocryptoExchange := ordermanager.NewTokocryptoExchange(config.Env.Exchanges[string(ordermanager.ExchangeTokoCrypto)], map[string]string{
+		"tkoidr": "TKO_IDR",
+	})
+
+	orderManager := ordermanager.NewOrderManagerService(tokocryptoExchange)
+	strategy := service.NewLazyGridStrategy(service.DefaultLazyGridConfig(), orderManager)
 
 	go func() {
 		for {
@@ -34,12 +43,21 @@ func StartMarketDataGateway() {
 			tokoSub := map[string]any{
 				"method": "SUBSCRIBE",
 				"params": []string{
-					"solidr@kline_1m",
+					"tkoidr@kline_1m",
 				},
 				"id": 1,
 			}
 			conn, err := runWS(ctx, tokoWs, tokoSub, func(ctx context.Context, message []byte) error {
-				logrus.Infof("received: %s", message)
+				klineData, err := tokocryptoExchange.HandleKlineData(ctx, message)
+				if err != nil {
+					return err
+				}
+				if err := strategy.OnPrice(ctx, klineData); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"close":    klineData.Close,
+						"isClosed": klineData.IsClosed,
+					}).Errorf("lazy-grid on price failed: %v", err)
+				}
 				return nil
 			})
 			if err != nil {

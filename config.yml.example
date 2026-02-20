@@ -1,0 +1,9 @@
+env: development
+log:
+  show_caller: false
+  log_level: debug
+graceful_shutdown_timeout: 30s
+exchanges:
+  tokocrypto:
+    api_key: "api secret"
+    api_secret: "api secret"
