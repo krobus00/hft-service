@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/krobus00/hft-service/internal/config"
@@ -25,6 +27,14 @@ type TokocryptoExchange struct {
 	recvWindow  int64
 	httpClient  *http.Client
 	pairMapping map[string]string
+
+	symbolPrecisionMu sync.RWMutex
+	symbolPrecision   map[string]tokocryptoSymbolPrecision
+}
+
+type tokocryptoSymbolPrecision struct {
+	BasePrecision  int32
+	QuotePrecision int32
 }
 
 func NewTokocryptoExchange(exchangeConfig config.ExchangeConfig, pairMapping map[string]string) *TokocryptoExchange {
@@ -105,17 +115,36 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order OrderRequest)
 		return err
 	}
 
+	normalizedQuantity := order.Quantity
+	normalizedPrice := order.Price
+
+	if precision, ok, err := e.getSymbolPrecision(ctx, orderSymbol); err != nil {
+		logrus.WithError(err).WithField("symbol", orderSymbol).Warn("failed to fetch tokocrypto symbol precision")
+	} else if ok {
+		normalizedQuantity = order.Quantity.Truncate(precision.BasePrecision)
+		if !normalizedQuantity.GreaterThan(decimal.Zero) {
+			return fmt.Errorf("tokocrypto order quantity becomes zero after normalization: quantity=%s basePrecision=%d", order.Quantity.String(), precision.BasePrecision)
+		}
+
+		if order.Type == OrderTypeLimit {
+			normalizedPrice = order.Price.Truncate(precision.QuotePrecision)
+			if !normalizedPrice.GreaterThan(decimal.Zero) {
+				return fmt.Errorf("tokocrypto order price becomes zero after normalization: price=%s quotePrecision=%d", order.Price.String(), precision.QuotePrecision)
+			}
+		}
+	}
+
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	pairs := []string{
 		"symbol=" + orderSymbol,
 		"side=" + strconv.Itoa(sideCode),
 		"type=" + strconv.Itoa(typeCode),
-		"quantity=" + order.Quantity.String(),
+		"quantity=" + normalizedQuantity.String(),
 	}
 
 	if order.Type == OrderTypeLimit {
 		pairs = append(pairs,
-			"price="+order.Price.String(),
+			"price="+normalizedPrice.String(),
 			"timeInForce=1",
 		)
 	}
@@ -185,8 +214,8 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order OrderRequest)
 		"symbol":   orderSymbol,
 		"type":     order.Type,
 		"side":     order.Side,
-		"price":    order.Price.String(),
-		"quantity": order.Quantity.String(),
+		"price":    normalizedPrice.String(),
+		"quantity": normalizedQuantity.String(),
 		"source":   order.Source,
 		"response": string(apiResp.Data),
 	}).Info("order placed")
@@ -220,4 +249,90 @@ func hmacSHA256Hex(secret, payload string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(payload))
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (e *TokocryptoExchange) getSymbolPrecision(ctx context.Context, symbol string) (tokocryptoSymbolPrecision, bool, error) {
+	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalizedSymbol == "" {
+		return tokocryptoSymbolPrecision{}, false, nil
+	}
+
+	e.symbolPrecisionMu.RLock()
+	if precision, exists := e.symbolPrecision[normalizedSymbol]; exists {
+		e.symbolPrecisionMu.RUnlock()
+		return precision, true, nil
+	}
+	e.symbolPrecisionMu.RUnlock()
+
+	if err := e.refreshSymbolPrecision(ctx, normalizedSymbol); err != nil {
+		return tokocryptoSymbolPrecision{}, false, err
+	}
+
+	e.symbolPrecisionMu.RLock()
+	precision, exists := e.symbolPrecision[normalizedSymbol]
+	e.symbolPrecisionMu.RUnlock()
+
+	return precision, exists, nil
+}
+
+func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol string) error {
+	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalizedSymbol == "" {
+		return nil
+	}
+
+	endpoint := e.baseURL + "/bapi/asset/v1/public/asset-service/product/get-exchange-info?symbol=" + url.QueryEscape(normalizedSymbol)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var symbolsResp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Success *bool  `json:"success"`
+		Data    []struct {
+			Symbol         string `json:"symbol"`
+			BasePrecision  int32  `json:"basePrecision"`
+			QuotePrecision int32  `json:"quotePrecision"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &symbolsResp); err != nil {
+		return fmt.Errorf("tokocrypto symbols parse failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest || symbolsResp.Code != 0 || (symbolsResp.Success != nil && !*symbolsResp.Success) {
+		return fmt.Errorf("tokocrypto symbols request failed: status=%d code=%d message=%s", resp.StatusCode, symbolsResp.Code, symbolsResp.Message)
+	}
+
+	for _, item := range symbolsResp.Data {
+		itemSymbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
+		if itemSymbol == "" {
+			continue
+		}
+
+		e.symbolPrecisionMu.Lock()
+		if e.symbolPrecision == nil {
+			e.symbolPrecision = make(map[string]tokocryptoSymbolPrecision)
+		}
+		e.symbolPrecision[itemSymbol] = tokocryptoSymbolPrecision{
+			BasePrecision:  item.BasePrecision,
+			QuotePrecision: item.QuotePrecision,
+		}
+		e.symbolPrecisionMu.Unlock()
+	}
+
+	return nil
 }
