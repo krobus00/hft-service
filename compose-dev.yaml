@@ -1,4 +1,15 @@
 services:
+  protobuf:
+    build:
+      context: .
+      dockerfile: tools/protobuf/Dockerfile
+    container_name: hft-protobuf
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    profiles:
+      - tools
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis

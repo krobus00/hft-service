@@ -46,9 +46,9 @@ func DefaultLazyGridConfig() LazyGridConfig {
 }
 
 type LazyGridStrategy struct {
-	mu            sync.Mutex
-	config        LazyGridConfig
-	orderManager  entity.OrderManager
+	mu     sync.Mutex
+	config LazyGridConfig
+	// orderManager  entity.OrderManager
 	stateStore    LazyGridStateStore
 	anchorPrice   decimal.Decimal
 	lastGridLevel int
@@ -59,7 +59,7 @@ type LazyGridStrategy struct {
 
 const lazyGridProcessingLockTTL = 15 * time.Second
 
-func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManager entity.OrderManager, stateStore LazyGridStateStore) (*LazyGridStrategy, error) {
+func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore LazyGridStateStore) (*LazyGridStrategy, error) {
 	if config.Symbol == "" {
 		config.Symbol = "tkoidr"
 	}
@@ -106,8 +106,8 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManage
 	}
 
 	strategy := &LazyGridStrategy{
-		config:        config,
-		orderManager:  orderManager,
+		config: config,
+		// orderManager:  orderManager,
 		stateStore:    stateStore,
 		anchorPrice:   config.InitialPrice,
 		lastGridLevel: 0,
@@ -245,18 +245,18 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData entity.KlineDa
 					continue
 				}
 
-				if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
-					Exchange: string(s.config.Exchange),
-					Symbol:   s.config.Symbol,
-					Type:     s.config.OrderType,
-					Side:     entity.OrderSideBuy,
-					Price:    orderPrice,
-					Quantity: orderQuantity,
-					Source:   s.config.StrategySource,
-				}); err != nil {
-					logrus.Error(err)
-					return err
-				}
+				// if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
+				// 	Exchange: string(s.config.Exchange),
+				// 	Symbol:   s.config.Symbol,
+				// 	Type:     s.config.OrderType,
+				// 	Side:     entity.OrderSideBuy,
+				// 	Price:    orderPrice,
+				// 	Quantity: orderQuantity,
+				// 	Source:   s.config.StrategySource,
+				// }); err != nil {
+				// 	logrus.Error(err)
+				// 	return err
+				// }
 
 				s.pendingBuys[level] = orderQuantity
 				totalQuantity = totalQuantity.Add(orderQuantity)
@@ -277,20 +277,20 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData entity.KlineDa
 				if !exists || orderQuantity.LessThanOrEqual(decimal.Zero) {
 					continue
 				}
-				orderPrice := s.takeProfitPrice(level)
+				// orderPrice := s.takeProfitPrice(level)
 
-				if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
-					Exchange: string(s.config.Exchange),
-					Symbol:   s.config.Symbol,
-					Type:     s.config.OrderType,
-					Side:     entity.OrderSideSell,
-					Price:    orderPrice,
-					Quantity: orderQuantity,
-					Source:   s.config.StrategySource,
-				}); err != nil {
-					logrus.Error(err)
-					return err
-				}
+				// if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
+				// 	Exchange: string(s.config.Exchange),
+				// 	Symbol:   s.config.Symbol,
+				// 	Type:     s.config.OrderType,
+				// 	Side:     entity.OrderSideSell,
+				// 	Price:    orderPrice,
+				// 	Quantity: orderQuantity,
+				// 	Source:   s.config.StrategySource,
+				// }); err != nil {
+				// 	logrus.Error(err)
+				// 	return err
+				// }
 
 				s.pendingSells[level] = orderQuantity
 				totalQuantity = totalQuantity.Add(orderQuantity)

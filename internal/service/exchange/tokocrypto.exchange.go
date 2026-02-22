@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +38,8 @@ const (
 
 	KlineStreamSubjectTokocrypto = "kline.tokocrypto"
 )
+
+var tokocryptoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 type TokocryptoExchange struct {
 	apiKey     string
@@ -437,12 +441,12 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 	}
 }
 
-func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) error {
+func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 	if e.apiKey == "" || e.apiSecret == "" {
-		return fmt.Errorf("tokocrypto credentials are missing in config")
+		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
 	}
 
 	orderSymbol, ok := e.symbolMapping[string(entity.ExchangeTokoCrypto)][order.Symbol]
@@ -452,12 +456,12 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 
 	typeCode, err := tokocryptoOrderTypeCode(order.Type)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	sideCode, err := tokocryptoOrderSideCode(order.Side)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	normalizedQuantity := order.Quantity
@@ -468,13 +472,13 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	} else if ok {
 		normalizedQuantity = order.Quantity.Truncate(precision.BasePrecision)
 		if !normalizedQuantity.GreaterThan(decimal.Zero) {
-			return fmt.Errorf("tokocrypto order quantity becomes zero after normalization: quantity=%s basePrecision=%d", order.Quantity.String(), precision.BasePrecision)
+			return nil, fmt.Errorf("tokocrypto order quantity becomes zero after normalization: quantity=%s basePrecision=%d", order.Quantity.String(), precision.BasePrecision)
 		}
 
 		if order.Type == entity.OrderTypeLimit {
 			normalizedPrice = order.Price.Truncate(precision.QuotePrecision)
 			if !normalizedPrice.GreaterThan(decimal.Zero) {
-				return fmt.Errorf("tokocrypto order price becomes zero after normalization: price=%s quotePrecision=%d", order.Price.String(), precision.QuotePrecision)
+				return nil, fmt.Errorf("tokocrypto order price becomes zero after normalization: price=%s quotePrecision=%d", order.Price.String(), precision.QuotePrecision)
 			}
 		}
 	}
@@ -485,6 +489,15 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		"side=" + strconv.Itoa(sideCode),
 		"type=" + strconv.Itoa(typeCode),
 		"quantity=" + normalizedQuantity.String(),
+	}
+
+	if order.OrderID != nil && strings.TrimSpace(*order.OrderID) != "" {
+		clientID, err := normalizeTokocryptoClientID(strings.TrimSpace(*order.OrderID))
+		if err != nil {
+			return nil, err
+		}
+
+		pairs = append(pairs, "clientId="+url.QueryEscape(clientID))
 	}
 
 	if order.Type == entity.OrderTypeLimit {
@@ -512,7 +525,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/open/v1/orders", strings.NewReader(bodyPayload))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	req.Header.Set("X-MBX-APIKEY", e.apiKey)
@@ -520,13 +533,13 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var apiResp struct {
@@ -539,7 +552,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	}
 
 	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return fmt.Errorf("tokocrypto order parse failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("tokocrypto order parse failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest || apiResp.Code != 0 || (apiResp.Success != nil && !*apiResp.Success) {
@@ -551,21 +564,168 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 			errMsg = "unknown error"
 		}
 
-		return fmt.Errorf("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
+		return nil, fmt.Errorf("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
+	}
+
+	var placeOrderResp entity.TokocryptoPlaceOrderResponse
+	if err := json.Unmarshal(apiResp.Data, &placeOrderResp); err != nil {
+		return nil, fmt.Errorf("tokocrypto order data parse failed: %w", err)
+	}
+
+	orderHistory, err := e.mapPlaceOrderResponseToOrderHistory(order, placeOrderResp)
+	if err != nil {
+		return nil, err
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"exchange": order.Exchange,
-		"symbol":   orderSymbol,
-		"type":     order.Type,
-		"side":     order.Side,
-		"price":    normalizedPrice.String(),
-		"quantity": normalizedQuantity.String(),
-		"source":   order.Source,
-		"response": string(apiResp.Data),
+		"exchange":         order.Exchange,
+		"symbol":           orderSymbol,
+		"type":             order.Type,
+		"side":             order.Side,
+		"price":            normalizedPrice.String(),
+		"quantity":         normalizedQuantity.String(),
+		"source":           order.Source,
+		"response":         string(apiResp.Data),
+		"history_order_id": orderHistory.OrderID,
+		"history_status":   orderHistory.Status,
 	}).Info("order placed")
 
-	return nil
+	return &orderHistory, nil
+}
+
+func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.OrderRequest, resp entity.TokocryptoPlaceOrderResponse) (entity.OrderHistory, error) {
+	price, err := decimal.NewFromString(resp.Price)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto order price: %w", err)
+	}
+
+	quantity, err := decimal.NewFromString(resp.OrigQty)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto order quantity: %w", err)
+	}
+
+	filledQuantity, err := decimal.NewFromString(resp.ExecutedQty)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto filled quantity: %w", err)
+	}
+
+	executedPrice, err := decimal.NewFromString(resp.ExecutedPrice)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto executed price: %w", err)
+	}
+
+	historySide, err := tokocryptoOrderSideFromCode(resp.Side)
+	if err != nil {
+		return entity.OrderHistory{}, err
+	}
+
+	historyType, err := tokocryptoOrderTypeFromCode(resp.Type)
+	if err != nil {
+		return entity.OrderHistory{}, err
+	}
+
+	historyStatus := tokocryptoOrderStatusFromCode(resp.Status)
+	now := time.Now().UTC()
+
+	clientOrderID := sql.NullString{String: strings.TrimSpace(resp.ClientID), Valid: strings.TrimSpace(resp.ClientID) != ""}
+	strategyID := sql.NullString{}
+	if order.StrategyID != nil {
+		trimmed := strings.TrimSpace(*order.StrategyID)
+		if trimmed != "" {
+			strategyID = sql.NullString{String: trimmed, Valid: true}
+		}
+	}
+
+	createdAtExchange := sql.NullTime{}
+	if resp.CreateTime > 0 {
+		createdAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
+	}
+
+	sentAt := sql.NullTime{
+		Time:  time.Now(),
+		Valid: true,
+	}
+	if order.RequestedAt > 0 {
+		sentAt = sql.NullTime{Time: time.UnixMilli(order.RequestedAt).UTC(), Valid: true}
+	}
+
+	acknowledgedAt := sql.NullTime{Time: now, Valid: true}
+
+	var avgFillPrice *decimal.Decimal
+	if executedPrice.GreaterThan(decimal.Zero) {
+		avgFillPrice = &executedPrice
+	}
+
+	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	if resolvedSymbol == "" {
+		resolvedSymbol = order.Symbol
+	}
+
+	return entity.OrderHistory{
+		RequestID:         order.RequestID,
+		UserID:            order.UserID,
+		Exchange:          order.Exchange,
+		Symbol:            resolvedSymbol,
+		OrderID:           strconv.FormatInt(resp.OrderID, 10),
+		ClientOrderID:     clientOrderID,
+		Side:              historySide,
+		Type:              historyType,
+		Price:             &price,
+		Quantity:          quantity,
+		FilledQuantity:    filledQuantity,
+		AvgFillPrice:      avgFillPrice,
+		Status:            historyStatus,
+		Leverage:          nil,
+		Fee:               nil,
+		RealizedPnl:       nil,
+		CreatedAtExchange: createdAtExchange,
+		SentAt:            sentAt,
+		AcknowledgedAt:    acknowledgedAt,
+		FilledAt:          sql.NullTime{},
+		StrategyID:        strategyID,
+		ErrorMessage:      sql.NullString{},
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}, nil
+}
+
+func tokocryptoOrderSideFromCode(code int32) (entity.OrderSide, error) {
+	switch code {
+	case 0:
+		return entity.OrderSideBuy, nil
+	case 1:
+		return entity.OrderSideSell, nil
+	default:
+		return "", fmt.Errorf("unsupported tokocrypto order side code: %d", code)
+	}
+}
+
+func tokocryptoOrderTypeFromCode(code int32) (entity.OrderType, error) {
+	switch code {
+	case 1:
+		return entity.OrderTypeLimit, nil
+	case 2:
+		return entity.OrderTypeMarket, nil
+	default:
+		return "", fmt.Errorf("unsupported tokocrypto order type code: %d", code)
+	}
+}
+
+func tokocryptoOrderStatusFromCode(code int32) string {
+	switch code {
+	case 0:
+		return "NEW"
+	case 1:
+		return "PARTIAL"
+	case 2:
+		return "FILLED"
+	case 3:
+		return "CANCELED"
+	case 4:
+		return "REJECTED"
+	default:
+		return fmt.Sprintf("UNKNOWN_%d", code)
+	}
 }
 
 func tokocryptoOrderTypeCode(orderType entity.OrderType) (int, error) {
@@ -588,6 +748,25 @@ func tokocryptoOrderSideCode(orderSide entity.OrderSide) (int, error) {
 	default:
 		return 0, fmt.Errorf("unsupported order side for tokocrypto: %s", orderSide)
 	}
+}
+
+func normalizeTokocryptoClientID(raw string) (string, error) {
+	normalized := strings.TrimSpace(raw)
+	normalized = strings.ReplaceAll(normalized, "-", "")
+
+	if normalized == "" {
+		return "", fmt.Errorf("tokocrypto clientId is empty")
+	}
+
+	if len(normalized) > 32 {
+		normalized = normalized[:32]
+	}
+
+	if !tokocryptoClientIDPattern.MatchString(normalized) {
+		return "", fmt.Errorf("tokocrypto clientId contains unsupported characters")
+	}
+
+	return normalized, nil
 }
 
 func hmacSHA256Hex(secret, payload string) string {

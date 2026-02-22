@@ -20,3 +20,15 @@ docs for more detail on building and pushing.
 
 ### References
 * [Docker's Go guide](https://docs.docker.com/language/golang/)
+
+### Generate Go protobuf files (dev)
+
+Protobuf tool image is located at `tools/protobuf/Dockerfile`.
+
+Run protobuf generation with the dedicated dev tools profile:
+
+`docker compose -f compose-dev.yaml --profile tools run --rm --build protobuf`
+
+This generates Go files for:
+- `pb/order_engine/order.proto`
+- `pb/order_engine/order_engine.proto`

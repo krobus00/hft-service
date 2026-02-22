@@ -1,0 +1,9 @@
+syntax = "proto3";
+package pb.order_engine;
+
+option go_package = "pb/order_engine";
+import "pb/order_engine/order.proto";
+
+service OrderEngineService {
+    rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+}

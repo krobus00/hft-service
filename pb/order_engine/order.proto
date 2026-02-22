@@ -1,0 +1,48 @@
+syntax = "proto3";
+package pb.order_engine;
+
+option go_package = "pb/order_engine";
+
+message PlaceOrderRequest {
+    string request_id = 1;
+	string user_id = 2;
+	optional string order_id = 3;
+	string exchange = 4;
+	string symbol = 5;
+	string type = 6;
+	string side = 7;
+	string price = 8;
+	string quantity = 9;
+	int64 requested_at = 10;
+	optional int64 expired_at = 11;
+	string source = 12;
+	optional string strategy_id = 13;
+}
+
+message PlaceOrderResponse {
+	string id = 1;
+	string request_id = 2;
+	string user_id = 3;
+	string exchange = 4;
+	string symbol = 5;
+	string order_id = 6;
+	optional string client_order_id = 7;
+	string side = 8;
+	string type = 9;
+	optional string price = 10;
+	string quantity = 11;
+	string filled_quantity = 12;
+	optional string avg_fill_price = 13;
+	string status = 14;
+	optional string leverage = 15;
+	optional string fee = 16;
+	optional string realized_pnl = 17;
+	optional int64 created_at_exchange = 18;
+	optional int64 sent_at = 19;
+	optional int64 acknowledged_at = 20;
+	optional int64 filled_at = 21;
+	optional string strategy_id = 22;
+	optional string error_message = 23;
+	int64 created_at = 24;
+	int64 updated_at = 25;
+}
