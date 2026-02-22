@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/krobus00/hft-service/internal/service/ordermanager"
 	"github.com/shopspring/decimal"
@@ -55,6 +56,8 @@ type LazyGridStrategy struct {
 	pendingBuys   map[int]decimal.Decimal
 	pendingSells  map[int]decimal.Decimal
 }
+
+const lazyGridProcessingLockTTL = 15 * time.Second
 
 func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManager ordermanager.OrderManager, stateStore LazyGridStateStore) (*LazyGridStrategy, error) {
 	if config.Symbol == "" {
@@ -164,11 +167,33 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManage
 }
 
 func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.KlineData) error {
+	if !klineData.IsClosed {
+		return nil
+	}
+
+	lockOwner := fmt.Sprintf("%d", time.Now().UnixNano())
+	if s.stateStore != nil {
+		acquired, err := s.stateStore.AcquireProcessingLock(ctx, s.config.StateKey, lazyGridProcessingLockTTL, lockOwner)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			logrus.WithField("stateKey", s.config.StateKey).Debug("lazy-grid processing lock not acquired, skipping tick")
+			return nil
+		}
+
+		defer func() {
+			if err := s.stateStore.ReleaseProcessingLock(context.Background(), s.config.StateKey, lockOwner); err != nil {
+				logrus.WithError(err).WithField("stateKey", s.config.StateKey).Warn("lazy-grid release processing lock failed")
+			}
+		}()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !klineData.IsClosed {
-		return nil
+	if err := s.refreshFromStore(ctx); err != nil {
+		return err
 	}
 
 	price := klineData.Close
@@ -283,6 +308,60 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 	}
 
 	return nil
+}
+
+func (s *LazyGridStrategy) refreshFromStore(ctx context.Context) error {
+	if s.stateStore == nil {
+		return nil
+	}
+
+	persistedState, found, err := s.stateStore.Load(ctx, s.config.StateKey)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+
+	s.applyStateSnapshot(persistedState)
+	return nil
+}
+
+func (s *LazyGridStrategy) applyStateSnapshot(state LazyGridState) {
+	s.anchorPrice = state.AnchorPrice
+	s.lastGridLevel = state.LastLevel
+
+	s.filledLevels = make(map[int]decimal.Decimal, len(state.Positions))
+	s.pendingBuys = make(map[int]decimal.Decimal, len(state.PendingBuys))
+	s.pendingSells = make(map[int]decimal.Decimal, len(state.PendingSells))
+
+	for _, position := range state.Positions {
+		if position.Quantity.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+		s.filledLevels[position.Level] = position.Quantity
+	}
+
+	for _, pendingBuy := range state.PendingBuys {
+		if pendingBuy.Quantity.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+		s.pendingBuys[pendingBuy.Level] = pendingBuy.Quantity
+	}
+
+	for _, pendingSell := range state.PendingSells {
+		if pendingSell.Quantity.LessThanOrEqual(decimal.Zero) {
+			continue
+		}
+		s.pendingSells[pendingSell.Level] = pendingSell.Quantity
+	}
+
+	if len(s.filledLevels) == 0 && len(state.FilledLevels) > 0 {
+		for _, level := range state.FilledLevels {
+			levelPrice := s.levelPrice(level)
+			s.filledLevels[level] = s.resolvePerLevelQuantity(levelPrice)
+		}
+	}
 }
 
 func (s *LazyGridStrategy) takeProfitPrice(level int) decimal.Decimal {
