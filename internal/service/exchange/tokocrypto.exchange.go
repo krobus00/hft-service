@@ -410,8 +410,6 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 				break
 			}
 
-			fmt.Println(string(message))
-
 			err = e.HandleKlineData(ctx, message)
 			if err != nil {
 				logrus.Errorf("tokocrypto ws handle kline data failed: %v", err)
