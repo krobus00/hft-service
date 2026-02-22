@@ -1,9 +1,57 @@
 services:
-  grid-strategy:
+  lazy-grid-strategy:
     build:
       context: .
       target: final
-    command: ["strategy"]
+    command: ["lazy-grid-strategy"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+
+  market-data-gateway:
+    build:
+      context: .
+      target: final
+    command: ["market-data-gateway"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+
+  market-data-worker:
+    build:
+      context: .
+      target: final
+    command: ["market-data-worker"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+
+  order-engine-gateway:
+    build:
+      context: .
+      target: final
+    command: ["order-engine-gateway"]
     working_dir: /bin
     volumes:
       - ./config.yml:/bin/config.yml:ro
@@ -15,7 +63,9 @@ services:
       postgresql:
         condition: service_healthy
     ports:
-      - 8080:8080
+      - "9800:9800"
+      - "9801:9801"
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis

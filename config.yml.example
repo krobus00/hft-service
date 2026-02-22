@@ -28,6 +28,7 @@ nats_jetstream:
   timeout_handler:
     insert_kline: 5s
     place_order: 5s
+    grid_strategy: 5s
 database:
   market_data:
     dsn: "postgres://root:root@postgresql:5432/market_data?sslmode=disable"
