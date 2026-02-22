@@ -70,6 +70,8 @@ USER appuser
 
 # Copy the executable from the "build" stage.
 COPY --from=build /bin/hft-service /bin/
+# Copy migration file
+COPY --from=build /src/migrations /migrations
 
 # Expose the port that the application listens on.
 EXPOSE 8080
