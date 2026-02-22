@@ -7,3 +7,22 @@ exchanges:
   tokocrypto:
     api_key: "api secret"
     api_secret: "api secret"
+database:
+  market_data:
+    dsn: "postgres://root:root@postgresql:5432/hft?sslmode=disable"
+    ping_interval: 5s
+    reconnect_factor: 2.0
+    min_jitter: 100ms
+    max_jitter: 1s
+    max_retry: 5
+    max_idle_conns: 10
+    max_active_conns: 100
+    max_conn_lifetime: 1h
+redis:
+  market_data:
+    cache_dsn: "redis://redis:6379/0"
+    default_cache_duration: 5m
+    max_retry: 5
+    max_idle_conns: 10
+    max_active_conns: 100
+    max_conn_lifetime: 1h

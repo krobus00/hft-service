@@ -23,6 +23,7 @@ type EnvConfig struct {
 	Log                     LogConfig                 `mapstructure:"log"`
 	GracefulShutdownTimeout time.Duration             `mapstructure:"graceful_shutdown_timeout"`
 	Exchanges               map[string]ExchangeConfig `mapstructure:"exchanges"`
+	Redis                   RedisConfig               `mapstructure:"redis"`
 }
 
 type LogConfig struct {
@@ -38,6 +39,14 @@ type ExchangeConfig struct {
 	LimitSellFee  decimal.Decimal `mapstructure:"limit_sell_fee"`  // in percentage, e.g. 0.1 for 0.1%
 	MarketBuyFee  decimal.Decimal `mapstructure:"market_buy_fee"`  // in percentage, e.g. 0.1 for 0.1%
 	MarketSellFee decimal.Decimal `mapstructure:"market_sell_fee"` // in percentage, e.g. 0.1 for 0.1%
+}
+
+type RedisConfig struct {
+	MarketData RedisMarketDataConfig `mapstructure:"market_data"`
+}
+
+type RedisMarketDataConfig struct {
+	CacheDSN string `mapstructure:"cache_dsn"`
 }
 
 func LoadConfig() error {

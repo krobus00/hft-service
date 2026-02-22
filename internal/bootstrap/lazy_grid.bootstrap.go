@@ -27,7 +27,15 @@ func StartLazyGridStrategy() {
 	})
 
 	orderManager := ordermanager.NewOrderManagerService(tokocryptoExchange)
-	strategy := service.NewLazyGridStrategy(service.DefaultLazyGridConfig(), orderManager)
+	stateStore, err := service.NewRedisLazyGridStateStore(config.Env.Redis.MarketData.CacheDSN)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+
+	strategy, err := service.NewLazyGridStrategy(ctx, service.DefaultLazyGridConfig(), orderManager, stateStore)
+	if err != nil {
+		logrus.Fatal(err)
+	}
 
 	go func() {
 		for {
@@ -80,6 +88,9 @@ func StartLazyGridStrategy() {
 	}()
 
 	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
+		"redis connection": func(ctx context.Context) error {
+			return stateStore.Close()
+		},
 		"ws connection": func(ctx context.Context) error {
 			cancel()
 
