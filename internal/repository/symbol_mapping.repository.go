@@ -27,7 +27,7 @@ func (r *SymbolMappingRepository) GetAll(ctx context.Context) (entity.ExchangeSy
 		if _, ok := exchangeSymbolMapping[mapping.Exchange]; !ok {
 			exchangeSymbolMapping[mapping.Exchange] = make(map[string]string)
 		}
-		exchangeSymbolMapping[mapping.Exchange][mapping.Symbol] = mapping.KlineSymbol
+		exchangeSymbolMapping[mapping.Exchange][mapping.KlineSymbol] = mapping.OrderSymbol
 	}
 
 	return exchangeSymbolMapping, nil
@@ -45,7 +45,7 @@ func (r *SymbolMappingRepository) GetByExchange(ctx context.Context, exchange st
 		if _, ok := exchangeSymbolMapping[mapping.Exchange]; !ok {
 			exchangeSymbolMapping[mapping.Exchange] = make(map[string]string)
 		}
-		exchangeSymbolMapping[mapping.Exchange][mapping.Symbol] = mapping.KlineSymbol
+		exchangeSymbolMapping[mapping.Exchange][mapping.KlineSymbol] = mapping.OrderSymbol
 	}
 
 	return exchangeSymbolMapping, nil

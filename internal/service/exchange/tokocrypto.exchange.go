@@ -130,7 +130,6 @@ func (e *TokocryptoExchange) JetstreamEventSubscribe() error {
 		},
 		nats.ManualAck(),
 		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
-		nats.Durable(constant.KlineQueueGroup),
 	)
 	util.ContinueOrFatal(err)
 
