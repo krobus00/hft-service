@@ -1,5 +1,36 @@
 # High Frequency Trading Service
 
+## System Architecture Design
+
+### Flow
+1. `market-data-gateway` consume exchange kline data.
+2. `market-data-gateway` publish event to `market-data-worker`.
+3. `market-data-worker` consume `market-data-gateway` kline data and store to market data database.
+4. `strategy` consume `market-data-gateway` kline data then determine whether to buy, sell, or do nothing.
+5. If market execution is needed, `strategy` publish event `place_order`.
+6. `order-engine-gateway` consume event and execute order to exchange.
+
+### Diagram
+```mermaid
+flowchart LR
+  EX[(Exchange)]
+  MDG[market-data-gateway]
+  NATS[(NATS JetStream)]
+  MDW[market-data-worker]
+  MDB[(market_data DB)]
+  STRAT[strategy]
+  OEG[order-engine-gateway]
+
+  EX -->|kline websocket| MDG
+  MDG -->|publish kline.data| NATS
+  NATS -->|consume kline.data| MDW
+  MDW -->|insert market kline| MDB
+  NATS -->|consume kline.data| STRAT
+  STRAT -->|publish order_engine.place_order| NATS
+  NATS -->|consume place_order| OEG
+  OEG -->|execute order| EX
+```
+
 ## Setup Env
 
 ### Prerequisites
@@ -72,7 +103,7 @@ go run . strategy
 
 ### Testing order
 #### HTTP
-```json
+```bash
 curl --request POST \
   --url http://localhost:9801/order-engine/v1/orders \
   --header 'Content-Type: application/json' \

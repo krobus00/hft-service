@@ -35,8 +35,6 @@ const (
 	tokocryptoWSReconnectMinDelay = 1 * time.Second
 	tokocryptoWSReconnectMaxDelay = 15 * time.Second
 	tokocryptoWSReconnectFactor   = 2.0
-
-	KlineStreamSubjectTokocrypto = "kline.tokocrypto"
 )
 
 var tokocryptoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
@@ -117,8 +115,8 @@ func (e *TokocryptoExchange) JetstreamEventSubscribe() error {
 	}
 
 	_, err = e.js.QueueSubscribe(
-		KlineStreamSubjectTokocrypto,
-		constant.KlineQueueName,
+		constant.KlineStreamSubjectData,
+		constant.KlineQueueNameInsert,
 		func(msg *nats.Msg) {
 			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
 			if err != nil {
@@ -159,7 +157,7 @@ func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats
 				return
 			}
 
-			err := util.PublishEvent(e.js, KlineStreamSubjectTokocrypto, req)
+			err := util.PublishEvent(e.js, constant.KlineStreamSubjectData, req)
 			if err != nil {
 				logger.Error(err)
 				return
@@ -285,7 +283,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 		UpdatedAt:        now,
 	}
 
-	err = util.PublishEvent(e.js, KlineStreamSubjectTokocrypto, entity.MarketKlineEvent{
+	err = util.PublishEvent(e.js, constant.KlineStreamSubjectData, entity.MarketKlineEvent{
 		RetryCount: 0,
 		Data:       data,
 	})
