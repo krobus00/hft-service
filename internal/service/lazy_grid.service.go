@@ -20,6 +20,7 @@ type LazyGridConfig struct {
 	BaseQuantity   decimal.Decimal
 	TotalBudgetIDR decimal.Decimal
 	BuyFeeRate     decimal.Decimal
+	SellFeeRate    decimal.Decimal
 	InitialPrice   decimal.Decimal
 	// MaxLongLevels controls maximum concurrent long levels.
 	// 0 means unlimited.
@@ -34,7 +35,8 @@ func DefaultLazyGridConfig() LazyGridConfig {
 		GridPercent:    decimal.NewFromFloat(0.005), // 0.5% grid
 		BaseQuantity:   decimal.NewFromFloat(50),
 		TotalBudgetIDR: decimal.NewFromInt(1_000_000),
-		BuyFeeRate:     decimal.NewFromFloat(0.001222), // 0.1222% fee for limit orders, 0.3322% for market orders
+		BuyFeeRate:     decimal.NewFromFloat(0.002222), // 0.2222% fee for limit orders
+		SellFeeRate:    decimal.NewFromFloat(0.003322), // 0.3322% fee for limit orders
 		InitialPrice:   decimal.NewFromFloat(0),
 		MaxLongLevels:  0,
 		StrategySource: "lazy-grid",
@@ -73,11 +75,21 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManage
 	if config.BuyFeeRate.LessThan(decimal.Zero) || config.BuyFeeRate.GreaterThanOrEqual(decimal.NewFromInt(1)) {
 		config.BuyFeeRate = decimal.Zero
 	}
+	if config.SellFeeRate.LessThan(decimal.Zero) || config.SellFeeRate.GreaterThanOrEqual(decimal.NewFromInt(1)) {
+		config.SellFeeRate = decimal.Zero
+	}
 	if config.BuyFeeRate.Equal(decimal.Zero) {
 		if config.OrderType == ordermanager.OrderTypeMarket {
 			config.BuyFeeRate = decimal.NewFromFloat(0.002222) // 0.2222% fee for market orders
 		} else {
-			config.BuyFeeRate = decimal.NewFromFloat(0.001222) // 0.1222% fee for limit orders
+			config.BuyFeeRate = decimal.NewFromFloat(0.002222) // 0.2222% fee for limit orders
+		}
+	}
+	if config.SellFeeRate.Equal(decimal.Zero) {
+		if config.OrderType == ordermanager.OrderTypeMarket {
+			config.SellFeeRate = decimal.NewFromFloat(0.004322) // 0.4322% fee for market orders
+		} else {
+			config.SellFeeRate = decimal.NewFromFloat(0.003322) // 0.3322% fee for limit orders
 		}
 	}
 	if config.MaxLongLevels < 0 {
@@ -274,7 +286,17 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 }
 
 func (s *LazyGridStrategy) takeProfitPrice(level int) decimal.Decimal {
-	return s.levelPrice(level + 1)
+	grossTarget := s.levelPrice(level + 1)
+	if s.config.SellFeeRate.LessThanOrEqual(decimal.Zero) {
+		return grossTarget
+	}
+
+	netRatio := decimal.NewFromInt(1).Sub(s.config.SellFeeRate)
+	if netRatio.LessThanOrEqual(decimal.Zero) {
+		return grossTarget
+	}
+
+	return grossTarget.Div(netRatio)
 }
 
 func (s *LazyGridStrategy) collectBuyLevels(currentLevel int, previousLevel int) []int {
