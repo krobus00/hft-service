@@ -234,7 +234,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		return err
 	}
 
-	if req.Data.EventTime.UTC().Add(-1 * time.Minute).After(time.Now().UTC()) {
+	if req.Data.EventTime.UTC().Add(1 * time.Minute).Before(time.Now().UTC()) {
 		logger.Info("skipping kline data event that is too old")
 		return nil
 	}
@@ -253,10 +253,6 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 			}
 		}
 	}()
-
-	if !req.Data.IsClosed {
-		return nil
-	}
 
 	lockOwner := fmt.Sprintf("%d", time.Now().UnixNano())
 	if s.stateStore != nil {
