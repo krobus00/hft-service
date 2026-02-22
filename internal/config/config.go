@@ -22,10 +22,19 @@ type EnvConfig struct {
 	Env                     string                    `mapstructure:"env"`
 	Log                     LogConfig                 `mapstructure:"log"`
 	GracefulShutdownTimeout time.Duration             `mapstructure:"graceful_shutdown_timeout"`
+	APIKeys                 []APIKeyConfig            `mapstructure:"api_keys"`
+	Port                    map[string]string         `mapstructure:"port"`
 	Exchanges               map[string]ExchangeConfig `mapstructure:"exchanges"`
 	Database                map[string]DatabaseConfig `mapstructure:"database"`
 	Redis                   RedisConfig               `mapstructure:"redis"`
 	NatsJetstream           NatsJetstreamConfig       `mapstructure:"nats_jetstream"`
+}
+
+type APIKeyConfig struct {
+	Name      string `mapstructure:"name"`
+	Key       string `mapstructure:"key"`
+	Active    bool   `mapstructure:"active"`
+	ExpiredAt any    `mapstructure:"expired_at"`
 }
 
 type NatsJetstreamConfig struct {

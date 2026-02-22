@@ -3,6 +3,18 @@ log:
   show_caller: false
   log_level: debug
 graceful_shutdown_timeout: 30s
+api_keys:
+  - name: order-engine-client-a
+    key: REPLACE_WITH_SECURE_API_KEY_A
+    active: true
+    expired_at: 2099-12-31T23:59:59Z
+  - name: order-engine-client-b
+    key: REPLACE_WITH_SECURE_API_KEY_B
+    active: false
+    expired_at: 2099-12-31T23:59:59Z
+port:
+  order_engine_gateway_grpc: 9800
+  order_engine_gateway_http: 9801
 exchanges:
   tokocrypto:
     api_key: "api secret"
@@ -15,9 +27,20 @@ nats_jetstream:
   max_jitter: 1s
   timeout_handler:
     insert_kline: 5s
+    place_order: 5s
 database:
   market_data:
-    dsn: "postgres://root:root@postgresql:5432/hft?sslmode=disable"
+    dsn: "postgres://root:root@postgresql:5432/market_data?sslmode=disable"
+    ping_interval: 5s
+    reconnect_factor: 2.0
+    min_jitter: 100ms
+    max_jitter: 1s
+    max_retry: 5
+    max_idle_conns: 10
+    max_active_conns: 100
+    max_conn_lifetime: 1h
+  order_engine:
+    dsn: "postgres://root:root@postgresql:5432/order_engine?sslmode=disable"
     ping_interval: 5s
     reconnect_factor: 2.0
     min_jitter: 100ms
