@@ -133,12 +133,14 @@ services:
         condition: service_healthy
     environment:
       PGPASSWORD: root
-    entrypoint: ["sh", "-c"]
-    command: >
-      psql -h postgresql -U root -d hft -tAc "SELECT 1 FROM pg_database WHERE datname='market_data'" | grep -q 1 ||
-      psql -h postgresql -U root -d hft -c "CREATE DATABASE market_data;";
-      psql -h postgresql -U root -d hft -tAc "SELECT 1 FROM pg_database WHERE datname='order_engine'" | grep -q 1 ||
-      psql -h postgresql -U root -d hft -c "CREATE DATABASE order_engine;"
+      PGHOST: postgresql
+      PGPORT: 5432
+      PGUSER: root
+      PGDATABASE: hft
+    entrypoint: ["sh", "-ec"]
+    command: |
+      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='market_data'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE market_data;"
+      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='order_engine'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE order_engine;"
     restart: "no"
 
   migrate-market-data:
