@@ -2,6 +2,9 @@
 
 Event-driven trading platform for market data ingestion, strategy execution, and order execution.
 
+## AI Assistance Notice
+Most of the code in this repository was written with AI assistance.
+
 ## System Architecture
 
 ### Event flow
@@ -113,6 +116,10 @@ INSERT INTO symbol_mappings
 (id, exchange, symbol, kline_symbol, order_symbol, created_at, updated_at)
 VALUES
 ('4494faed-468c-46b5-b7ca-389419ad63ad', 'tokocrypto', 'TKOIDR', 'tkoidr', 'TKO_IDR', '2026-02-22 14:36:22.978', '2026-02-22 14:36:22.978');
+
+-- Example: create TKOIDR partition
+-- SELECT create_symbol_partition('TKOIDR');
+-- SELECT create_month_partition('TKOIDR', 2026, 2);
 ```
 
 ### 7) Run services (separate terminals)
