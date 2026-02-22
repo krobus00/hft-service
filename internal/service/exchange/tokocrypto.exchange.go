@@ -116,18 +116,20 @@ func (e *TokocryptoExchange) JetstreamEventSubscribe() error {
 		KlineStreamSubjectTokocrypto,
 		constant.KlineQueueName,
 		func(msg *nats.Msg) {
-			err := msg.Ack()
-			if err != nil {
-				logrus.Errorf("failed to acknowledge message: %v", err)
-				return
-			}
-			err = util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
+			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
 			if err != nil {
 				logrus.Errorf("error processing message: %v", err)
 				return
 			}
+
+			err = msg.Ack()
+			if err != nil {
+				logrus.Errorf("failed to acknowledge message: %v", err)
+				return
+			}
 		},
 		nats.ManualAck(),
+		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
 		nats.Durable(constant.KlineQueueGroup),
 	)
 	util.ContinueOrFatal(err)
