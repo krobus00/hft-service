@@ -1,14 +1,22 @@
-package service
+package lazygrid
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/guregu/null/v6"
+	"github.com/krobus00/hft-service/internal/config"
+	"github.com/krobus00/hft-service/internal/constant"
 	"github.com/krobus00/hft-service/internal/entity"
+	"github.com/krobus00/hft-service/internal/util"
+	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
 )
@@ -46,9 +54,9 @@ func DefaultLazyGridConfig() LazyGridConfig {
 }
 
 type LazyGridStrategy struct {
-	mu     sync.Mutex
-	config LazyGridConfig
-	// orderManager  entity.OrderManager
+	mu            sync.Mutex
+	config        LazyGridConfig
+	js            nats.JetStreamContext
 	stateStore    LazyGridStateStore
 	anchorPrice   decimal.Decimal
 	lastGridLevel int
@@ -59,7 +67,7 @@ type LazyGridStrategy struct {
 
 const lazyGridProcessingLockTTL = 15 * time.Second
 
-func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore LazyGridStateStore) (*LazyGridStrategy, error) {
+func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore LazyGridStateStore, js nats.JetStreamContext) (*LazyGridStrategy, error) {
 	if config.Symbol == "" {
 		config.Symbol = "tkoidr"
 	}
@@ -106,8 +114,8 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore 
 	}
 
 	strategy := &LazyGridStrategy{
-		config: config,
-		// orderManager:  orderManager,
+		config:        config,
+		js:            js,
 		stateStore:    stateStore,
 		anchorPrice:   config.InitialPrice,
 		lastGridLevel: 0,
@@ -166,10 +174,85 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore 
 	return strategy, nil
 }
 
-func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData entity.KlineData) error {
-	if !klineData.IsClosed {
+func (s *LazyGridStrategy) JetstreamEventInit() error {
+	stream, err := s.js.StreamInfo(constant.KlineStreamName)
+	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
+		logrus.Error(err)
+		return err
+	}
+	if stream == nil {
+		logrus.Info(fmt.Sprintf("creating stream: %s\n", constant.KlineStreamName))
+		_, err = s.js.AddStream(&nats.StreamConfig{
+			Name:     constant.KlineStreamName,
+			Subjects: []string{constant.KlineStreamSubjectAll},
+		})
+		return err
+	}
+	return nil
+}
+
+func (s *LazyGridStrategy) JetstreamEventSubscribe() error {
+	err := s.JetstreamEventInit()
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
+	_, err = s.js.QueueSubscribe(
+		constant.KlineStreamSubjectData,
+		constant.KlineQueueNameStrategy,
+		func(msg *nats.Msg) {
+			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["grid_strategy"], msg, s.handleKlineDataEvent)
+			if err != nil {
+				logrus.Errorf("error processing message: %v", err)
+				return
+			}
+
+			err = msg.Ack()
+			if err != nil {
+				logrus.Errorf("failed to acknowledge message: %v", err)
+				return
+			}
+		},
+		nats.ManualAck(),
+		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
+	)
+	util.ContinueOrFatal(err)
+
+	return nil
+}
+
+func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.Msg) (err error) {
+	logger := logrus.WithFields(logrus.Fields{
+		"req": string(msg.Data),
+	})
+
+	var req *entity.MarketKlineEvent
+	err = json.Unmarshal(msg.Data, &req)
+	if err != nil {
+		logger.Error(err)
+		return err
+	}
+
+	if req.Data.EventTime.UTC().Add(1 * time.Minute).Before(time.Now().UTC()) {
+		logger.Info("skipping kline data event that is too old")
 		return nil
 	}
+
+	defer func() {
+		if err != nil {
+			req.RetryCount++
+			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
+				return
+			}
+
+			err := util.PublishEvent(s.js, constant.KlineStreamSubjectData, req)
+			if err != nil {
+				logger.Error(err)
+				return
+			}
+		}
+	}()
 
 	lockOwner := fmt.Sprintf("%d", time.Now().UnixNano())
 	if s.stateStore != nil {
@@ -196,7 +279,7 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData entity.KlineDa
 		return err
 	}
 
-	price := klineData.Close
+	price := req.Data.ClosePrice
 	if price.LessThanOrEqual(decimal.Zero) {
 		return fmt.Errorf("price must be greater than zero")
 	}
@@ -245,18 +328,29 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData entity.KlineDa
 					continue
 				}
 
-				// if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
-				// 	Exchange: string(s.config.Exchange),
-				// 	Symbol:   s.config.Symbol,
-				// 	Type:     s.config.OrderType,
-				// 	Side:     entity.OrderSideBuy,
-				// 	Price:    orderPrice,
-				// 	Quantity: orderQuantity,
-				// 	Source:   s.config.StrategySource,
-				// }); err != nil {
-				// 	logrus.Error(err)
-				// 	return err
-				// }
+				err = util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{
+					RetryCount: 0,
+					Data: entity.OrderRequest{
+						RequestID:   uuid.New().String(),
+						UserID:      "toko-1",
+						StrategyID:  null.StringFrom(s.config.StrategySource).Ptr(),
+						Exchange:    string(s.config.Exchange),
+						Symbol:      s.config.Symbol,
+						Type:        s.config.OrderType,
+						Side:        entity.OrderSideBuy,
+						Price:       orderPrice,
+						Quantity:    orderQuantity,
+						Source:      s.config.StrategySource,
+						RequestedAt: time.Now().Unix(),
+					},
+				})
+				if err != nil {
+					logrus.WithFields(logrus.Fields{
+						"level":         level,
+						"orderPrice":    orderPrice,
+						"orderQuantity": orderQuantity,
+					}).Error("failed to publish buy order event")
+				}
 
 				s.pendingBuys[level] = orderQuantity
 				totalQuantity = totalQuantity.Add(orderQuantity)
@@ -277,20 +371,31 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData entity.KlineDa
 				if !exists || orderQuantity.LessThanOrEqual(decimal.Zero) {
 					continue
 				}
-				// orderPrice := s.takeProfitPrice(level)
+				orderPrice := s.takeProfitPrice(level)
 
-				// if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
-				// 	Exchange: string(s.config.Exchange),
-				// 	Symbol:   s.config.Symbol,
-				// 	Type:     s.config.OrderType,
-				// 	Side:     entity.OrderSideSell,
-				// 	Price:    orderPrice,
-				// 	Quantity: orderQuantity,
-				// 	Source:   s.config.StrategySource,
-				// }); err != nil {
-				// 	logrus.Error(err)
-				// 	return err
-				// }
+				err = util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{
+					RetryCount: 0,
+					Data: entity.OrderRequest{
+						RequestID:   uuid.New().String(),
+						UserID:      "toko-1",
+						StrategyID:  null.StringFrom(s.config.StrategySource).Ptr(),
+						Exchange:    string(s.config.Exchange),
+						Symbol:      s.config.Symbol,
+						Type:        s.config.OrderType,
+						Side:        entity.OrderSideSell,
+						Price:       orderPrice,
+						Quantity:    orderQuantity,
+						Source:      s.config.StrategySource,
+						RequestedAt: time.Now().Unix(),
+					},
+				})
+				if err != nil {
+					logrus.WithFields(logrus.Fields{
+						"level":         level,
+						"orderPrice":    orderPrice,
+						"orderQuantity": orderQuantity,
+					}).Error("failed to publish sell order event")
+				}
 
 				s.pendingSells[level] = orderQuantity
 				totalQuantity = totalQuantity.Add(orderQuantity)
