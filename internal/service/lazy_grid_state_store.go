@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
@@ -26,6 +27,8 @@ type LazyGridPosition struct {
 type LazyGridStateStore interface {
 	Load(ctx context.Context, key string) (LazyGridState, bool, error)
 	Save(ctx context.Context, key string, state LazyGridState) error
+	AcquireProcessingLock(ctx context.Context, key string, ttl time.Duration, owner string) (bool, error)
+	ReleaseProcessingLock(ctx context.Context, key string, owner string) error
 }
 
 type RedisLazyGridStateStore struct {
@@ -69,6 +72,43 @@ func (s *RedisLazyGridStateStore) Save(ctx context.Context, key string, state La
 	}
 
 	return s.client.Set(ctx, key, payload, 0).Err()
+}
+
+func (s *RedisLazyGridStateStore) AcquireProcessingLock(ctx context.Context, key string, ttl time.Duration, owner string) (bool, error) {
+	if ttl <= 0 {
+		ttl = 15 * time.Second
+	}
+
+	lockKey := processingLockKey(key)
+	acquired, err := s.client.SetNX(ctx, lockKey, owner, ttl).Result()
+	if err != nil {
+		return false, err
+	}
+
+	return acquired, nil
+}
+
+func (s *RedisLazyGridStateStore) ReleaseProcessingLock(ctx context.Context, key string, owner string) error {
+	lockKey := processingLockKey(key)
+
+	script := redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+`)
+
+	_, err := script.Run(ctx, s.client, []string{lockKey}, owner).Result()
+	if err != nil && err != redis.Nil {
+		return err
+	}
+
+	return nil
+}
+
+func processingLockKey(stateKey string) string {
+	return fmt.Sprintf("%s:processing-lock", stateKey)
 }
 
 func (s *RedisLazyGridStateStore) Close() error {
