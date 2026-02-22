@@ -2,14 +2,11 @@ package bootstrap
 
 import (
 	"context"
-	"net/url"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/krobus00/hft-service/internal/config"
 	"github.com/krobus00/hft-service/internal/service"
-	"github.com/krobus00/hft-service/internal/service/ordermanager"
 	"github.com/sirupsen/logrus"
 )
 
@@ -22,70 +19,18 @@ func StartLazyGridStrategy() {
 		mu     sync.RWMutex
 	)
 
-	tokocryptoExchange := ordermanager.NewTokocryptoExchange(config.Env.Exchanges[string(ordermanager.ExchangeTokoCrypto)], map[string]string{
-		"tkoidr": "TKO_IDR",
-	})
+	// tokocryptoExchange := exchange.InitTokocryptoExchange(ctx, config.Env.Exchanges[string(entity.ExchangeTokoCrypto)], nil)
 
-	orderManager := ordermanager.NewOrderManagerService(tokocryptoExchange)
+	// orderManager := ordermanager.NewOrderManagerService(tokocryptoExchange)
 	stateStore, err := service.NewRedisLazyGridStateStore(config.Env.Redis.MarketData.CacheDSN)
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
-	strategy, err := service.NewLazyGridStrategy(ctx, service.DefaultLazyGridConfig(), orderManager, stateStore)
-	if err != nil {
-		logrus.Fatal(err)
-	}
-
-	go func() {
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-
-			tokoWs := url.URL{
-				Scheme: "wss",
-				Host:   "stream-cloud.tokocrypto.site",
-				Path:   "/stream",
-			}
-			tokoSub := map[string]any{
-				"method": "SUBSCRIBE",
-				"params": []string{
-					"tkoidr@kline_1m",
-				},
-				"id": 1,
-			}
-			conn, err := runWS(ctx, tokoWs, tokoSub, func(ctx context.Context, message []byte) error {
-				klineData, err := tokocryptoExchange.HandleKlineData(ctx, message)
-				if err != nil {
-					return err
-				}
-				if err := strategy.OnPrice(ctx, klineData); err != nil {
-					logrus.WithFields(logrus.Fields{
-						"close":    klineData.Close,
-						"isClosed": klineData.IsClosed,
-					}).Errorf("lazy-grid on price failed: %v", err)
-				}
-				return nil
-			})
-			if err != nil {
-				logrus.Error("ws exited:", err)
-			}
-
-			if conn != nil {
-				mu.Lock()
-				wsConn = conn
-				mu.Unlock()
-			}
-
-			if ctx.Err() != nil {
-				return
-			}
-
-			logrus.Info("reconnecting in 3 seconds...")
-			time.Sleep(3 * time.Second)
-		}
-	}()
+	// strategy, err := service.NewLazyGridStrategy(ctx, service.DefaultLazyGridConfig(), orderManager, stateStore)
+	// if err != nil {
+	// 	logrus.Fatal(err)
+	// }
 
 	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
 		"redis connection": func(ctx context.Context) error {

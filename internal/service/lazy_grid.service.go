@@ -8,15 +8,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/krobus00/hft-service/internal/service/ordermanager"
+	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
 )
 
 type LazyGridConfig struct {
 	Symbol         string
-	Exchange       ordermanager.ExchangeName
-	OrderType      ordermanager.OrderType
+	Exchange       entity.ExchangeName
+	OrderType      entity.OrderType
 	GridPercent    decimal.Decimal
 	BaseQuantity   decimal.Decimal
 	TotalBudgetIDR decimal.Decimal
@@ -48,7 +48,7 @@ func DefaultLazyGridConfig() LazyGridConfig {
 type LazyGridStrategy struct {
 	mu            sync.Mutex
 	config        LazyGridConfig
-	orderManager  ordermanager.OrderManager
+	orderManager  entity.OrderManager
 	stateStore    LazyGridStateStore
 	anchorPrice   decimal.Decimal
 	lastGridLevel int
@@ -59,15 +59,15 @@ type LazyGridStrategy struct {
 
 const lazyGridProcessingLockTTL = 15 * time.Second
 
-func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManager ordermanager.OrderManager, stateStore LazyGridStateStore) (*LazyGridStrategy, error) {
+func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManager entity.OrderManager, stateStore LazyGridStateStore) (*LazyGridStrategy, error) {
 	if config.Symbol == "" {
 		config.Symbol = "tkoidr"
 	}
 	if config.Exchange == "" {
-		config.Exchange = ordermanager.ExchangeTokoCrypto
+		config.Exchange = entity.ExchangeTokoCrypto
 	}
 	if config.OrderType == "" {
-		config.OrderType = ordermanager.OrderTypeLimit
+		config.OrderType = entity.OrderTypeLimit
 	}
 	if config.GridPercent.LessThanOrEqual(decimal.Zero) {
 		config.GridPercent = decimal.NewFromFloat(0.005)
@@ -82,14 +82,14 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManage
 		config.SellFeeRate = decimal.Zero
 	}
 	if config.BuyFeeRate.Equal(decimal.Zero) {
-		if config.OrderType == ordermanager.OrderTypeMarket {
+		if config.OrderType == entity.OrderTypeMarket {
 			config.BuyFeeRate = decimal.NewFromFloat(0.002222) // 0.2222% fee for market orders
 		} else {
 			config.BuyFeeRate = decimal.NewFromFloat(0.002222) // 0.2222% fee for limit orders
 		}
 	}
 	if config.SellFeeRate.Equal(decimal.Zero) {
-		if config.OrderType == ordermanager.OrderTypeMarket {
+		if config.OrderType == entity.OrderTypeMarket {
 			config.SellFeeRate = decimal.NewFromFloat(0.004322) // 0.4322% fee for market orders
 		} else {
 			config.SellFeeRate = decimal.NewFromFloat(0.003322) // 0.3322% fee for limit orders
@@ -166,7 +166,7 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, orderManage
 	return strategy, nil
 }
 
-func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.KlineData) error {
+func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData entity.KlineData) error {
 	if !klineData.IsClosed {
 		return nil
 	}
@@ -245,11 +245,11 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 					continue
 				}
 
-				if err := s.orderManager.PlaceOrder(ctx, ordermanager.OrderRequest{
+				if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
 					Exchange: string(s.config.Exchange),
 					Symbol:   s.config.Symbol,
 					Type:     s.config.OrderType,
-					Side:     ordermanager.OrderSideBuy,
+					Side:     entity.OrderSideBuy,
 					Price:    orderPrice,
 					Quantity: orderQuantity,
 					Source:   s.config.StrategySource,
@@ -279,11 +279,11 @@ func (s *LazyGridStrategy) OnPrice(ctx context.Context, klineData ordermanager.K
 				}
 				orderPrice := s.takeProfitPrice(level)
 
-				if err := s.orderManager.PlaceOrder(ctx, ordermanager.OrderRequest{
+				if err := s.orderManager.PlaceOrder(ctx, entity.OrderRequest{
 					Exchange: string(s.config.Exchange),
 					Symbol:   s.config.Symbol,
 					Type:     s.config.OrderType,
-					Side:     ordermanager.OrderSideSell,
+					Side:     entity.OrderSideSell,
 					Price:    orderPrice,
 					Quantity: orderQuantity,
 					Source:   s.config.StrategySource,

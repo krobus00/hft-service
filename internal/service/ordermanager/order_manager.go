@@ -3,45 +3,20 @@ package ordermanager
 import (
 	"context"
 
-	"github.com/shopspring/decimal"
+	"github.com/krobus00/hft-service/internal/entity"
 )
-
-type OrderType string
-type OrderSide string
-
-const (
-	OrderSideBuy  OrderSide = "BUY"
-	OrderSideSell OrderSide = "SELL"
-
-	OrderTypeLimit  OrderType = "LIMIT"
-	OrderTypeMarket OrderType = "MARKET"
-)
-
-type OrderRequest struct {
-	Exchange string
-	Symbol   string
-	Type     OrderType
-	Side     OrderSide
-	Price    decimal.Decimal
-	Quantity decimal.Decimal
-	Source   string
-}
-
-type OrderManager interface {
-	PlaceOrder(ctx context.Context, order OrderRequest) error
-}
 
 type OrderManagerService struct {
-	exchange Exchange
+	exchange entity.Exchange
 }
 
-func NewOrderManagerService(exchange Exchange) OrderManager {
+func NewOrderManagerService(exchange entity.Exchange) entity.OrderManager {
 	return &OrderManagerService{
 		exchange: exchange,
 	}
 }
 
-func (s *OrderManagerService) PlaceOrder(ctx context.Context, order OrderRequest) error {
+func (s *OrderManagerService) PlaceOrder(ctx context.Context, order entity.OrderRequest) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

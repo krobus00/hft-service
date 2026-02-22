@@ -7,6 +7,14 @@ exchanges:
   tokocrypto:
     api_key: "api secret"
     api_secret: "api secret"
+nats_jetstream:
+  url: "nats://nats:4222"
+  max_retries: 5
+  reconnect_factor: 2.0
+  min_jitter: 100ms
+  max_jitter: 1s
+  timeout_handler:
+    insert_kline: 5s
 database:
   market_data:
     dsn: "postgres://root:root@postgresql:5432/hft?sslmode=disable"
