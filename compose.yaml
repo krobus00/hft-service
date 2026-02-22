@@ -3,9 +3,10 @@ services:
     build:
       context: .
       target: final
-    command: ["/bin/hft-service", "strategy"]
+    command: ["strategy"]
+    working_dir: /bin
     volumes:
-      - ./config.yml:/bin/hft-service/config.yml:ro
+      - ./config.yml:/bin/config.yml:ro
     depends_on:
       redis:
         condition: service_healthy
