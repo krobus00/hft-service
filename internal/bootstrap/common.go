@@ -3,14 +3,12 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
 
@@ -62,64 +60,4 @@ func gracefulShutdown(ctx context.Context, timeout time.Duration, ops map[string
 	}()
 
 	return wait
-}
-
-func runWS(ctx context.Context, wsHost url.URL, initSub map[string]any, onMessage func(ctx context.Context, message []byte) error) (*websocket.Conn, error) {
-
-	logrus.Infof("connecting to %s", wsHost.String())
-
-	c, _, err := websocket.DefaultDialer.Dial(wsHost.String(), nil)
-	if err != nil {
-		logrus.Error(err)
-		return nil, err
-	}
-
-	// Setup pong handler
-	c.SetPongHandler(func(string) error {
-		logrus.Info("pong")
-		return nil
-	})
-
-	if err := c.WriteJSON(initSub); err != nil {
-		return nil, err
-	}
-
-	// Ping loop (optional but recommended)
-	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				err := c.WriteMessage(websocket.PingMessage, nil)
-				if err != nil {
-					logrus.Error(err)
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Read loop
-	for {
-		select {
-		case <-ctx.Done():
-			return c, nil
-		default:
-			_, message, err := c.ReadMessage()
-			if err != nil {
-				logrus.Error(err)
-				return c, err
-			}
-
-			if onMessage != nil {
-				if err := onMessage(ctx, message); err != nil {
-					logrus.Error(err)
-				}
-			}
-		}
-	}
 }

@@ -23,7 +23,30 @@ type EnvConfig struct {
 	Log                     LogConfig                 `mapstructure:"log"`
 	GracefulShutdownTimeout time.Duration             `mapstructure:"graceful_shutdown_timeout"`
 	Exchanges               map[string]ExchangeConfig `mapstructure:"exchanges"`
+	Database                map[string]DatabaseConfig `mapstructure:"database"`
 	Redis                   RedisConfig               `mapstructure:"redis"`
+	NatsJetstream           NatsJetstreamConfig       `mapstructure:"nats_jetstream"`
+}
+
+type NatsJetstreamConfig struct {
+	URL             string                   `mapstructure:"url"`
+	MaxRetries      int                      `mapstructure:"max_retries"`
+	ReconnectFactor float64                  `mapstructure:"reconnect_factor"`
+	MinJitter       time.Duration            `mapstructure:"min_jitter"`
+	MaxJitter       time.Duration            `mapstructure:"max_jitter"`
+	TimeoutHandler  map[string]time.Duration `mapstructure:"timeout_handler"`
+}
+
+type DatabaseConfig struct {
+	DSN             string        `mapstructure:"dsn"`
+	PingInterval    time.Duration `mapstructure:"ping_interval"`
+	ReconnectFactor float64       `mapstructure:"reconnect_factor"`
+	MinJitter       time.Duration `mapstructure:"min_jitter"`
+	MaxJitter       time.Duration `mapstructure:"max_jitter"`
+	MaxRetry        int           `mapstructure:"max_retry"`
+	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
+	MaxActiveConns  int           `mapstructure:"max_active_conns"`
+	MaxConnLifetime time.Duration `mapstructure:"max_conn_lifetime"`
 }
 
 type LogConfig struct {
