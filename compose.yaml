@@ -14,6 +14,8 @@ services:
         condition: service_healthy
       postgresql:
         condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
 
   market-data-gateway:
     build:
@@ -30,6 +32,8 @@ services:
         condition: service_healthy
       postgresql:
         condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
 
   market-data-worker:
     build:
@@ -46,6 +50,8 @@ services:
         condition: service_healthy
       postgresql:
         condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
 
   order-engine-gateway:
     build:
@@ -62,6 +68,8 @@ services:
         condition: service_healthy
       postgresql:
         condition: service_healthy
+      migrate-order-engine:
+        condition: service_completed_successfully
     ports:
       - "9800:9800"
       - "9801:9801"
@@ -116,6 +124,48 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  database-init:
+    image: postgres:16-alpine
+    container_name: hft-database-init
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: root
+    entrypoint: ["sh", "-c"]
+    command: >
+      psql -h postgresql -U root -d hft -tAc "SELECT 1 FROM pg_database WHERE datname='market_data'" | grep -q 1 ||
+      psql -h postgresql -U root -d hft -c "CREATE DATABASE market_data;";
+      psql -h postgresql -U root -d hft -tAc "SELECT 1 FROM pg_database WHERE datname='order_engine'" | grep -q 1 ||
+      psql -h postgresql -U root -d hft -c "CREATE DATABASE order_engine;"
+    restart: "no"
+
+  migrate-market-data:
+    build:
+      context: .
+      target: final
+    command: ["migrate", "--databaseName=market_data"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  migrate-order-engine:
+    build:
+      context: .
+      target: final
+    command: ["migrate", "--databaseName=order_engine"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+    restart: "no"
 
 volumes:
   redis_data:
