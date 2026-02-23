@@ -20,7 +20,7 @@ Most of the code in this repository was written with AI assistance.
 
 ### Diagram
 ```mermaid
-flowchart LR
+flowchart TB
   EX[(Exchange)]
   NATS[(NATS JetStream)]
   MDG[market-data-gateway]
