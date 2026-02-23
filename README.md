@@ -136,6 +136,10 @@ go run . order-engine-gateway
 ```
 
 ```bash
+go run . order-history-sync-worker
+```
+
+```bash
 go run . strategy
 ```
 

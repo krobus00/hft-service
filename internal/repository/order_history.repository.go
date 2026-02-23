@@ -98,3 +98,52 @@ func (r *OrderHistoryRepository) GetByRequestID(ctx context.Context, requestID s
 	}
 	return &orderHistory, nil
 }
+
+func (r *OrderHistoryRepository) GetByStatus(ctx context.Context, statuses []string) ([]entity.OrderHistory, error) {
+	if len(statuses) == 0 {
+		return []entity.OrderHistory{}, nil
+	}
+
+	queryBuilder := sq.StatementBuilder.
+		PlaceholderFormat(sq.Dollar).
+		Select("*").
+		From("order_histories").
+		Where(sq.Eq{"status": statuses}).
+		OrderBy("created_at desc")
+
+	query, args, err := queryBuilder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	var orderHistories []entity.OrderHistory
+	err = r.db.SelectContext(ctx, &orderHistories, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	return orderHistories, nil
+}
+
+func (r *OrderHistoryRepository) Update(ctx context.Context, orderHistory *entity.OrderHistory) error {
+	queryBuilder := sq.StatementBuilder.
+		PlaceholderFormat(sq.Dollar).
+		Update(orderHistory.TableName()).
+		Set("filled_quantity", orderHistory.FilledQuantity).
+		Set("avg_fill_price", orderHistory.AvgFillPrice).
+		Set("status", orderHistory.Status).
+		Set("fee", orderHistory.Fee).
+		Set("realized_pnl", orderHistory.RealizedPnl).
+		Set("acknowledged_at", orderHistory.AcknowledgedAt).
+		Set("filled_at", orderHistory.FilledAt).
+		Set("updated_at", orderHistory.UpdatedAt).
+		Where(sq.Eq{"id": orderHistory.ID})
+
+	query, args, err := queryBuilder.ToSql()
+	if err != nil {
+		return err
+	}
+
+	_, err = r.db.ExecContext(ctx, query, args...)
+	return err
+}
