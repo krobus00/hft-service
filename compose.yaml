@@ -74,6 +74,24 @@ services:
       - "9800:9800"
       - "9801:9801"
 
+  order-engine-worker:
+    build:
+      context: .
+      target: final
+    command: ["order-engine-worker"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-order-engine:
+        condition: service_completed_successfully
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis
