@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func StartOrderHistorySyncWorker(cmd *cobra.Command, args []string) {
+func StartOrderEngineWorker(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

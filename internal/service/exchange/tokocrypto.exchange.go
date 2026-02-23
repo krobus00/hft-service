@@ -675,7 +675,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 		return nil, fmt.Errorf("tokocrypto order detail rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
 	}
 
-	var detailResp entity.TokocryptoPlaceOrderResponse
+	var detailResp entity.TokocryptoOrderDetailResponse
 	if err := json.Unmarshal(apiResp.Data, &detailResp); err != nil {
 		return nil, fmt.Errorf("tokocrypto order detail data parse failed: %w", err)
 	}
@@ -761,7 +761,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
 		Symbol:            resolvedSymbol,
-		OrderID:           strconv.FormatInt(resp.OrderID, 10),
+		OrderID:           fmt.Sprintf("%d", resp.OrderID),
 		ClientOrderID:     clientOrderID,
 		Side:              historySide,
 		Type:              historyType,
@@ -784,7 +784,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 	}, nil
 }
 
-func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp entity.TokocryptoPlaceOrderResponse) (entity.OrderHistory, error) {
+func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp entity.TokocryptoOrderDetailResponse) (entity.OrderHistory, error) {
 	filledQuantity, err := tokocryptoDecimalOrZero(resp.ExecutedQty)
 	if err != nil {
 		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto filled quantity: %w", err)
@@ -809,8 +809,8 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 		orderHistory.FilledAt = sql.NullTime{Time: now, Valid: true}
 	}
 
-	if resp.OrderID > 0 && strings.TrimSpace(orderHistory.OrderID) == "" {
-		orderHistory.OrderID = strconv.FormatInt(resp.OrderID, 10)
+	if strings.TrimSpace(resp.OrderID) != "" && strings.TrimSpace(orderHistory.OrderID) == "" {
+		orderHistory.OrderID = resp.OrderID
 	}
 
 	if clientID := strings.TrimSpace(resp.ClientID); clientID != "" && !orderHistory.ClientOrderID.Valid {
