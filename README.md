@@ -14,6 +14,9 @@ Most of the code in this repository was written with AI assistance.
 4. `strategy` consumes `kline.data` and decides: buy, sell, or no action.
 5. If execution is required, `strategy` publishes `order_engine.place_order`.
 6. `order-engine-gateway` consumes order events and executes to exchange.
+7. `order-engine-gateway` stores initial order history in `order_engine` DB.
+8. `order-engine-worker` polls tracked orders and fetches latest execution state from exchange.
+9. `order-engine-worker` updates `order_histories` status in `order_engine` DB.
 
 ### Diagram
 ```mermaid
@@ -24,6 +27,7 @@ flowchart LR
   MDW[market-data-worker]
   STRAT[strategy]
   OEG[order-engine-gateway]
+  OEW[order-engine-worker]
   MDB[(market_data DB)]
   ODB[(order_engine DB)]
 
@@ -36,6 +40,9 @@ flowchart LR
   NATS -->|consume place_order| OEG
   OEG -->|execute order| EX
   OEG -->|store order history| ODB
+  ODB -->|load tracked orders| OEW
+  OEW -->|fetch latest order status| EX
+  OEW -->|update order_histories status| ODB
 ```
 
 ## Services and Use Cases
@@ -59,6 +66,11 @@ flowchart LR
 - Consumes place-order events.
 - Converts order payload to exchange API format.
 - Sends order and stores order history.
+
+### `order-engine-worker`
+- Syncs `order_histories` records with the latest execution state from exchange.
+- Fetches latest order status from exchange for tracked orders.
+- Updates local order history status to keep it consistent with exchange execution result.
 
 ### `migrate`
 - Runs DB migration for `market_data` and `order_engine`.
@@ -136,6 +148,10 @@ go run . order-engine-gateway
 ```
 
 ```bash
+go run . order-engine-worker
+```
+
+```bash
 go run . strategy
 ```
 
@@ -180,7 +196,6 @@ curl --request POST \
 ```
 
 ## TODO
-- Sync order engine order history status.
 - Build analytic service that consumes market data.
 - Support HA deployment for all services.
 - Support multiple user credentials.

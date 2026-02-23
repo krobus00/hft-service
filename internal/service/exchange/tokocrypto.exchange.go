@@ -591,6 +591,103 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	return &orderHistory, nil
 }
 
+func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory entity.OrderHistory) (*entity.OrderHistory, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if e.apiKey == "" || e.apiSecret == "" {
+		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
+	}
+
+	orderSymbol := orderHistory.Symbol
+	if mapped, ok := e.symbolMapping[string(entity.ExchangeTokoCrypto)][orderSymbol]; ok {
+		orderSymbol = mapped
+	}
+	orderSymbol = strings.TrimSpace(orderSymbol)
+	if orderSymbol == "" {
+		return nil, fmt.Errorf("tokocrypto order symbol is empty")
+	}
+
+	if strings.TrimSpace(orderHistory.OrderID) == "" && !orderHistory.ClientOrderID.Valid {
+		return nil, fmt.Errorf("tokocrypto order history missing order id")
+	}
+
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	pairs := []string{
+		"symbol=" + orderSymbol,
+	}
+
+	if strings.TrimSpace(orderHistory.OrderID) != "" {
+		pairs = append(pairs, "orderId="+strings.TrimSpace(orderHistory.OrderID))
+	} else {
+		pairs = append(pairs, "clientId="+url.QueryEscape(strings.TrimSpace(orderHistory.ClientOrderID.String)))
+	}
+
+	pairs = append(pairs,
+		"timestamp="+timestamp,
+		"recvWindow="+strconv.FormatInt(e.recvWindow, 10),
+	)
+
+	payload := strings.Join(pairs, "&")
+	signature := hmacSHA256Hex(e.apiSecret, payload)
+	endpoint := e.baseURL + "/open/v1/orders/detail?" + payload + "&signature=" + signature
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("X-MBX-APIKEY", e.apiKey)
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var apiResp struct {
+		Code      int             `json:"code"`
+		Msg       string          `json:"msg"`
+		Message   string          `json:"message"`
+		Success   *bool           `json:"success"`
+		Timestamp int64           `json:"timestamp"`
+		Data      json.RawMessage `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("tokocrypto order detail parse failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest || apiResp.Code != 0 || (apiResp.Success != nil && !*apiResp.Success) {
+		errMsg := apiResp.Message
+		if errMsg == "" {
+			errMsg = apiResp.Msg
+		}
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+
+		return nil, fmt.Errorf("tokocrypto order detail rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
+	}
+
+	var detailResp entity.TokocryptoOrderDetailResponse
+	if err := json.Unmarshal(apiResp.Data, &detailResp); err != nil {
+		return nil, fmt.Errorf("tokocrypto order detail data parse failed: %w", err)
+	}
+
+	updatedHistory, err := e.mapOrderHistorySyncResponse(orderHistory, detailResp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &updatedHistory, nil
+}
+
 func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.OrderRequest, resp entity.TokocryptoPlaceOrderResponse) (entity.OrderHistory, error) {
 	price, err := decimal.NewFromString(resp.Price)
 	if err != nil {
@@ -664,7 +761,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
 		Symbol:            resolvedSymbol,
-		OrderID:           strconv.FormatInt(resp.OrderID, 10),
+		OrderID:           fmt.Sprintf("%d", resp.OrderID),
 		ClientOrderID:     clientOrderID,
 		Side:              historySide,
 		Type:              historyType,
@@ -685,6 +782,51 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}, nil
+}
+
+func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp entity.TokocryptoOrderDetailResponse) (entity.OrderHistory, error) {
+	filledQuantity, err := tokocryptoDecimalOrZero(resp.ExecutedQty)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto filled quantity: %w", err)
+	}
+
+	executedPrice, err := tokocryptoDecimalOrZero(resp.ExecutedPrice)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto executed price: %w", err)
+	}
+
+	status := tokocryptoOrderStatusFromCode(resp.Status)
+	now := time.Now().UTC()
+
+	orderHistory.Status = status
+	orderHistory.FilledQuantity = filledQuantity
+	if executedPrice.GreaterThan(decimal.Zero) {
+		orderHistory.AvgFillPrice = &executedPrice
+	}
+	orderHistory.UpdatedAt = now
+
+	if status == "FILLED" && !orderHistory.FilledAt.Valid {
+		orderHistory.FilledAt = sql.NullTime{Time: now, Valid: true}
+	}
+
+	if strings.TrimSpace(resp.OrderID) != "" && strings.TrimSpace(orderHistory.OrderID) == "" {
+		orderHistory.OrderID = resp.OrderID
+	}
+
+	if clientID := strings.TrimSpace(resp.ClientID); clientID != "" && !orderHistory.ClientOrderID.Valid {
+		orderHistory.ClientOrderID = sql.NullString{String: clientID, Valid: true}
+	}
+
+	if resp.CreateTime > 0 && !orderHistory.CreatedAtExchange.Valid {
+		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
+	}
+
+	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	if resolvedSymbol != "" {
+		orderHistory.Symbol = resolvedSymbol
+	}
+
+	return orderHistory, nil
 }
 
 func tokocryptoOrderSideFromCode(code int32) (entity.OrderSide, error) {
@@ -724,6 +866,14 @@ func tokocryptoOrderStatusFromCode(code int32) string {
 	default:
 		return fmt.Sprintf("UNKNOWN_%d", code)
 	}
+}
+
+func tokocryptoDecimalOrZero(raw string) (decimal.Decimal, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return decimal.Zero, nil
+	}
+	return decimal.NewFromString(trimmed)
 }
 
 func tokocryptoOrderTypeCode(orderType entity.OrderType) (int, error) {
