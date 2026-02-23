@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var configPath string
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "hft-service",
@@ -25,6 +27,26 @@ to quickly create a Cobra application.`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		err := config.LoadConfig(configPath)
+		if err != nil {
+			return err
+		}
+
+		logrus.SetReportCaller(config.Env.Log.ShowCaller)
+
+		if config.Env.Env == constant.ProductionEnvironment {
+			logrus.SetFormatter(&logrus.JSONFormatter{})
+		}
+
+		logLevel, err := logrus.ParseLevel(config.Env.Log.LogLevel)
+		if err != nil {
+			return err
+		}
+		logrus.SetLevel(logLevel)
+
+		return nil
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -37,20 +59,5 @@ func Execute() {
 }
 
 func init() {
-	err := config.LoadConfig()
-	if err != nil {
-		logrus.Fatal(err)
-	}
-
-	logrus.SetReportCaller(config.Env.Log.ShowCaller)
-
-	if config.Env.Env == constant.ProductionEnvironment {
-		logrus.SetFormatter(&logrus.JSONFormatter{})
-	}
-
-	logLevel, err := logrus.ParseLevel(config.Env.Log.LogLevel)
-	if err != nil {
-		logrus.Fatal(err)
-	}
-	logrus.SetLevel(logLevel)
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "config file path (default: ./config.yml)")
 }

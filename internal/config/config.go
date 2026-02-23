@@ -1,11 +1,12 @@
 package config
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
@@ -26,7 +27,7 @@ type EnvConfig struct {
 	Port                    map[string]string         `mapstructure:"port"`
 	Exchanges               map[string]ExchangeConfig `mapstructure:"exchanges"`
 	Database                map[string]DatabaseConfig `mapstructure:"database"`
-	Redis                   RedisConfig               `mapstructure:"redis"`
+	Redis                   map[string]RedisConfig    `mapstructure:"redis"`
 	NatsJetstream           NatsJetstreamConfig       `mapstructure:"nats_jetstream"`
 }
 
@@ -74,29 +75,44 @@ type ExchangeConfig struct {
 }
 
 type RedisConfig struct {
-	MarketData RedisMarketDataConfig `mapstructure:"market_data"`
-}
-
-type RedisMarketDataConfig struct {
 	CacheDSN string `mapstructure:"cache_dsn"`
 }
 
-func LoadConfig() error {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yml")
-	viper.AddConfigPath(".")
+func LoadConfig(configPath string) error {
+	viper.Reset()
+
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		viper.SetConfigName("config")
+		viper.SetConfigType("yml")
+		viper.AddConfigPath(".")
+	} else {
+		ext := strings.ToLower(filepath.Ext(configPath))
+		if ext == ".yml" || ext == ".yaml" {
+			viper.SetConfigFile(configPath)
+		} else {
+			viper.SetConfigName(filepath.Base(configPath))
+			viper.SetConfigType("yml")
+			configDir := filepath.Dir(configPath)
+			if configDir == "." || configDir == "" {
+				viper.AddConfigPath(".")
+			} else {
+				viper.AddConfigPath(configDir)
+			}
+		}
+	}
+
 	replacer := strings.NewReplacer(".", "_")
 	viper.SetEnvKeyReplacer(replacer)
 
 	err := viper.ReadInConfig()
 	if err != nil {
-		logrus.Fatal("failed to read config file: ", err)
+		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	err = viper.Unmarshal(&Env)
 	if err != nil {
-		logrus.Fatal("failed to unmarshal config file: ", err)
-		return err
+		return fmt.Errorf("failed to unmarshal config file: %w", err)
 	}
 
 	return nil
