@@ -24,12 +24,15 @@ func StartLazyGridStrategy(cmd *cobra.Command, args []string) {
 	nc, js, err := infrastructure.NewJetstream()
 	util.ContinueOrFatal(err)
 
+	lazyGridStateStore, err := lazygrid.NewRedisLazyGridStateStore(config.Env.Redis["strategy"].CacheDSN)
+	util.ContinueOrFatal(err)
+
 	symbolMappingRepo := repository.NewSymbolMappingRepository(db)
 	marketKlineRepo := repository.NewMarketKlineRepository(db)
 
 	exchange.InitTokocryptoExchange(ctx, config.Env.Exchanges[string(entity.ExchangeTokoCrypto)], symbolMappingRepo, js, marketKlineRepo)
 
-	lazyGridService, err := lazygrid.NewLazyGridStrategy(ctx, lazygrid.DefaultLazyGridConfig(), nil, js)
+	lazyGridService, err := lazygrid.NewLazyGridStrategy(ctx, lazygrid.DefaultLazyGridConfig(), lazyGridStateStore, js)
 	util.ContinueOrFatal(err)
 
 	publishers := make([]entity.Publisher, 0)
@@ -50,6 +53,9 @@ func StartLazyGridStrategy(cmd *cobra.Command, args []string) {
 		"database": func(ctx context.Context) error {
 			cancel()
 			return db.Close()
+		},
+		"redis cache": func(ctx context.Context) error {
+			return lazyGridStateStore.Close()
 		},
 		"nats connection": func(ctx context.Context) error {
 			return infrastructure.CloseJetstream(nc)
