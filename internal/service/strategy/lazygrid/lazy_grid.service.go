@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -239,7 +240,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		return nil
 	}
 
-	if req.Data.Symbol != s.config.Symbol {
+	if !strings.EqualFold(req.Data.Symbol, s.config.Symbol) {
 		logger.Infof("skipping kline data event for symbol %s\n", req.Data.Symbol)
 		return nil
 	}
