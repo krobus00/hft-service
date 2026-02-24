@@ -91,19 +91,35 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 }
 
 func (e *TokocryptoExchange) JetstreamEventInit() error {
+	streamConfig := &nats.StreamConfig{
+		Name:      constant.KlineStreamName,
+		Subjects:  []string{constant.KlineStreamSubjectAll},
+		Retention: nats.LimitsPolicy,
+		Storage:   nats.MemoryStorage,
+		MaxAge:    5 * time.Minute,
+		MaxMsgs:   -1,
+		MaxBytes:  -1,
+	}
+
 	stream, err := e.js.StreamInfo(constant.KlineStreamName)
 	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		logrus.Error(err)
 		return err
 	}
+
 	if stream == nil {
-		logrus.Info(fmt.Sprintf("creating stream: %s\n", constant.KlineStreamName))
-		_, err = e.js.AddStream(&nats.StreamConfig{
-			Name:     constant.KlineStreamName,
-			Subjects: []string{constant.KlineStreamSubjectAll},
-		})
+		logrus.Infof("creating stream: %s", constant.KlineStreamName)
+		_, err = e.js.AddStream(streamConfig)
 		return err
 	}
+
+	logrus.Infof("updating stream: %s", constant.KlineStreamName)
+	_, err = e.js.UpdateStream(streamConfig)
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
 	return nil
 }
 
