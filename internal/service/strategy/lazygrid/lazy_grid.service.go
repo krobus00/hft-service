@@ -239,6 +239,11 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		return nil
 	}
 
+	if req.Data.Symbol != s.config.Symbol {
+		logger.Infof("skipping kline data event for symbol %s\n", req.Data.Symbol)
+		return nil
+	}
+
 	defer func() {
 		if err != nil {
 			req.RetryCount++
