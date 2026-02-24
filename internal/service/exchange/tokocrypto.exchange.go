@@ -150,6 +150,11 @@ func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats
 		return err
 	}
 
+	if req.Data.EventTime.UTC().Add(1 * time.Minute).Before(time.Now().UTC()) {
+		logger.Info("skipping kline data event that is too old")
+		return nil
+	}
+
 	defer func() {
 		if err != nil {
 			req.RetryCount++
