@@ -41,19 +41,33 @@ func NewOrderEngineService(exchanges map[entity.ExchangeName]entity.Exchange, or
 }
 
 func (e *OrderEngineService) JetstreamEventInit() error {
+	streamConfig := &nats.StreamConfig{
+		Name:      constant.OrderEngineStreamName,
+		Subjects:  []string{constant.OrderEngineStreamSubjectAll},
+		Retention: nats.WorkQueuePolicy,
+		Storage:   nats.FileStorage,
+		MaxAge:    24 * time.Hour,
+	}
+
 	stream, err := e.js.StreamInfo(constant.OrderEngineStreamName)
 	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		logrus.Error(err)
 		return err
 	}
+
 	if stream == nil {
-		logrus.Info(fmt.Sprintf("creating stream: %s\n", constant.OrderEngineStreamName))
-		_, err = e.js.AddStream(&nats.StreamConfig{
-			Name:     constant.OrderEngineStreamName,
-			Subjects: []string{constant.OrderEngineStreamSubjectAll},
-		})
+		logrus.Infof("creating stream: %s", constant.OrderEngineStreamName)
+		_, err = e.js.AddStream(streamConfig)
 		return err
 	}
+
+	logrus.Infof("updating stream: %s", constant.OrderEngineStreamName)
+	_, err = e.js.UpdateStream(streamConfig)
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
 	return nil
 }
 
