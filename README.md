@@ -62,6 +62,11 @@ flowchart TB
 - Runs strategy logic (buy/sell/hold).
 - Publishes `order_engine.place_order` when execution is needed.
 
+### Lazy Grid Strategy
+- Grid levels are unlimited by default (no hard cap).
+- Optional `MaxLongLevels` in the lazy-grid config caps concurrent long levels; `0` means unlimited.
+- `strategy.lazy_grid.reset_state_on_start` clears persisted lazy-grid state on startup.
+
 ### `order-engine-gateway`
 - Consumes place-order events.
 - Converts order payload to exchange API format.
