@@ -327,8 +327,10 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		}).Info("lazy-grid anchor reset to market price")
 	}
 	if currentLevel == s.lastGridLevel {
-		if err := s.persistStateIfNeeded(ctx, statePersisted); err != nil {
-			return err
+		if !statePersisted {
+			if err := s.persistState(ctx); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -500,9 +502,9 @@ func (s *LazyGridStrategy) hasNoActivePositions() bool {
 	return len(s.filledLevels) == 0 && len(s.pendingBuys) == 0 && len(s.pendingSells) == 0
 }
 
-// shouldResetAnchorOnRise returns true when the computed grid offset is positive (meaning price is
-// at least one grid level above the anchor) without active positions. It avoids re-anchoring on
-// price drops so the strategy can keep buying below the anchor.
+// shouldResetAnchorOnRise returns true when the computed grid offset is greater than zero
+// (level 0 represents the anchor), meaning price is above the anchor without active positions.
+// It avoids re-anchoring on price drops so the strategy can keep buying below the anchor.
 func (s *LazyGridStrategy) shouldResetAnchorOnRise(currentLevel int) bool {
 	return currentLevel > 0 && s.hasNoActivePositions()
 }
@@ -510,13 +512,6 @@ func (s *LazyGridStrategy) shouldResetAnchorOnRise(currentLevel int) bool {
 func (s *LazyGridStrategy) setAnchor(ctx context.Context, price decimal.Decimal) error {
 	s.anchorPrice = price
 	s.lastGridLevel = 0
-	return s.persistState(ctx)
-}
-
-func (s *LazyGridStrategy) persistStateIfNeeded(ctx context.Context, alreadyPersisted bool) error {
-	if alreadyPersisted {
-		return nil
-	}
 	return s.persistState(ctx)
 }
 
