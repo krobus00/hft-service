@@ -300,7 +300,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	}
 	if s.anchorPrice.Equal(decimal.Zero) {
 		if err := s.setAnchor(ctx, price); err != nil {
-			return err
+			return fmt.Errorf("set initial anchor: %w", err)
 		}
 		logrus.WithFields(logrus.Fields{
 			"anchorPrice": s.anchorPrice,
@@ -316,7 +316,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	if s.shouldReanchorOnRise(currentLevel) {
 		previousAnchor := s.anchorPrice
 		if err := s.setAnchor(ctx, price); err != nil {
-			return err
+			return fmt.Errorf("re-anchor on price rise: %w", err)
 		}
 		statePersisted = true
 		currentLevel = s.lastGridLevel
