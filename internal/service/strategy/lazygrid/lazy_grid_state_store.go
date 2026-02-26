@@ -76,7 +76,9 @@ func (s *RedisLazyGridStateStore) Save(ctx context.Context, key string, state La
 }
 
 func (s *RedisLazyGridStateStore) Reset(ctx context.Context, key string) error {
-	return s.client.Del(ctx, key, processingLockKey(key)).Err()
+	stateKey := key
+	lockKey := processingLockKey(key)
+	return s.client.Del(ctx, stateKey, lockKey).Err()
 }
 
 func (s *RedisLazyGridStateStore) AcquireProcessingLock(ctx context.Context, key string, ttl time.Duration, owner string) (bool, error) {

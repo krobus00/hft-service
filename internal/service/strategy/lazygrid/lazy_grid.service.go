@@ -313,7 +313,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	s.assumePendingOrderFills(price)
 
 	currentLevel := gridLevel(s.anchorPrice, price, s.config.GridPercent)
-	if currentLevel > 0 && len(s.filledLevels) == 0 && len(s.pendingBuys) == 0 && len(s.pendingSells) == 0 {
+	if currentLevel > 0 && s.hasNoActivePositions() {
 		previousAnchor := s.anchorPrice
 		s.anchorPrice = price
 		s.lastGridLevel = 0
@@ -495,6 +495,10 @@ func (s *LazyGridStrategy) applyStateSnapshot(state LazyGridState) {
 			s.filledLevels[level] = s.resolvePerLevelQuantity(levelPrice)
 		}
 	}
+}
+
+func (s *LazyGridStrategy) hasNoActivePositions() bool {
+	return len(s.filledLevels) == 0 && len(s.pendingBuys) == 0 && len(s.pendingSells) == 0
 }
 
 func (s *LazyGridStrategy) takeProfitPrice(level int) decimal.Decimal {
