@@ -312,13 +312,11 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	s.assumePendingOrderFills(price)
 
 	currentLevel := gridLevel(s.anchorPrice, price, s.config.GridPercent)
-	statePersisted := false
 	if s.shouldResetAnchorOnRise(currentLevel) {
 		previousAnchor := s.anchorPrice
 		if err := s.setAnchor(ctx, price); err != nil {
 			return fmt.Errorf("set anchor on price rise: %w", err)
 		}
-		statePersisted = true
 		currentLevel = gridLevel(s.anchorPrice, price, s.config.GridPercent)
 		logrus.WithFields(logrus.Fields{
 			"stateKey":       s.config.StateKey,
@@ -327,10 +325,8 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		}).Info("lazy-grid anchor reset to market price")
 	}
 	if currentLevel == s.lastGridLevel {
-		if !statePersisted {
-			if err := s.persistState(ctx); err != nil {
-				return err
-			}
+		if err := s.persistState(ctx); err != nil {
+			return err
 		}
 		return nil
 	}
