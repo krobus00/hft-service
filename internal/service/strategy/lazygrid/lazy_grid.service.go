@@ -300,7 +300,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	}
 	if s.anchorPrice.Equal(decimal.Zero) {
 		if err := s.setAnchor(ctx, price); err != nil {
-			return fmt.Errorf("set initial anchor: %w", err)
+			return fmt.Errorf("set anchor on initialization: %w", err)
 		}
 		logrus.WithFields(logrus.Fields{
 			"anchorPrice": s.anchorPrice,
@@ -313,10 +313,10 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 
 	currentLevel := gridLevel(s.anchorPrice, price, s.config.GridPercent)
 	statePersisted := false
-	if s.shouldReanchorOnRise(currentLevel) {
+	if s.shouldResetAnchorOnRise(currentLevel) {
 		previousAnchor := s.anchorPrice
 		if err := s.setAnchor(ctx, price); err != nil {
-			return fmt.Errorf("re-anchor on price rise: %w", err)
+			return fmt.Errorf("set anchor on price rise: %w", err)
 		}
 		statePersisted = true
 		currentLevel = s.lastGridLevel
@@ -503,9 +503,9 @@ func (s *LazyGridStrategy) hasNoActivePositions() bool {
 	return len(s.filledLevels) == 0 && len(s.pendingBuys) == 0 && len(s.pendingSells) == 0
 }
 
-// shouldReanchorOnRise returns true when price moves at least one grid level above the anchor
+// shouldResetAnchorOnRise returns true when price moves at least one grid level above the anchor
 // without active positions. It avoids re-anchoring on price drops so the strategy can keep buying below the anchor.
-func (s *LazyGridStrategy) shouldReanchorOnRise(currentLevel int) bool {
+func (s *LazyGridStrategy) shouldResetAnchorOnRise(currentLevel int) bool {
 	return currentLevel > 0 && s.hasNoActivePositions()
 }
 
