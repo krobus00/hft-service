@@ -34,9 +34,10 @@ type LazyGridConfig struct {
 	InitialPrice   decimal.Decimal
 	// MaxLongLevels controls maximum concurrent long levels.
 	// 0 means unlimited.
-	MaxLongLevels     int
-	StrategySource    string
-	StateKey          string
+	MaxLongLevels  int
+	StrategySource string
+	StateKey       string
+	// ResetStateOnStart clears persisted state on initialization when enabled.
 	ResetStateOnStart bool
 }
 
@@ -298,9 +299,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		return fmt.Errorf("price must be greater than zero")
 	}
 	if s.anchorPrice.Equal(decimal.Zero) {
-		s.anchorPrice = price
-		s.lastGridLevel = 0
-		if err := s.persistState(ctx); err != nil {
+		if err := s.setAnchor(ctx, price); err != nil {
 			return err
 		}
 		logrus.WithFields(logrus.Fields{
@@ -315,9 +314,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	currentLevel := gridLevel(s.anchorPrice, price, s.config.GridPercent)
 	if s.shouldReanchorOnRise(currentLevel) {
 		previousAnchor := s.anchorPrice
-		s.anchorPrice = price
-		s.lastGridLevel = 0
-		if err := s.persistState(ctx); err != nil {
+		if err := s.setAnchor(ctx, price); err != nil {
 			return err
 		}
 		logrus.WithFields(logrus.Fields{
@@ -503,6 +500,12 @@ func (s *LazyGridStrategy) hasNoActivePositions() bool {
 
 func (s *LazyGridStrategy) shouldReanchorOnRise(currentLevel int) bool {
 	return currentLevel > 0 && s.hasNoActivePositions()
+}
+
+func (s *LazyGridStrategy) setAnchor(ctx context.Context, price decimal.Decimal) error {
+	s.anchorPrice = price
+	s.lastGridLevel = 0
+	return s.persistState(ctx)
 }
 
 func (s *LazyGridStrategy) takeProfitPrice(level int) decimal.Decimal {
