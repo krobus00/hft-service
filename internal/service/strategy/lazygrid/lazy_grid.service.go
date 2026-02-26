@@ -34,23 +34,25 @@ type LazyGridConfig struct {
 	InitialPrice   decimal.Decimal
 	// MaxLongLevels controls maximum concurrent long levels.
 	// 0 means unlimited.
-	MaxLongLevels  int
-	StrategySource string
-	StateKey       string
+	MaxLongLevels     int
+	StrategySource    string
+	StateKey          string
+	ResetStateOnStart bool
 }
 
 func DefaultLazyGridConfig() LazyGridConfig {
 	return LazyGridConfig{
-		Symbol:         "tkoidr",
-		GridPercent:    decimal.NewFromFloat(0.005), // 0.5% grid
-		BaseQuantity:   decimal.NewFromFloat(50),
-		TotalBudgetIDR: decimal.NewFromInt(1_000_000),
-		BuyFeeRate:     decimal.NewFromFloat(0.002222), // 0.2222% fee for limit orders
-		SellFeeRate:    decimal.NewFromFloat(0.003322), // 0.3322% fee for limit orders
-		InitialPrice:   decimal.NewFromFloat(0),
-		MaxLongLevels:  0,
-		StrategySource: "lazy-grid",
-		StateKey:       "",
+		Symbol:            "tkoidr",
+		GridPercent:       decimal.NewFromFloat(0.005), // 0.5% grid
+		BaseQuantity:      decimal.NewFromFloat(50),
+		TotalBudgetIDR:    decimal.NewFromInt(1_000_000),
+		BuyFeeRate:        decimal.NewFromFloat(0.002222), // 0.2222% fee for limit orders
+		SellFeeRate:       decimal.NewFromFloat(0.003322), // 0.3322% fee for limit orders
+		InitialPrice:      decimal.NewFromFloat(0),
+		MaxLongLevels:     0,
+		StrategySource:    "lazy-grid",
+		StateKey:          "",
+		ResetStateOnStart: false,
 	}
 }
 
@@ -112,6 +114,12 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore 
 	}
 	if config.StateKey == "" {
 		config.StateKey = fmt.Sprintf("lazy-grid:%s:%s:%s", config.Exchange, config.Symbol, config.StrategySource)
+	}
+	if config.ResetStateOnStart && stateStore != nil {
+		if err := stateStore.Reset(ctx, config.StateKey); err != nil {
+			return nil, err
+		}
+		logrus.WithField("stateKey", config.StateKey).Info("lazy-grid state reset on start")
 	}
 
 	strategy := &LazyGridStrategy{
@@ -305,6 +313,20 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	s.assumePendingOrderFills(price)
 
 	currentLevel := gridLevel(s.anchorPrice, price, s.config.GridPercent)
+	if currentLevel > 0 && len(s.filledLevels) == 0 && len(s.pendingBuys) == 0 && len(s.pendingSells) == 0 {
+		previousAnchor := s.anchorPrice
+		s.anchorPrice = price
+		s.lastGridLevel = 0
+		if err := s.persistState(ctx); err != nil {
+			return err
+		}
+		logrus.WithFields(logrus.Fields{
+			"stateKey":       s.config.StateKey,
+			"previousAnchor": previousAnchor,
+			"anchorPrice":    s.anchorPrice,
+		}).Info("lazy-grid anchor reset to market price")
+		return nil
+	}
 	if currentLevel == s.lastGridLevel {
 		if err := s.persistState(ctx); err != nil {
 			return err
