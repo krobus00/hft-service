@@ -498,10 +498,9 @@ func (s *LazyGridStrategy) hasNoActivePositions() bool {
 	return len(s.filledLevels) == 0 && len(s.pendingBuys) == 0 && len(s.pendingSells) == 0
 }
 
-// shouldResetAnchorOnRise returns true when currentLevel is greater than zero
-// (level 0 represents the anchor; positive levels are above, negative levels below),
-// meaning price is above the anchor without active positions.
-// It avoids re-anchoring on price drops so the strategy can keep buying below the anchor.
+// shouldResetAnchorOnRise returns true when price is above the anchor (currentLevel > 0)
+// and there are no active positions. This avoids re-anchoring on price drops so the
+// strategy can keep buying below the anchor.
 func (s *LazyGridStrategy) shouldResetAnchorOnRise(currentLevel int) bool {
 	return currentLevel > 0 && s.hasNoActivePositions()
 }
