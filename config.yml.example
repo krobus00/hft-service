@@ -65,3 +65,6 @@ redis:
     max_idle_conns: 10
     max_active_conns: 100
     max_conn_lifetime: 1h
+strategy:
+  lazy_grid:
+    reset_state_on_start: false

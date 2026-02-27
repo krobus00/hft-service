@@ -37,20 +37,23 @@ type LazyGridConfig struct {
 	MaxLongLevels  int
 	StrategySource string
 	StateKey       string
+	// ResetStateOnStart clears persisted state on initialization when enabled.
+	ResetStateOnStart bool
 }
 
 func DefaultLazyGridConfig() LazyGridConfig {
 	return LazyGridConfig{
-		Symbol:         "tkoidr",
-		GridPercent:    decimal.NewFromFloat(0.005), // 0.5% grid
-		BaseQuantity:   decimal.NewFromFloat(50),
-		TotalBudgetIDR: decimal.NewFromInt(1_000_000),
-		BuyFeeRate:     decimal.NewFromFloat(0.002222), // 0.2222% fee for limit orders
-		SellFeeRate:    decimal.NewFromFloat(0.003322), // 0.3322% fee for limit orders
-		InitialPrice:   decimal.NewFromFloat(0),
-		MaxLongLevels:  0,
-		StrategySource: "lazy-grid",
-		StateKey:       "",
+		Symbol:            "tkoidr",
+		GridPercent:       decimal.NewFromFloat(0.005), // 0.5% grid
+		BaseQuantity:      decimal.NewFromFloat(50),
+		TotalBudgetIDR:    decimal.NewFromInt(1_000_000),
+		BuyFeeRate:        decimal.NewFromFloat(0.002222), // 0.2222% fee for limit orders
+		SellFeeRate:       decimal.NewFromFloat(0.003322), // 0.3322% fee for limit orders
+		InitialPrice:      decimal.NewFromFloat(0),
+		MaxLongLevels:     0,
+		StrategySource:    "lazy-grid",
+		StateKey:          "",
+		ResetStateOnStart: false,
 	}
 }
 
@@ -112,6 +115,12 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore 
 	}
 	if config.StateKey == "" {
 		config.StateKey = fmt.Sprintf("lazy-grid:%s:%s:%s", config.Exchange, config.Symbol, config.StrategySource)
+	}
+	if config.ResetStateOnStart && stateStore != nil {
+		if err := stateStore.Reset(ctx, config.StateKey); err != nil {
+			return nil, err
+		}
+		logrus.WithField("stateKey", config.StateKey).Info("lazy-grid state reset on start")
 	}
 
 	strategy := &LazyGridStrategy{
@@ -290,10 +299,8 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		return fmt.Errorf("price must be greater than zero")
 	}
 	if s.anchorPrice.Equal(decimal.Zero) {
-		s.anchorPrice = price
-		s.lastGridLevel = 0
-		if err := s.persistState(ctx); err != nil {
-			return err
+		if err := s.setAnchor(ctx, price); err != nil {
+			return fmt.Errorf("set anchor on initialization: %w", err)
 		}
 		logrus.WithFields(logrus.Fields{
 			"anchorPrice": s.anchorPrice,
@@ -305,6 +312,18 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 	s.assumePendingOrderFills(price)
 
 	currentLevel := gridLevel(s.anchorPrice, price, s.config.GridPercent)
+	if s.shouldResetAnchorOnRise(currentLevel) {
+		previousAnchor := s.anchorPrice
+		if err := s.setAnchor(ctx, price); err != nil {
+			return fmt.Errorf("set anchor on price rise: %w", err)
+		}
+		currentLevel = gridLevel(s.anchorPrice, price, s.config.GridPercent)
+		logrus.WithFields(logrus.Fields{
+			"stateKey":       s.config.StateKey,
+			"previousAnchor": previousAnchor,
+			"anchorPrice":    s.anchorPrice,
+		}).Info("lazy-grid anchor reset to market price")
+	}
 	if currentLevel == s.lastGridLevel {
 		if err := s.persistState(ctx); err != nil {
 			return err
@@ -473,6 +492,23 @@ func (s *LazyGridStrategy) applyStateSnapshot(state LazyGridState) {
 			s.filledLevels[level] = s.resolvePerLevelQuantity(levelPrice)
 		}
 	}
+}
+
+func (s *LazyGridStrategy) hasNoActivePositions() bool {
+	return len(s.filledLevels) == 0 && len(s.pendingBuys) == 0 && len(s.pendingSells) == 0
+}
+
+// shouldResetAnchorOnRise returns true when price is above the anchor (currentLevel > 0)
+// and there are no active positions. This avoids re-anchoring on price drops so the
+// strategy can keep buying below the anchor.
+func (s *LazyGridStrategy) shouldResetAnchorOnRise(currentLevel int) bool {
+	return currentLevel > 0 && s.hasNoActivePositions()
+}
+
+func (s *LazyGridStrategy) setAnchor(ctx context.Context, price decimal.Decimal) error {
+	s.anchorPrice = price
+	s.lastGridLevel = 0
+	return s.persistState(ctx)
 }
 
 func (s *LazyGridStrategy) takeProfitPrice(level int) decimal.Decimal {

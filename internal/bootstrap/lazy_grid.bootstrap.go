@@ -32,7 +32,9 @@ func StartLazyGridStrategy(cmd *cobra.Command, args []string) {
 
 	exchange.InitTokocryptoExchange(ctx, config.Env.Exchanges[string(entity.ExchangeTokoCrypto)], symbolMappingRepo, js, marketKlineRepo)
 
-	lazyGridService, err := lazygrid.NewLazyGridStrategy(ctx, lazygrid.DefaultLazyGridConfig(), lazyGridStateStore, js)
+	lazyGridConfig := lazygrid.DefaultLazyGridConfig()
+	lazyGridConfig.ResetStateOnStart = config.Env.Strategy.LazyGrid.ResetStateOnStart
+	lazyGridService, err := lazygrid.NewLazyGridStrategy(ctx, lazyGridConfig, lazyGridStateStore, js)
 	util.ContinueOrFatal(err)
 
 	publishers := make([]entity.Publisher, 0)

@@ -27,6 +27,8 @@ type LazyGridPosition struct {
 type LazyGridStateStore interface {
 	Load(ctx context.Context, key string) (LazyGridState, bool, error)
 	Save(ctx context.Context, key string, state LazyGridState) error
+	// Reset removes persisted state and processing lock for the provided key.
+	Reset(ctx context.Context, key string) error
 	AcquireProcessingLock(ctx context.Context, key string, ttl time.Duration, owner string) (bool, error)
 	ReleaseProcessingLock(ctx context.Context, key string, owner string) error
 }
@@ -72,6 +74,11 @@ func (s *RedisLazyGridStateStore) Save(ctx context.Context, key string, state La
 	}
 
 	return s.client.Set(ctx, key, payload, 0).Err()
+}
+
+func (s *RedisLazyGridStateStore) Reset(ctx context.Context, key string) error {
+	lockKey := processingLockKey(key)
+	return s.client.Del(ctx, key, lockKey).Err()
 }
 
 func (s *RedisLazyGridStateStore) AcquireProcessingLock(ctx context.Context, key string, ttl time.Duration, owner string) (bool, error) {
