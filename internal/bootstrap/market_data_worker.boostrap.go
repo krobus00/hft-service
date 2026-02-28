@@ -46,7 +46,7 @@ func StartMarketDataWorker(cmd *cobra.Command, args []string) {
 	}
 
 	for _, subscriber := range subscribers {
-		err := subscriber.JetstreamEventSubscribe()
+		err := subscriber.JetstreamEventSubscribe(ctx)
 		if err != nil {
 			util.ContinueOrFatal(err)
 		}

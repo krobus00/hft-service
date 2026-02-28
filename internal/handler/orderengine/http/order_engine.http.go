@@ -23,20 +23,21 @@ var (
 )
 
 type PlaceOrderRequest struct {
-	ApiKey      string `json:"api_key"`
-	RequestID   string `json:"request_id"`
-	UserID      string `json:"user_id"`
-	OrderID     string `json:"order_id"`
-	Exchange    string `json:"exchange"`
-	Symbol      string `json:"symbol"`
-	Type        string `json:"type"`
-	Side        string `json:"side"`
-	Price       string `json:"price"`
-	Quantity    string `json:"quantity"`
-	RequestedAt int64  `json:"requested_at"`
-	ExpiredAt   int64  `json:"expired_at"`
-	Source      string `json:"source"`
-	StrategyID  string `json:"strategy_id"`
+	ApiKey         string `json:"api_key"`
+	RequestID      string `json:"request_id"`
+	UserID         string `json:"user_id"`
+	OrderID        string `json:"order_id"`
+	Exchange       string `json:"exchange"`
+	Symbol         string `json:"symbol"`
+	Type           string `json:"type"`
+	Side           string `json:"side"`
+	Price          string `json:"price"`
+	Quantity       string `json:"quantity"`
+	RequestedAt    int64  `json:"requested_at"`
+	ExpiredAt      int64  `json:"expired_at"`
+	Source         string `json:"source"`
+	StrategyID     string `json:"strategy_id"`
+	IsPaperTrading bool   `json:"is_paper_trading"`
 }
 
 type PlaceOrderResponse struct {
@@ -65,6 +66,7 @@ type PlaceOrderResponse struct {
 	ErrorMessage      *string `json:"error_message,omitempty"`
 	CreatedAt         int64   `json:"created_at"`
 	UpdatedAt         int64   `json:"updated_at"`
+	IsPaperTrading    bool    `json:"is_paper_trading"`
 }
 
 type PlaceOrderAsyncResponse struct {
@@ -191,19 +193,20 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 	}
 
 	return entity.OrderRequest{
-		RequestID:   req.RequestID,
-		UserID:      req.UserID,
-		OrderID:     null.NewString(req.OrderID, req.OrderID != "").Ptr(),
-		Exchange:    req.Exchange,
-		Symbol:      req.Symbol,
-		Type:        entity.OrderType(strings.ToUpper(req.Type)),
-		Side:        entity.OrderSide(strings.ToUpper(req.Side)),
-		Price:       price,
-		Quantity:    quantity,
-		RequestedAt: req.RequestedAt,
-		ExpiredAt:   null.NewInt(req.ExpiredAt, req.ExpiredAt != 0).Ptr(),
-		Source:      req.Source,
-		StrategyID:  null.NewString(req.StrategyID, req.StrategyID != "").Ptr(),
+		RequestID:      req.RequestID,
+		UserID:         req.UserID,
+		OrderID:        null.NewString(req.OrderID, req.OrderID != "").Ptr(),
+		Exchange:       req.Exchange,
+		Symbol:         req.Symbol,
+		Type:           entity.OrderType(strings.ToUpper(req.Type)),
+		Side:           entity.OrderSide(strings.ToUpper(req.Side)),
+		Price:          price,
+		Quantity:       quantity,
+		RequestedAt:    req.RequestedAt,
+		ExpiredAt:      null.NewInt(req.ExpiredAt, req.ExpiredAt != 0).Ptr(),
+		Source:         req.Source,
+		StrategyID:     null.NewString(req.StrategyID, req.StrategyID != "").Ptr(),
+		IsPaperTrading: req.IsPaperTrading,
 	}, nil
 }
 
@@ -306,6 +309,7 @@ func mapOrderHistoryToHTTPResponse(orderHistory *entity.OrderHistory) *PlaceOrde
 		ErrorMessage:      errorMessage,
 		CreatedAt:         orderHistory.CreatedAt.UnixMilli(),
 		UpdatedAt:         orderHistory.UpdatedAt.UnixMilli(),
+		IsPaperTrading:    orderHistory.IsPaperTrading,
 	}
 }
 

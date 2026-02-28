@@ -17,6 +17,7 @@ message PlaceOrderRequest {
 	optional int64 expired_at = 11;
 	string source = 12;
 	optional string strategy_id = 13;
+    bool is_paper_trading = 14;
 }
 
 message PlaceOrderResponse {
@@ -45,4 +46,5 @@ message PlaceOrderResponse {
 	optional string error_message = 23;
 	int64 created_at = 24;
 	int64 updated_at = 25;
+    bool is_paper_trading = 26;
 }

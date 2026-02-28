@@ -45,6 +45,7 @@ func (r *OrderHistoryRepository) Create(ctx context.Context, orderHistory *entit
 			"error_message",
 			"created_at",
 			"updated_at",
+			"is_paper_trading",
 		).
 		Values(
 			orderHistory.RequestID,
@@ -71,6 +72,7 @@ func (r *OrderHistoryRepository) Create(ctx context.Context, orderHistory *entit
 			orderHistory.ErrorMessage,
 			orderHistory.CreatedAt,
 			orderHistory.UpdatedAt,
+			orderHistory.IsPaperTrading,
 		).
 		Suffix("RETURNING id")
 

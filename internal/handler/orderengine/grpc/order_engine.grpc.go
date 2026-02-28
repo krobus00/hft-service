@@ -31,19 +31,20 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		return nil, err
 	}
 	orderHistory, err := s.orderEngineService.PlaceOrder(ctx, entity.OrderRequest{
-		RequestID:   req.GetRequestId(),
-		UserID:      req.GetUserId(),
-		Exchange:    req.GetExchange(),
-		OrderID:     null.NewString(req.GetOrderId(), req.GetOrderId() != "").Ptr(),
-		Symbol:      req.GetSymbol(),
-		Type:        entity.OrderType(req.GetType()),
-		Side:        entity.OrderSide(req.GetSide()),
-		Price:       price,
-		Quantity:    quantity,
-		RequestedAt: req.GetExpiredAt(),
-		ExpiredAt:   null.NewInt(req.GetExpiredAt(), req.GetExpiredAt() != 0).Ptr(),
-		Source:      req.GetSource(),
-		StrategyID:  null.NewString(req.GetStrategyId(), req.GetStrategyId() != "").Ptr(),
+		RequestID:      req.GetRequestId(),
+		UserID:         req.GetUserId(),
+		Exchange:       req.GetExchange(),
+		OrderID:        null.NewString(req.GetOrderId(), req.GetOrderId() != "").Ptr(),
+		Symbol:         req.GetSymbol(),
+		Type:           entity.OrderType(req.GetType()),
+		Side:           entity.OrderSide(req.GetSide()),
+		Price:          price,
+		Quantity:       quantity,
+		RequestedAt:    req.GetExpiredAt(),
+		ExpiredAt:      null.NewInt(req.GetExpiredAt(), req.GetExpiredAt() != 0).Ptr(),
+		Source:         req.GetSource(),
+		StrategyID:     null.NewString(req.GetStrategyId(), req.GetStrategyId() != "").Ptr(),
+		IsPaperTrading: req.GetIsPaperTrading(),
 	})
 	if err != nil {
 		return nil, err
@@ -74,6 +75,7 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		StrategyId:        null.NewString(orderHistory.StrategyID.String, orderHistory.StrategyID.Valid).Ptr(),
 		ErrorMessage:      null.NewString(orderHistory.ErrorMessage.String, orderHistory.ErrorMessage.Valid).Ptr(),
 		CreatedAt:         orderHistory.CreatedAt.Unix(),
-		UpdatedAt:         orderHistory.CreatedAt.Unix(),
+		UpdatedAt:         orderHistory.UpdatedAt.Unix(),
+		IsPaperTrading:    orderHistory.IsPaperTrading,
 	}, nil
 }

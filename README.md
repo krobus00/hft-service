@@ -179,7 +179,8 @@ curl --request POST \
     "price": "920",
     "quantity": "30",
     "source": "http-hit",
-    "strategy_id": "d9b0ba9a-db44-4bb4-b862-a60d2e0299a6"
+    "strategy_id": "d9b0ba9a-db44-4bb4-b862-a60d2e0299a6",
+    "is_paper_trading": true
   }'
 ```
 
@@ -196,7 +197,8 @@ curl --request POST \
   "price": "920",
   "quantity": "30",
   "source": "grpc-hit",
-  "strategy_id": "d9b0ba9a-db44-4bb4-b862-a60d2e0299a6"
+  "strategy_id": "d9b0ba9a-db44-4bb4-b862-a60d2e0299a6",
+  "is_paper_trading": true
 }
 ```
 

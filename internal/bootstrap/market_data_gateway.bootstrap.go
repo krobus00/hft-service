@@ -59,7 +59,7 @@ func StartMarketDataGateway(cmd *cobra.Command, args []string) {
 	}
 
 	for _, publisher := range publishers {
-		err := publisher.JetstreamEventInit()
+		err := publisher.JetstreamEventInit(ctx)
 		if err != nil {
 			util.ContinueOrFatal(err)
 		}
