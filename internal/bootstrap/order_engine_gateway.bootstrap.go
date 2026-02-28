@@ -49,14 +49,14 @@ func StartOrderEngineGateway(cmd *cobra.Command, args []string) {
 	publishers := make([]entity.Publisher, 0)
 	publishers = append(publishers, orderEngineService)
 	for _, v := range publishers {
-		err = v.JetstreamEventInit()
+		err = v.JetstreamEventInit(ctx)
 		util.ContinueOrFatal(err)
 	}
 
 	subscribers := make([]entity.Subscriber, 0)
 	subscribers = append(subscribers, orderEngineService)
 	for _, v := range subscribers {
-		err = v.JetstreamEventSubscribe()
+		err = v.JetstreamEventSubscribe(ctx)
 		util.ContinueOrFatal(err)
 	}
 

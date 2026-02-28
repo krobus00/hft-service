@@ -184,8 +184,8 @@ func NewLazyGridStrategy(ctx context.Context, config LazyGridConfig, stateStore 
 	return strategy, nil
 }
 
-func (s *LazyGridStrategy) JetstreamEventInit() error {
-	stream, err := s.js.StreamInfo(constant.KlineStreamName)
+func (s *LazyGridStrategy) JetstreamEventInit(ctx context.Context) error {
+	stream, err := s.js.StreamInfo(constant.KlineStreamName, nats.Context(ctx))
 	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		logrus.Error(err)
 		return err
@@ -195,22 +195,22 @@ func (s *LazyGridStrategy) JetstreamEventInit() error {
 		_, err = s.js.AddStream(&nats.StreamConfig{
 			Name:     constant.KlineStreamName,
 			Subjects: []string{constant.KlineStreamSubjectAll},
-		})
+		}, nats.Context(ctx))
 		return err
 	}
 	return nil
 }
 
-func (s *LazyGridStrategy) JetstreamEventSubscribe() error {
-	err := s.JetstreamEventInit()
+func (s *LazyGridStrategy) JetstreamEventSubscribe(ctx context.Context) error {
+	err := s.JetstreamEventInit(ctx)
 	if err != nil {
 		logrus.Error(err)
 		return err
 	}
 
 	_, err = s.js.QueueSubscribe(
-		constant.KlineStreamSubjectData,
-		constant.KlineQueueNameStrategy,
+		constant.GetKlineStreamSubject(string(s.config.Exchange), s.config.Symbol, "*"),
+		constant.GetKlineStrategyQueueGroup(string(s.config.Exchange), s.config.StrategySource),
 		func(msg *nats.Msg) {
 			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["grid_strategy"], msg, s.handleKlineDataEvent)
 			if err != nil {
@@ -226,6 +226,7 @@ func (s *LazyGridStrategy) JetstreamEventSubscribe() error {
 		},
 		nats.ManualAck(),
 		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
+		nats.Context(ctx),
 	)
 	util.ContinueOrFatal(err)
 
@@ -261,7 +262,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 				return
 			}
 
-			err := util.PublishEvent(s.js, constant.KlineStreamSubjectData, req)
+			err := util.PublishEvent(s.js, constant.GetKlineStreamSubject(string(s.config.Exchange), s.config.Symbol, "*"), req)
 			if err != nil {
 				logger.Error(err)
 				return

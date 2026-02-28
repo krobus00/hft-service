@@ -1,9 +1,11 @@
 package entity
 
+import "context"
+
 type Publisher interface {
-	JetstreamEventInit() error
+	JetstreamEventInit(ctx context.Context) error
 }
 
 type Subscriber interface {
-	JetstreamEventSubscribe() error
+	JetstreamEventSubscribe(ctx context.Context) error
 }

@@ -90,18 +90,17 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 	return newExchange
 }
 
-func (e *TokocryptoExchange) JetstreamEventInit() error {
+func (e *TokocryptoExchange) JetstreamEventInit(ctx context.Context) error {
 	streamConfig := &nats.StreamConfig{
 		Name:      constant.KlineStreamName,
 		Subjects:  []string{constant.KlineStreamSubjectAll},
+		Storage:   nats.FileStorage, // use MemoryStorage for ultra-low latency
 		Retention: nats.LimitsPolicy,
-		Storage:   nats.MemoryStorage,
 		MaxAge:    5 * time.Minute,
-		MaxMsgs:   -1,
-		MaxBytes:  -1,
+		Replicas:  1,
 	}
 
-	stream, err := e.js.StreamInfo(constant.KlineStreamName)
+	stream, err := e.js.StreamInfo(constant.KlineStreamName, nats.Context(ctx))
 	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		logrus.Error(err)
 		return err
@@ -109,30 +108,32 @@ func (e *TokocryptoExchange) JetstreamEventInit() error {
 
 	if stream == nil {
 		logrus.Infof("creating stream: %s", constant.KlineStreamName)
-		_, err = e.js.AddStream(streamConfig)
+		_, err = e.js.AddStream(streamConfig, nats.Context(ctx))
 		return err
 	}
 
 	logrus.Infof("updating stream: %s", constant.KlineStreamName)
-	_, err = e.js.UpdateStream(streamConfig)
+	_, err = e.js.UpdateStream(streamConfig, nats.Context(ctx))
 	if err != nil {
 		logrus.Error(err)
 		return err
 	}
 
+	logrus.Infof("stream %s is ready", constant.KlineStreamName)
+
 	return nil
 }
 
-func (e *TokocryptoExchange) JetstreamEventSubscribe() error {
-	err := e.JetstreamEventInit()
+func (e *TokocryptoExchange) JetstreamEventSubscribe(ctx context.Context) error {
+	err := e.JetstreamEventInit(ctx)
 	if err != nil {
 		logrus.Error(err)
 		return err
 	}
 
 	_, err = e.js.QueueSubscribe(
-		constant.KlineStreamSubjectData,
-		constant.KlineQueueNameInsert,
+		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeTokoCrypto)),
+		constant.GetKlineInsertQueueGroup(string(entity.ExchangeTokoCrypto)),
 		func(msg *nats.Msg) {
 			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
 			if err != nil {
@@ -178,7 +179,7 @@ func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats
 				return
 			}
 
-			err := util.PublishEvent(e.js, constant.KlineStreamSubjectData, req)
+			err := util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), req.Data.Symbol, req.Data.Interval), req)
 			if err != nil {
 				logger.Error(err)
 				return
@@ -304,7 +305,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 		UpdatedAt:        now,
 	}
 
-	err = util.PublishEvent(e.js, constant.KlineStreamSubjectData, entity.MarketKlineEvent{
+	err = util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), data.Symbol, data.Interval), entity.MarketKlineEvent{
 		RetryCount: 0,
 		Data:       data,
 	})
@@ -365,7 +366,6 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 
 		attempt = 0
 		conn.SetPongHandler(func(string) error {
-			logrus.Info("pong")
 			return nil
 		})
 
@@ -374,6 +374,8 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 			if v.Exchange != string(entity.ExchangeTokoCrypto) {
 				continue
 			}
+
+			logrus.Infof("start subscription for symbol: %s, interval: %s", v.Symbol, v.Interval)
 
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(v.Payload)); err != nil {
 				conn.Close()
@@ -582,6 +584,8 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		if errMsg == "" {
 			errMsg = "unknown error"
 		}
+
+		logrus.Infof("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
 
 		return nil, fmt.Errorf("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
 	}

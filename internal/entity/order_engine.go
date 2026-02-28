@@ -19,19 +19,20 @@ const (
 )
 
 type OrderRequest struct {
-	RequestID   string
-	UserID      string
-	OrderID     *string
-	Exchange    string
-	Symbol      string
-	Type        OrderType
-	Side        OrderSide
-	Price       decimal.Decimal
-	Quantity    decimal.Decimal
-	RequestedAt int64
-	ExpiredAt   *int64
-	Source      string
-	StrategyID  *string
+	RequestID      string          `json:"request_id"`
+	UserID         string          `json:"user_id"`
+	OrderID        *string         `json:"order_id"`
+	Exchange       string          `json:"exchange"`
+	Symbol         string          `json:"symbol"`
+	Type           OrderType       `json:"type"`
+	Side           OrderSide       `json:"side"`
+	Price          decimal.Decimal `json:"price"`
+	Quantity       decimal.Decimal `json:"quantity"`
+	RequestedAt    int64           `json:"requested_at"`
+	ExpiredAt      *int64          `json:"expired_at,omitempty"`
+	Source         string          `json:"source"`
+	StrategyID     *string         `json:"strategy_id,omitempty"`
+	IsPaperTrading bool            `json:"is_paper_trading"`
 }
 
 type OrderRequestEvent struct {
@@ -65,6 +66,7 @@ type OrderHistory struct {
 	ErrorMessage      sql.NullString   `db:"error_message" json:"error_message"`
 	CreatedAt         time.Time        `db:"created_at" json:"created_at"`
 	UpdatedAt         time.Time        `db:"updated_at" json:"updated_at"`
+	IsPaperTrading    bool             `db:"is_paper_trading" json:"is_paper_trading"`
 }
 
 func (o OrderHistory) TableName() string {

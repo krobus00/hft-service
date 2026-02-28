@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/krobus00/hft-service/internal/config"
@@ -14,6 +15,7 @@ import (
 	"github.com/krobus00/hft-service/internal/repository"
 	"github.com/krobus00/hft-service/internal/util"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,6 +26,7 @@ var (
 	ErrCreateOrderHistoryFailed    = errors.New("failed to create order history")
 	ErrDuplicateOrder              = errors.New("duplicate order")
 	ErrPublishOrderEventFailed     = errors.New("failed to publish order event")
+	ErrInvalidAPIKey               = errors.New("invalid API key")
 )
 
 type OrderEngineService struct {
@@ -40,7 +43,7 @@ func NewOrderEngineService(exchanges map[entity.ExchangeName]entity.Exchange, or
 	}
 }
 
-func (e *OrderEngineService) JetstreamEventInit() error {
+func (e *OrderEngineService) JetstreamEventInit(ctx context.Context) error {
 	streamConfig := &nats.StreamConfig{
 		Name:      constant.OrderEngineStreamName,
 		Subjects:  []string{constant.OrderEngineStreamSubjectAll},
@@ -49,7 +52,7 @@ func (e *OrderEngineService) JetstreamEventInit() error {
 		MaxAge:    24 * time.Hour,
 	}
 
-	stream, err := e.js.StreamInfo(constant.OrderEngineStreamName)
+	stream, err := e.js.StreamInfo(constant.OrderEngineStreamName, nats.Context(ctx))
 	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		logrus.Error(err)
 		return err
@@ -57,12 +60,12 @@ func (e *OrderEngineService) JetstreamEventInit() error {
 
 	if stream == nil {
 		logrus.Infof("creating stream: %s", constant.OrderEngineStreamName)
-		_, err = e.js.AddStream(streamConfig)
+		_, err = e.js.AddStream(streamConfig, nats.Context(ctx))
 		return err
 	}
 
 	logrus.Infof("updating stream: %s", constant.OrderEngineStreamName)
-	_, err = e.js.UpdateStream(streamConfig)
+	_, err = e.js.UpdateStream(streamConfig, nats.Context(ctx))
 	if err != nil {
 		logrus.Error(err)
 		return err
@@ -71,8 +74,8 @@ func (e *OrderEngineService) JetstreamEventInit() error {
 	return nil
 }
 
-func (e *OrderEngineService) JetstreamEventSubscribe() error {
-	err := e.JetstreamEventInit()
+func (e *OrderEngineService) JetstreamEventSubscribe(ctx context.Context) error {
+	err := e.JetstreamEventInit(ctx)
 	if err != nil {
 		logrus.Error(err)
 		return err
@@ -173,6 +176,18 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, ErrDuplicateOrder
 	}
 
+	if order.IsPaperTrading {
+		orderHistory := buildPaperOrderHistory(order)
+
+		err := s.orderHistoryRepo.Create(ctx, orderHistory)
+		if err != nil {
+			logrus.Error(err)
+			return nil, ErrCreateOrderHistoryFailed
+		}
+
+		return orderHistory, nil
+	}
+
 	orderHistory, err := exchange.PlaceOrder(ctx, order)
 	if err != nil {
 		logrus.Error(err)
@@ -205,4 +220,66 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 	}
 
 	return nil
+}
+
+func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
+	now := time.Now().UTC()
+
+	sentAt := sql.NullTime{Time: now, Valid: true}
+	if order.RequestedAt > 0 {
+		sentAt = sql.NullTime{Time: time.UnixMilli(order.RequestedAt).UTC(), Valid: true}
+	}
+
+	acknowledgedAt := sql.NullTime{Time: now, Valid: true}
+	filledAt := sql.NullTime{Time: now, Valid: true}
+
+	strategyID := sql.NullString{}
+	if order.StrategyID != nil {
+		trimmed := strings.TrimSpace(*order.StrategyID)
+		if trimmed != "" {
+			strategyID = sql.NullString{String: trimmed, Valid: true}
+		}
+	}
+
+	clientOrderID := sql.NullString{}
+	if order.OrderID != nil {
+		trimmed := strings.TrimSpace(*order.OrderID)
+		if trimmed != "" {
+			clientOrderID = sql.NullString{String: trimmed, Valid: true}
+		}
+	}
+
+	price := order.Price
+	var avgFillPrice *decimal.Decimal
+	if price.GreaterThan(decimal.Zero) {
+		avgFillPrice = &price
+	}
+
+	return &entity.OrderHistory{
+		RequestID:         order.RequestID,
+		UserID:            order.UserID,
+		Exchange:          order.Exchange,
+		Symbol:            order.Symbol,
+		OrderID:           fmt.Sprintf("paper-%s", order.RequestID),
+		ClientOrderID:     clientOrderID,
+		Side:              order.Side,
+		Type:              order.Type,
+		Price:             &price,
+		Quantity:          order.Quantity,
+		FilledQuantity:    order.Quantity,
+		AvgFillPrice:      avgFillPrice,
+		Status:            "FILLED",
+		Leverage:          nil,
+		Fee:               nil,
+		RealizedPnl:       nil,
+		CreatedAtExchange: sql.NullTime{},
+		SentAt:            sentAt,
+		AcknowledgedAt:    acknowledgedAt,
+		FilledAt:          filledAt,
+		StrategyID:        strategyID,
+		ErrorMessage:      sql.NullString{},
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		IsPaperTrading:    true,
+	}
 }
