@@ -259,6 +259,7 @@ func (s *LazyGridStrategy) handleKlineDataEvent(ctx context.Context, msg *nats.M
 		if err != nil {
 			req.RetryCount++
 			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
+				err = nil
 				return
 			}
 

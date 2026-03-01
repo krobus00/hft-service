@@ -9,6 +9,8 @@ services:
       - ./:/workspace
     profiles:
       - tools
+    networks:
+      - hft-network
 
   redis:
     image: redis:7-alpine
@@ -23,6 +25,8 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    networks:
+      - hft-network
 
   nats:
     image: nats:2.12.4-alpine
@@ -42,6 +46,8 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    networks:
+      - hft-network
 
   postgresql:
     build: ./tools/postgre
@@ -64,7 +70,13 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+    networks:
+      - hft-network
 volumes:
   redis_data:
   nats_data:
   postgres_data:
+
+networks:
+  hft-network:
+    driver: bridge
