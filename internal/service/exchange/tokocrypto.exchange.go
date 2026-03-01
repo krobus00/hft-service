@@ -176,6 +176,7 @@ func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats
 		if err != nil {
 			req.RetryCount++
 			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
+				err = nil
 				return
 			}
 
