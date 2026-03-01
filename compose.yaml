@@ -16,6 +16,8 @@ services:
         condition: service_healthy
       migrate-market-data:
         condition: service_completed_successfully
+    networks:
+      - hft-network
 
   market-data-gateway:
     build:
@@ -34,6 +36,8 @@ services:
         condition: service_healthy
       migrate-market-data:
         condition: service_completed_successfully
+    networks:
+      - hft-network
 
   market-data-worker:
     build:
@@ -52,6 +56,8 @@ services:
         condition: service_healthy
       migrate-market-data:
         condition: service_completed_successfully
+    networks:
+      - hft-network
 
   order-engine-gateway:
     build:
@@ -73,6 +79,8 @@ services:
     ports:
       - "9800:9800"
       - "9801:9801"
+    networks:
+      - hft-network
 
   order-engine-worker:
     build:
@@ -91,6 +99,8 @@ services:
         condition: service_healthy
       migrate-order-engine:
         condition: service_completed_successfully
+    networks:
+      - hft-network
 
   redis:
     image: redis:7-alpine
@@ -105,6 +115,8 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    networks:
+      - hft-network
 
   nats:
     image: nats:2.12.4-alpine
@@ -124,6 +136,8 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    networks:
+      - hft-network
 
   postgresql:
     build: ./tools/postgre
@@ -146,6 +160,8 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+    networks:
+      - hft-network
 
   database-init:
     image: postgres:16-alpine
@@ -164,6 +180,8 @@ services:
       psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='market_data'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE market_data;"
       psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='order_engine'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE order_engine;"
     restart: "no"
+    networks:
+      - hft-network
 
   migrate-market-data:
     build:
@@ -177,6 +195,8 @@ services:
       database-init:
         condition: service_completed_successfully
     restart: "no"
+    networks:
+      - hft-network
 
   migrate-order-engine:
     build:
@@ -190,8 +210,14 @@ services:
       database-init:
         condition: service_completed_successfully
     restart: "no"
+    networks:
+      - hft-network
 
 volumes:
   redis_data:
   nats_data:
   postgres_data:
+
+networks:
+  hft-network:
+    driver: bridge

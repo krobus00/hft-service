@@ -1,0 +1,70 @@
+global:
+  nats_url: nats://localhost:4222
+  db_dsn: postgres://root:root@localhost:5432/market_data?sslmode=disable
+
+macd:
+  symbol: SOLUSDT
+  interval: 1m
+  historical_limit: 200
+
+  hist_band: 0.05
+  confirm_bars: 2
+  cooldown_bars: 3
+
+  trend_ema_fast: 50
+  trend_ema_slow: 200
+
+  exchange: tokocrypto
+  user_id: paper-1
+  source: python-macd
+  strategy_id: python-macd
+  is_paper_trading: true
+
+  kline_subject: KLINE.TOKOCRYPTO.>
+  order_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_TOKOCRYPTO_MACD
+
+  order_type: LIMIT
+  order_qty: 10
+  order_symbol: SOLUSDT
+
+anchored_vwap:
+  exchange: tokocrypto
+  symbol_in: SOLUSDT
+  symbol_out: SOLUSDT
+
+  user_id: paper-1
+  source: python-avwap
+  strategy_id: python-avwap-improved-longonly-v1
+  is_paper_trading: true
+
+  long_only: true
+
+  nats_url: nats://localhost:4222
+  kline_subject: KLINE.TOKOCRYPTO.>
+  place_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_TOKOCRYPTO_AVWAP_IMPROVED_LONGONLY
+
+  order_type: LIMIT
+  order_qty: 10.0
+  limit_slippage_bps: 3
+
+  atr_n: 14
+  atr_k: 1.2
+  min_band_pct: 0.0008
+
+  slope_lookback: 20
+  slope_min_bps: 8
+
+  vol_med_n: 60
+  vol_shock_x: 2.5
+  range_min_bps: 15
+  anchor_reset_cooldown_ms: 600000
+
+  participation_n: 120
+  min_trades_pctl: 0.3
+
+  taker_ratio_long_min: 0.52
+
+  confirm_bars: 2
+  cooldown_bars: 3
