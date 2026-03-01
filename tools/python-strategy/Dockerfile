@@ -5,5 +5,3 @@ COPY ./strategy/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ./strategy .
-
-ENTRYPOINT ["python", "example.py"]
