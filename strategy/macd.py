@@ -294,7 +294,7 @@ async def run():
         cb=handler,
     )
 
-    print("Live analyzer running...")
+    print("Live analyzer running...", flush=True)
     while True:
         await asyncio.sleep(1)
 

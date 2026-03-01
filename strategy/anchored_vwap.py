@@ -407,7 +407,8 @@ async def run():
             print(
                 f"[AVWAP+ LO] {reason} side={side} close={close:.4f} avwap={avwap:.4f} "
                 f"upper={upper:.4f} slope={slope_bps:.1f}bps taker={taker_ratio:.2f} "
-                f"trades={candle.trade_count} qv={candle.quote_volume:.2f}"
+                f"trades={candle.trade_count} qv={candle.quote_volume:.2f}",
+                flush=True,
             )
 
             await js.publish(PLACE_SUBJECT, orjson.dumps(out))
@@ -421,7 +422,7 @@ async def run():
         cb=handler,
     )
 
-    print("Anchored VWAP improved (long-only) running...")
+    print("Anchored VWAP improved (long-only) running...", flush=True)
     while True:
         await asyncio.sleep(1)
 
