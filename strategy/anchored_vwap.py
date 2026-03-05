@@ -378,11 +378,11 @@ async def run():
         d = payload["data"]
 
         if d.get("Symbol") != SYMBOL_IN:
-            print("skipping different symbol", flush=True)
+            print("skipping different symbol, symbol=", d.get("Symbol"), ", expected=", SYMBOL_IN, flush=True)
             await msg.ack()
             return
         if d.get("Interval") != "1m":
-            print("skipping non-1m interval", flush=True)
+            print("skipping non-1m interval, interval=", d.get("Interval"), ", expected=1m", flush=True)
             await msg.ack()
             return
         if not d.get("IsClosed"):

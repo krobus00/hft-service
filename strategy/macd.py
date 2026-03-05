@@ -248,12 +248,12 @@ async def run():
             return
 
         if d.get("Symbol") != SYMBOL:
-            print("skipping different symbol", flush=True)
+            print("skipping different symbol, symbol=", d.get("Symbol"), flush=True)
             await msg.ack()
             return
 
         if d.get("Interval") != INTERVAL:
-            print("skipping non-1m interval", flush=True)
+            print("skipping non-1m interval, interval=", d.get("Interval"), flush=True)
             await msg.ack()
             return
         price = float(d["ClosePrice"])
