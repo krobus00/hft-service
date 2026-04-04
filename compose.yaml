@@ -164,13 +164,15 @@ services:
     build: ./tools/postgre
     container_name: hft-postgresql
     environment:
-      POSTGRES_DB: hft
       POSTGRES_USER: root
       POSTGRES_PASSWORD: root
+      POSTGRES_DB: hft
+      POSTGRES_MULTIPLE_DATABASES: market_data,order_engine,analytics
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./tools/postgre/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U root -d hft"]
       interval: 5s
