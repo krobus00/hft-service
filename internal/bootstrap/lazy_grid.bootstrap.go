@@ -29,7 +29,7 @@ func StartLazyGridStrategy(cmd *cobra.Command, args []string) {
 	symbolMappingRepo := repository.NewSymbolMappingRepository(db)
 	marketKlineRepo := repository.NewMarketKlineRepository(db)
 
-	initConfiguredExchanges(ctx, symbolMappingRepo, js, marketKlineRepo)
+	initConfiguredExchanges(ctx, symbolMappingRepo, nil, js, marketKlineRepo)
 
 	lazyGridConfig := lazygrid.DefaultLazyGridConfig()
 	lazyGridConfig.ResetStateOnStart = config.Env.Strategy.LazyGrid.ResetStateOnStart

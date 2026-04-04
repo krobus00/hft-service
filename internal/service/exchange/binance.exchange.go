@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -36,6 +38,8 @@ const (
 	binanceWSReconnectMaxDelay = 15 * time.Second
 	binanceWSReconnectFactor   = 2.0
 	binanceWSDialTimeout       = 12 * time.Second
+	binanceWSReadPollInterval  = 1 * time.Second
+	binanceWSResyncInterval    = 30 * time.Second
 )
 
 var binanceClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -49,9 +53,11 @@ type BinanceExchange struct {
 
 	symbolPrecisionMu sync.RWMutex
 	symbolPrecision   map[string]binanceSymbolPrecision
-	symbolMapping     entity.ExchangeSymbolMapping
+	symbolMapping     atomic.Value
 	js                nats.JetStreamContext
 	marketKlineRepo   *repository.MarketKlineRepository
+	symbolMappingRepo *repository.SymbolMappingRepository
+	klineSubRepo      *repository.KlineSubscriptionRepository
 }
 
 type binanceSymbolPrecision struct {
@@ -59,7 +65,7 @@ type binanceSymbolPrecision struct {
 	QuotePrecision int32
 }
 
-func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConfig, symbolMappingRepo *repository.SymbolMappingRepository, js nats.JetStreamContext, marketKlineRepo *repository.MarketKlineRepository) *BinanceExchange {
+func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConfig, symbolMappingRepo *repository.SymbolMappingRepository, klineSubRepo *repository.KlineSubscriptionRepository, js nats.JetStreamContext, marketKlineRepo *repository.MarketKlineRepository) *BinanceExchange {
 	symbolMapping, err := symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeBinance))
 	util.ContinueOrFatal(err)
 
@@ -81,10 +87,12 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 		baseURL:         strings.TrimRight(baseURL, "/"),
 		recvWindow:      recvWindow,
 		httpClient:      &http.Client{Timeout: 15 * time.Second},
-		symbolMapping:   symbolMapping,
 		js:              js,
 		marketKlineRepo: marketKlineRepo,
+		symbolMappingRepo: symbolMappingRepo,
+		klineSubRepo:      klineSubRepo,
 	}
+	newExchange.storeSymbolMapping(symbolMapping)
 
 	RegisterExchange(entity.ExchangeBinance, newExchange)
 
@@ -324,13 +332,64 @@ func (e *BinanceExchange) resolveInternalSymbol(exchangeSymbol string) string {
 		return ""
 	}
 
-	for internalSymbol, klineSymbol := range e.symbolMapping[string(entity.ExchangeBinance)] {
+	mapping := e.symbolMappingSnapshot()
+	for internalSymbol, klineSymbol := range mapping[string(entity.ExchangeBinance)] {
 		if strings.EqualFold(strings.TrimSpace(klineSymbol), normalized) {
 			return internalSymbol
 		}
 	}
 
 	return normalized
+}
+
+func (e *BinanceExchange) symbolMappingSnapshot() entity.ExchangeSymbolMapping {
+	raw := e.symbolMapping.Load()
+	if raw == nil {
+		return nil
+	}
+
+	mapping, ok := raw.(entity.ExchangeSymbolMapping)
+	if !ok {
+		return nil
+	}
+
+	return mapping
+}
+
+func (e *BinanceExchange) storeSymbolMapping(mapping entity.ExchangeSymbolMapping) {
+	e.symbolMapping.Store(mapping)
+}
+
+func (e *BinanceExchange) refreshSymbolMapping(ctx context.Context) error {
+	if e.symbolMappingRepo == nil {
+		return nil
+	}
+
+	mapping, err := e.symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeBinance))
+	if err != nil {
+		return err
+	}
+
+	e.storeSymbolMapping(mapping)
+
+	return nil
+}
+
+func (e *BinanceExchange) loadLatestSubscriptions(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
+	if e.klineSubRepo == nil {
+		return fallback, nil
+	}
+
+	subs, err := e.klineSubRepo.GetByExchange(ctx, string(entity.ExchangeBinance))
+	if err != nil {
+		return nil, err
+	}
+
+	return subs, nil
+}
+
+func (e *BinanceExchange) resyncSymbolMappingAndSubscriptions(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
+	return resyncSymbolMappingAndSubscriptions(ctx, conn, fallback, e.refreshSymbolMapping, e.loadLatestSubscriptions)
 }
 
 func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
@@ -346,6 +405,16 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	attempt := 0
+	activeSubscriptions := subscriptions
+
+	if resyncedSubscriptions, err := e.resyncSymbolMappingAndSubscriptions(ctx, nil, activeSubscriptions); err != nil {
+		logrus.WithError(err).Warn("binance initial resync failed; starting with existing subscriptions")
+	} else {
+		activeSubscriptions = resyncedSubscriptions
+	}
+
+	resyncTicker := time.NewTicker(binanceWSResyncInterval)
+	defer resyncTicker.Stop()
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -378,7 +447,7 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 			return nil
 		})
 
-		for _, v := range subscriptions {
+		for _, v := range activeSubscriptions {
 			// only subs binance kline data, ignore other subs if any
 			if v.Exchange != string(entity.ExchangeBinance) {
 				continue
@@ -431,13 +500,40 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 		}(conn)
 
 		readErr := false
+		shouldResubscribe := false
 		for {
+			select {
+			case <-ctx.Done():
+				close(stopPing)
+				close(ctxDone)
+				return nil
+			case <-resyncTicker.C:
+				resyncedSubscriptions, err := e.resyncSymbolMappingAndSubscriptions(ctx, conn, activeSubscriptions)
+				if err != nil {
+					logrus.WithError(err).Warn("binance resync failed")
+					continue
+				}
+
+				activeSubscriptions = resyncedSubscriptions
+				shouldResubscribe = true
+			default:
+			}
+
+			_ = conn.SetReadDeadline(time.Now().Add(binanceWSReadPollInterval))
 			_, message, err := conn.ReadMessage()
 			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+
 				if ctx.Err() != nil {
 					close(stopPing)
 					close(ctxDone)
 					return nil
+				}
+
+				if shouldResubscribe {
+					break
 				}
 
 				readErr = true
@@ -455,6 +551,11 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 		close(stopPing)
 		close(ctxDone)
 		_ = conn.Close()
+
+		if shouldResubscribe {
+			logrus.Info("binance websocket resync completed; reconnecting with latest subscriptions")
+			continue
+		}
 
 		if !readErr {
 			continue
@@ -479,7 +580,8 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		return nil, fmt.Errorf("binance credentials are missing in config")
 	}
 
-	orderSymbol, ok := e.symbolMapping[string(entity.ExchangeBinance)][order.Symbol]
+	mapping := e.symbolMappingSnapshot()
+	orderSymbol, ok := mapping[string(entity.ExchangeBinance)][order.Symbol]
 	if !ok {
 		orderSymbol = order.Symbol
 	}
@@ -620,7 +722,9 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	}
 
 	orderSymbol := orderHistory.Symbol
-	if mapped, ok := e.symbolMapping[string(entity.ExchangeBinance)][orderSymbol]; ok {
+	mapping := e.symbolMappingSnapshot()
+	mapped, ok := mapping[string(entity.ExchangeBinance)][orderSymbol]
+	if ok {
 		orderSymbol = mapped
 	}
 	orderSymbol = strings.TrimSpace(orderSymbol)

@@ -29,7 +29,7 @@ func StartMarketDataGateway(cmd *cobra.Command, args []string) {
 	symbolMappingRepo := repository.NewSymbolMappingRepository(db)
 	marketKlineRepo := repository.NewMarketKlineRepository(db)
 
-	initConfiguredExchanges(ctx, symbolMappingRepo, js, marketKlineRepo)
+	initConfiguredExchanges(ctx, symbolMappingRepo, klineSubscriptionRepo, js, marketKlineRepo)
 
 	var subscriptionWG sync.WaitGroup
 

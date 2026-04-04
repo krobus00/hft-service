@@ -27,7 +27,7 @@ func StartMarketDataWorker(cmd *cobra.Command, args []string) {
 	symbolMappingRepo := repository.NewSymbolMappingRepository(db)
 	marketKlineRepo := repository.NewMarketKlineRepository(db)
 
-	initConfiguredExchanges(ctx, symbolMappingRepo, js, marketKlineRepo)
+	initConfiguredExchanges(ctx, symbolMappingRepo, nil, js, marketKlineRepo)
 
 	publishers := make([]entity.Publisher, 0)
 	for key, v := range exchange.GlobalExchangeRegistry {
