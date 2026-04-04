@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,14 +28,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
-)
-
-const (
-	tokocryptoWSReconnectMinDelay = 1 * time.Second
-	tokocryptoWSReconnectMaxDelay = 15 * time.Second
-	tokocryptoWSReconnectFactor   = 2.0
-	tokocryptoWSDialTimeout       = 12 * time.Second
-	tokocryptoWSResyncInterval     = 30 * time.Second
 )
 
 var tokocryptoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
@@ -80,13 +70,13 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 	}
 
 	newExchange := &TokocryptoExchange{
-		apiKey:          strings.TrimSpace(exchangeConfig.APIKey),
-		apiSecret:       strings.TrimSpace(exchangeConfig.APISecret),
-		baseURL:         strings.TrimRight(baseURL, "/"),
-		recvWindow:      recvWindow,
-		httpClient:      &http.Client{Timeout: 15 * time.Second},
-		js:              js,
-		marketKlineRepo: marketKlineRepo,
+		apiKey:            strings.TrimSpace(exchangeConfig.APIKey),
+		apiSecret:         strings.TrimSpace(exchangeConfig.APISecret),
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		recvWindow:        recvWindow,
+		httpClient:        &http.Client{Timeout: 15 * time.Second},
+		js:                js,
+		marketKlineRepo:   marketKlineRepo,
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
 	}
@@ -391,198 +381,13 @@ func (e *TokocryptoExchange) resyncSymbolMappingAndSubscriptions(ctx context.Con
 }
 
 func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
-	wsURL := strings.TrimSpace(os.Getenv("TOKOCRYPTO_WS_URL"))
-	if wsURL == "" {
-		wsURL = "wss://stream-cloud.tokocrypto.site/stream"
-	}
-
-	wsHost, err := url.Parse(wsURL)
-	if err != nil {
-		return fmt.Errorf("invalid tokocrypto ws url: %w", err)
-	}
-
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	attempt := 0
-	activeSubscriptions := subscriptions
-
-	if resyncedSubscriptions, err := e.resyncSymbolMappingAndSubscriptions(ctx, nil, activeSubscriptions); err != nil {
-		logrus.WithError(err).Warn("tokocrypto initial resync failed; starting with existing subscriptions")
-	} else {
-		activeSubscriptions = resyncedSubscriptions
-	}
-
-	resyncTicker := time.NewTicker(tokocryptoWSResyncInterval)
-	defer resyncTicker.Stop()
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
-
-		logrus.Infof("connecting to %s", wsHost.String())
-		dialer := *websocket.DefaultDialer
-		dialer.HandshakeTimeout = tokocryptoWSDialTimeout
-
-		dialCtx, cancelDial := context.WithTimeout(ctx, tokocryptoWSDialTimeout)
-		conn, _, err := dialer.DialContext(dialCtx, wsHost.String(), nil)
-		cancelDial()
-		if err != nil {
-			wait := tokocryptoReconnectDelay(attempt, rng)
-			attempt++
-			logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("tokocrypto ws dial failed: %v", err)
-			select {
-			case <-time.After(wait):
-				continue
-			case <-ctx.Done():
-				return nil
-			}
-		}
-
-		logrus.Infof("connected to %s", wsHost.String())
-
-		attempt = 0
-		conn.SetPongHandler(func(string) error {
-			return nil
-		})
-
-		for _, v := range activeSubscriptions {
-			// only subs tokocrypto kline data, ignore other subs if any
-			if v.Exchange != string(entity.ExchangeTokoCrypto) {
-				continue
-			}
-
-			logrus.Infof("start subscription for symbol: %s, interval: %s", v.Symbol, v.Interval)
-
-			if err := conn.WriteMessage(websocket.TextMessage, []byte(v.Payload)); err != nil {
-				conn.Close()
-				wait := tokocryptoReconnectDelay(attempt, rng)
-				attempt++
-				logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("tokocrypto ws subscribe failed: %v", err)
-				select {
-				case <-time.After(wait):
-					continue
-				case <-ctx.Done():
-					return nil
-				}
-			}
-		}
-
-		stopPing := make(chan struct{})
-		go func(c *websocket.Conn) {
-			ticker := time.NewTicker(2 * time.Minute)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-ticker.C:
-					if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
-						logrus.Error(err)
-						return
-					}
-				case <-ctx.Done():
-					return
-				case <-stopPing:
-					return
-				}
-			}
-		}(conn)
-
-		ctxDone := make(chan struct{})
-		go func(c *websocket.Conn) {
-			select {
-			case <-ctx.Done():
-				_ = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-				_ = c.Close()
-			case <-ctxDone:
-			}
-		}(conn)
-
-		messageCh := make(chan []byte, 1)
-		readErrCh := make(chan error, 1)
-		go func(c *websocket.Conn) {
-			for {
-				_, message, err := c.ReadMessage()
-				if err != nil {
-					select {
-					case readErrCh <- err:
-					default:
-					}
-					return
-				}
-
-				select {
-				case messageCh <- message:
-				case <-ctx.Done():
-					return
-				case <-stopPing:
-					return
-				}
-			}
-		}(conn)
-
-		readErr := false
-		shouldResubscribe := false
-	readLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				close(stopPing)
-				close(ctxDone)
-				return nil
-			case <-resyncTicker.C:
-				resyncedSubscriptions, err := e.resyncSymbolMappingAndSubscriptions(ctx, conn, activeSubscriptions)
-				if err != nil {
-					logrus.WithError(err).Warn("tokocrypto resync failed")
-					continue
-				}
-
-				activeSubscriptions = resyncedSubscriptions
-				shouldResubscribe = true
-			case message := <-messageCh:
-				err := e.HandleKlineData(ctx, message)
-				if err != nil {
-					logrus.Errorf("tokocrypto ws handle kline data failed: %v", err)
-					continue
-				}
-			case err := <-readErrCh:
-				if ctx.Err() != nil {
-					close(stopPing)
-					close(ctxDone)
-					return nil
-				}
-
-				if shouldResubscribe {
-					break readLoop
-				}
-
-				readErr = true
-				logrus.Errorf("tokocrypto ws read failed: %v", err)
-				break readLoop
-			}
-		}
-
-		close(stopPing)
-		close(ctxDone)
-		_ = conn.Close()
-
-		if shouldResubscribe {
-			logrus.Info("tokocrypto websocket resync completed; reconnecting with latest subscriptions")
-			continue
-		}
-
-		if !readErr {
-			continue
-		}
-
-		wait := tokocryptoReconnectDelay(attempt, rng)
-		attempt++
-		logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warn("reconnecting tokocrypto ws")
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return nil
-		}
-	}
+	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
+		ExchangeName:  entity.ExchangeTokoCrypto,
+		WSURLEnvKey:   "TOKOCRYPTO_WS_URL",
+		DefaultWSURL:  "wss://stream-cloud.tokocrypto.site/stream",
+		Resync:        e.resyncSymbolMappingAndSubscriptions,
+		HandleMessage: e.HandleKlineData,
+	}, subscriptions)
 }
 
 func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
@@ -1158,25 +963,4 @@ func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol 
 	}
 
 	return nil
-}
-
-func tokocryptoReconnectDelay(attempt int, rng *rand.Rand) time.Duration {
-	backoff := float64(tokocryptoWSReconnectMinDelay) * math.Pow(tokocryptoWSReconnectFactor, float64(attempt))
-	if backoff > float64(tokocryptoWSReconnectMaxDelay) {
-		backoff = float64(tokocryptoWSReconnectMaxDelay)
-	}
-
-	base := time.Duration(backoff)
-	if tokocryptoWSReconnectMaxDelay <= tokocryptoWSReconnectMinDelay {
-		return base
-	}
-
-	jitterWindow := tokocryptoWSReconnectMaxDelay - tokocryptoWSReconnectMinDelay
-	jitter := time.Duration(rng.Int63n(int64(jitterWindow) + 1))
-	result := base + jitter
-	if result > tokocryptoWSReconnectMaxDelay {
-		return tokocryptoWSReconnectMaxDelay
-	}
-
-	return result
 }

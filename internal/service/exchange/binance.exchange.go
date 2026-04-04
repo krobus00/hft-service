@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,13 +30,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	binanceWSReconnectMinDelay = 1 * time.Second
-	binanceWSReconnectMaxDelay = 15 * time.Second
-	binanceWSReconnectFactor   = 2.0
-	binanceWSDialTimeout       = 12 * time.Second
-	binanceWSResyncInterval    = 30 * time.Second
-)
+const ()
 
 var binanceClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
@@ -391,198 +383,13 @@ func (e *BinanceExchange) resyncSymbolMappingAndSubscriptions(ctx context.Contex
 }
 
 func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
-	wsURL := strings.TrimSpace(os.Getenv("BINANCE_WS_URL"))
-	if wsURL == "" {
-		wsURL = "wss://stream.binance.com:9443/stream"
-	}
-
-	wsHost, err := url.Parse(wsURL)
-	if err != nil {
-		return fmt.Errorf("invalid binance ws url: %w", err)
-	}
-
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	attempt := 0
-	activeSubscriptions := subscriptions
-
-	if resyncedSubscriptions, err := e.resyncSymbolMappingAndSubscriptions(ctx, nil, activeSubscriptions); err != nil {
-		logrus.WithError(err).Warn("binance initial resync failed; starting with existing subscriptions")
-	} else {
-		activeSubscriptions = resyncedSubscriptions
-	}
-
-	resyncTicker := time.NewTicker(binanceWSResyncInterval)
-	defer resyncTicker.Stop()
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
-
-		logrus.Infof("connecting to %s", wsHost.String())
-		dialer := *websocket.DefaultDialer
-		dialer.HandshakeTimeout = binanceWSDialTimeout
-
-		dialCtx, cancelDial := context.WithTimeout(ctx, binanceWSDialTimeout)
-		conn, _, err := dialer.DialContext(dialCtx, wsHost.String(), nil)
-		cancelDial()
-		if err != nil {
-			wait := binanceReconnectDelay(attempt, rng)
-			attempt++
-			logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("binance ws dial failed: %v", err)
-			select {
-			case <-time.After(wait):
-				continue
-			case <-ctx.Done():
-				return nil
-			}
-		}
-
-		logrus.Infof("connected to %s", wsHost.String())
-
-		attempt = 0
-		conn.SetPongHandler(func(string) error {
-			return nil
-		})
-
-		for _, v := range activeSubscriptions {
-			// only subs binance kline data, ignore other subs if any
-			if v.Exchange != string(entity.ExchangeBinance) {
-				continue
-			}
-
-			logrus.Infof("start subscription for symbol: %s, interval: %s", v.Symbol, v.Interval)
-
-			if err := conn.WriteMessage(websocket.TextMessage, []byte(v.Payload)); err != nil {
-				conn.Close()
-				wait := binanceReconnectDelay(attempt, rng)
-				attempt++
-				logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("binance ws subscribe failed: %v", err)
-				select {
-				case <-time.After(wait):
-					continue
-				case <-ctx.Done():
-					return nil
-				}
-			}
-		}
-
-		stopPing := make(chan struct{})
-		go func(c *websocket.Conn) {
-			ticker := time.NewTicker(2 * time.Minute)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-ticker.C:
-					if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
-						logrus.Error(err)
-						return
-					}
-				case <-ctx.Done():
-					return
-				case <-stopPing:
-					return
-				}
-			}
-		}(conn)
-
-		ctxDone := make(chan struct{})
-		go func(c *websocket.Conn) {
-			select {
-			case <-ctx.Done():
-				_ = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-				_ = c.Close()
-			case <-ctxDone:
-			}
-		}(conn)
-
-		messageCh := make(chan []byte, 1)
-		readErrCh := make(chan error, 1)
-		go func(c *websocket.Conn) {
-			for {
-				_, message, err := c.ReadMessage()
-				if err != nil {
-					select {
-					case readErrCh <- err:
-					default:
-					}
-					return
-				}
-
-				select {
-				case messageCh <- message:
-				case <-ctx.Done():
-					return
-				case <-stopPing:
-					return
-				}
-			}
-		}(conn)
-
-		readErr := false
-		shouldResubscribe := false
-	readLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				close(stopPing)
-				close(ctxDone)
-				return nil
-			case <-resyncTicker.C:
-				resyncedSubscriptions, err := e.resyncSymbolMappingAndSubscriptions(ctx, conn, activeSubscriptions)
-				if err != nil {
-					logrus.WithError(err).Warn("binance resync failed")
-					continue
-				}
-
-				activeSubscriptions = resyncedSubscriptions
-				shouldResubscribe = true
-			case message := <-messageCh:
-				err := e.HandleKlineData(ctx, message)
-				if err != nil {
-					logrus.Errorf("binance ws handle kline data failed: %v", err)
-					continue
-				}
-			case err := <-readErrCh:
-				if ctx.Err() != nil {
-					close(stopPing)
-					close(ctxDone)
-					return nil
-				}
-
-				if shouldResubscribe {
-					break readLoop
-				}
-
-				readErr = true
-				logrus.Errorf("binance ws read failed: %v", err)
-				break readLoop
-			}
-		}
-
-		close(stopPing)
-		close(ctxDone)
-		_ = conn.Close()
-
-		if shouldResubscribe {
-			logrus.Info("binance websocket resync completed; reconnecting with latest subscriptions")
-			continue
-		}
-
-		if !readErr {
-			continue
-		}
-
-		wait := binanceReconnectDelay(attempt, rng)
-		attempt++
-		logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warn("reconnecting binance ws")
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return nil
-		}
-	}
+	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
+		ExchangeName:  entity.ExchangeBinance,
+		WSURLEnvKey:   "BINANCE_WS_URL",
+		DefaultWSURL:  "wss://stream.binance.com:9443/stream",
+		Resync:        e.resyncSymbolMappingAndSubscriptions,
+		HandleMessage: e.HandleKlineData,
+	}, subscriptions)
 }
 
 func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
@@ -1170,25 +977,4 @@ type binanceOrderDetailResponse struct {
 	Type                string `json:"type"`
 	Side                string `json:"side"`
 	Time                int64  `json:"time"`
-}
-
-func binanceReconnectDelay(attempt int, rng *rand.Rand) time.Duration {
-	backoff := float64(binanceWSReconnectMinDelay) * math.Pow(binanceWSReconnectFactor, float64(attempt))
-	if backoff > float64(binanceWSReconnectMaxDelay) {
-		backoff = float64(binanceWSReconnectMaxDelay)
-	}
-
-	base := time.Duration(backoff)
-	if binanceWSReconnectMaxDelay <= binanceWSReconnectMinDelay {
-		return base
-	}
-
-	jitterWindow := binanceWSReconnectMaxDelay - binanceWSReconnectMinDelay
-	jitter := time.Duration(rng.Int63n(int64(jitterWindow) + 1))
-	result := base + jitter
-	if result > binanceWSReconnectMaxDelay {
-		return binanceWSReconnectMaxDelay
-	}
-
-	return result
 }
