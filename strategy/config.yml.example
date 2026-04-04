@@ -91,16 +91,50 @@ example:
   fast_ema_n: 8
   slow_ema_n: 21
   ret_lookback: 3
-  ret_entry_bps: 7
-  min_taker_ratio: 0.53
+  ret_entry_bps: 10
+  min_taker_ratio: 0.58
 
   trade_count_window: 80
   min_trade_count_pctl: 0.35
 
   atr_n: 14
-  stop_atr: 1.0
-  take_atr: 1.6
+  stop_atr: 1.1
+  take_atr: 2.0
 
-  cooldown_bars: 2
-  max_hold_bars: 20
+  min_ema_spread_bps: 5
+  min_atr_bps: 10
+  min_range_bps: 14
+  entry_confirm_bars: 2
+  min_hold_bars: 3
+  round_trip_cost_bps: 12
+  min_expected_edge_mult: 1.4
+
+  cooldown_bars: 3
+  max_hold_bars: 24
   long_only: true
+
+vwap:
+  symbol: SOLUSDT
+  interval: 1m
+
+  exchange: tokocrypto
+  user_id: paper-1
+  source: python-vwap
+  strategy_id: python-vwap-mean-revert-hf-v1
+  is_paper_trading: true
+
+  kline_subject: KLINE.TOKOCRYPTO.>
+  order_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_TOKOCRYPTO_VWAP
+
+  order_type: LIMIT
+  order_qty: 10
+  order_symbol: SOLUSDT
+  limit_slippage_bps: 2
+
+  vwap_window: 30
+  entry_threshold_bps: 5
+  tp_bps: 2
+  sl_bps: 8
+  max_hold_bars: 8
+  cooldown_bars: 1

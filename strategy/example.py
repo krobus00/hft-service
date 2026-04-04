@@ -70,6 +70,14 @@ ATR_N = EXAMPLE_CONFIG.get("atr_n", 14)
 STOP_ATR = EXAMPLE_CONFIG.get("stop_atr", 1.0)
 TAKE_ATR = EXAMPLE_CONFIG.get("take_atr", 1.6)
 
+MIN_EMA_SPREAD_BPS = EXAMPLE_CONFIG.get("min_ema_spread_bps", 4)
+MIN_ATR_BPS = EXAMPLE_CONFIG.get("min_atr_bps", 8)
+MIN_RANGE_BPS = EXAMPLE_CONFIG.get("min_range_bps", 10)
+ENTRY_CONFIRM_BARS = EXAMPLE_CONFIG.get("entry_confirm_bars", 2)
+MIN_HOLD_BARS = EXAMPLE_CONFIG.get("min_hold_bars", 3)
+ROUND_TRIP_COST_BPS = EXAMPLE_CONFIG.get("round_trip_cost_bps", 12)
+MIN_EXPECTED_EDGE_MULT = EXAMPLE_CONFIG.get("min_expected_edge_mult", 1.3)
+
 COOLDOWN_BARS = EXAMPLE_CONFIG.get("cooldown_bars", 2)
 MAX_HOLD_BARS = EXAMPLE_CONFIG.get("max_hold_bars", 20)
 LONG_ONLY = EXAMPLE_CONFIG.get("long_only", True)
@@ -170,6 +178,7 @@ class HFTMomentumStrategy:
         "entry_atr",
         "bars_in_pos",
         "cooldown",
+        "signal_streak",
     )
 
     def __init__(self):
@@ -186,6 +195,7 @@ class HFTMomentumStrategy:
         self.entry_atr: Optional[float] = None
         self.bars_in_pos = 0
         self.cooldown = 0
+        self.signal_streak = 0
 
     def on_closed_candle(self, c: Candle):
         if c.close_time_ms <= self.last_close_time_ms:
@@ -212,43 +222,68 @@ class HFTMomentumStrategy:
 
         ret = (c.close - self.close_hist[-RET_LOOKBACK - 1]) / max(1e-12, self.close_hist[-RET_LOOKBACK - 1])
         ret_bps = ret * 10_000.0
-        trend_up = ema_fast > ema_slow
+        ema_spread_bps = (ema_fast - ema_slow) / max(1e-12, c.close) * 10_000.0
+        atr_bps = atr / max(1e-12, c.close) * 10_000.0
+        range_bps = (c.high - c.low) / max(1e-12, c.close) * 10_000.0
+        trend_up = ema_fast > ema_slow and ema_spread_bps >= MIN_EMA_SPREAD_BPS
+        vol_ok = atr_bps >= MIN_ATR_BPS and range_bps >= MIN_RANGE_BPS
+        edge_ok = (TAKE_ATR * atr_bps) >= (ROUND_TRIP_COST_BPS * MIN_EXPECTED_EDGE_MULT)
 
         trades_ok = True
         if len(self.trade_count_hist) >= 30:
             thr = percentile(self.trade_count_hist, MIN_TRADE_COUNT_PCTL)
             trades_ok = c.trade_count >= thr
 
-        buy_signal = (
+        raw_buy_signal = (
             trend_up
             and ret_bps >= RET_ENTRY_BPS
             and c.taker_ratio >= MIN_TAKER_RATIO
             and trades_ok
+            and vol_ok
+            and edge_ok
         )
+
+        if raw_buy_signal:
+            self.signal_streak += 1
+        else:
+            self.signal_streak = 0
+
+        buy_signal = self.signal_streak >= max(1, ENTRY_CONFIRM_BARS)
 
         if self.pos == "LONG":
             self.bars_in_pos += 1
             stop_price = self.entry_price - STOP_ATR * self.entry_atr
             take_price = self.entry_price + TAKE_ATR * self.entry_atr
+            trend_reversal = self.bars_in_pos >= MIN_HOLD_BARS and ema_fast < ema_slow
             exit_signal = (
                 c.close <= stop_price
                 or c.close >= take_price
-                or ema_fast < ema_slow
+                or trend_reversal
                 or self.bars_in_pos >= MAX_HOLD_BARS
             )
             if exit_signal:
+                if c.close <= stop_price:
+                    reason = "STOP_LONG"
+                elif c.close >= take_price:
+                    reason = "TAKE_LONG"
+                elif trend_reversal:
+                    reason = "TREND_REVERSAL"
+                else:
+                    reason = "TIME_EXIT"
                 self.pos = "FLAT"
                 self.entry_price = None
                 self.entry_atr = None
                 self.bars_in_pos = 0
                 self.cooldown = COOLDOWN_BARS
-                return "SELL", c.close, "EXIT_LONG"
+                self.signal_streak = 0
+                return "SELL", c.close, reason
 
         if self.pos == "FLAT" and self.cooldown == 0 and buy_signal:
             self.pos = "LONG"
             self.entry_price = c.close
             self.entry_atr = atr
             self.bars_in_pos = 0
+            self.signal_streak = 0
             return "BUY", c.close, "ENTER_LONG"
 
         if not LONG_ONLY:
