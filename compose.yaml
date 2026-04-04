@@ -167,10 +167,6 @@ services:
       POSTGRES_DB: hft
       POSTGRES_USER: root
       POSTGRES_PASSWORD: root
-    command: >
-      postgres
-      -c shared_preload_libraries=pg_cron
-      -c cron.database_name=hft
     ports:
       - "5432:5432"
     volumes:
