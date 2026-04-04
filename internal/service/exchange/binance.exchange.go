@@ -82,7 +82,7 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
 	}
-	newExchange.storeSymbolMapping(symbolMapping)
+	persistSymbolMapping(&newExchange.symbolMapping, symbolMapping)
 
 	RegisterExchange(entity.ExchangeBinance, newExchange)
 
@@ -281,7 +281,12 @@ func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) e
 	if symbol == "" {
 		symbol = strings.TrimSpace(payload.Data.Symbol)
 	}
-	symbol = e.resolveInternalSymbol(symbol)
+	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeBinance,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}, symbol)
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeBinance),
@@ -316,101 +321,37 @@ func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) e
 	return nil
 }
 
-func (e *BinanceExchange) resolveInternalSymbol(exchangeSymbol string) string {
-	normalized := strings.ToUpper(strings.TrimSpace(exchangeSymbol))
-	if normalized == "" {
-		return ""
-	}
-
-	mapping := e.symbolMappingSnapshot()
-	for internalSymbol, klineSymbol := range mapping[string(entity.ExchangeBinance)] {
-		if strings.EqualFold(strings.TrimSpace(klineSymbol), normalized) {
-			return internalSymbol
-		}
-	}
-
-	return normalized
-}
-
-func (e *BinanceExchange) symbolMappingSnapshot() entity.ExchangeSymbolMapping {
-	raw := e.symbolMapping.Load()
-	if raw == nil {
-		return nil
-	}
-
-	mapping, ok := raw.(entity.ExchangeSymbolMapping)
-	if !ok {
-		return nil
-	}
-
-	return mapping
-}
-
-func (e *BinanceExchange) storeSymbolMapping(mapping entity.ExchangeSymbolMapping) {
-	e.symbolMapping.Store(mapping)
-}
-
-func (e *BinanceExchange) refreshSymbolMapping(ctx context.Context) error {
-	if e.symbolMappingRepo == nil {
-		return nil
-	}
-
-	mapping, err := e.symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeBinance))
-	if err != nil {
-		return err
-	}
-
-	e.storeSymbolMapping(mapping)
-
-	return nil
-}
-
-func (e *BinanceExchange) loadLatestSubscriptions(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
-	if e.klineSubRepo == nil {
-		return fallback, nil
-	}
-
-	subs, err := e.klineSubRepo.GetByExchange(ctx, string(entity.ExchangeBinance))
-	if err != nil {
-		return nil, err
-	}
-
-	return subs, nil
-}
-
-func (e *BinanceExchange) loadResyncState(ctx context.Context) (klineResyncState, error) {
-	state := klineResyncState{}
-
-	if e.symbolMappingRepo != nil {
-		timestamp, err := e.symbolMappingRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeBinance))
-		if err != nil {
-			return klineResyncState{}, err
-		}
-		state.SymbolMappingUpdatedAt = timestamp
-	}
-
-	if e.klineSubRepo != nil {
-		timestamp, err := e.klineSubRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeBinance))
-		if err != nil {
-			return klineResyncState{}, err
-		}
-		state.KlineSubscriptionUpdatedAt = timestamp
-	}
-
-	return state, nil
-}
-
-func (e *BinanceExchange) resyncSymbolMappingAndSubscriptions(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
-	return resyncSymbolMappingAndSubscriptions(ctx, conn, fallback, e.refreshSymbolMapping, e.loadLatestSubscriptions, e.loadResyncState)
-}
-
 func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
+	deps := exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeBinance,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}
+
 	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
-		ExchangeName:  entity.ExchangeBinance,
-		WSURLEnvKey:   "BINANCE_WS_URL",
-		DefaultWSURL:  "wss://stream.binance.com:9443/stream",
-		Resync:        e.resyncSymbolMappingAndSubscriptions,
-		LoadResyncState: e.loadResyncState,
+		ExchangeName: entity.ExchangeBinance,
+		WSURLEnvKey:  "BINANCE_WS_URL",
+		DefaultWSURL: "wss://stream.binance.com:9443/stream",
+		Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
+			return resyncSymbolMappingAndSubscriptions(
+				ctx,
+				conn,
+				fallback,
+				func(ctx context.Context) error {
+					return refreshExchangeSymbolMapping(ctx, deps)
+				},
+				func(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
+					return loadExchangeLatestSubscriptions(ctx, deps, fallback)
+				},
+				func(ctx context.Context) (klineResyncState, error) {
+					return loadExchangeResyncState(ctx, deps)
+				},
+			)
+		},
+		LoadResyncState: func(ctx context.Context) (klineResyncState, error) {
+			return loadExchangeResyncState(ctx, deps)
+		},
 		HandleMessage: e.HandleKlineData,
 	}, subscriptions)
 }
@@ -423,7 +364,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		return nil, fmt.Errorf("binance credentials are missing in config")
 	}
 
-	mapping := e.symbolMappingSnapshot()
+	mapping := snapshotSymbolMapping(&e.symbolMapping)
 	orderSymbol, ok := mapping[string(entity.ExchangeBinance)][order.Symbol]
 	if !ok {
 		orderSymbol = order.Symbol
@@ -565,7 +506,7 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	}
 
 	orderSymbol := orderHistory.Symbol
-	mapping := e.symbolMappingSnapshot()
+	mapping := snapshotSymbolMapping(&e.symbolMapping)
 	mapped, ok := mapping[string(entity.ExchangeBinance)][orderSymbol]
 	if ok {
 		orderSymbol = mapped
@@ -710,7 +651,12 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 		avgFillPrice = &executedPrice
 	}
 
-	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeBinance,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}, resp.Symbol)
 	if resolvedSymbol == "" {
 		resolvedSymbol = order.Symbol
 	}
@@ -785,7 +731,12 @@ func (e *BinanceExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderH
 		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.Time).UTC(), Valid: true}
 	}
 
-	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeBinance,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}, resp.Symbol)
 	if resolvedSymbol != "" {
 		orderHistory.Symbol = resolvedSymbol
 	}

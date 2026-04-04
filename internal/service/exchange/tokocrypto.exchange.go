@@ -80,7 +80,7 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
 	}
-	newExchange.storeSymbolMapping(symbolMapping)
+	persistSymbolMapping(&newExchange.symbolMapping, symbolMapping)
 
 	RegisterExchange(entity.ExchangeTokoCrypto, newExchange)
 
@@ -279,7 +279,12 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 	if symbol == "" {
 		symbol = strings.TrimSpace(payload.Data.Symbol)
 	}
-	symbol = e.resolveInternalSymbol(symbol)
+	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeTokoCrypto,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}, symbol)
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeTokoCrypto),
@@ -314,101 +319,37 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 	return nil
 }
 
-func (e *TokocryptoExchange) resolveInternalSymbol(exchangeSymbol string) string {
-	normalized := strings.ToUpper(strings.TrimSpace(exchangeSymbol))
-	if normalized == "" {
-		return ""
-	}
-
-	mapping := e.symbolMappingSnapshot()
-	for internalSymbol, klineSymbol := range mapping[string(entity.ExchangeTokoCrypto)] {
-		if strings.EqualFold(strings.TrimSpace(klineSymbol), normalized) {
-			return internalSymbol
-		}
-	}
-
-	return normalized
-}
-
-func (e *TokocryptoExchange) symbolMappingSnapshot() entity.ExchangeSymbolMapping {
-	raw := e.symbolMapping.Load()
-	if raw == nil {
-		return nil
-	}
-
-	mapping, ok := raw.(entity.ExchangeSymbolMapping)
-	if !ok {
-		return nil
-	}
-
-	return mapping
-}
-
-func (e *TokocryptoExchange) storeSymbolMapping(mapping entity.ExchangeSymbolMapping) {
-	e.symbolMapping.Store(mapping)
-}
-
-func (e *TokocryptoExchange) refreshSymbolMapping(ctx context.Context) error {
-	if e.symbolMappingRepo == nil {
-		return nil
-	}
-
-	mapping, err := e.symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeTokoCrypto))
-	if err != nil {
-		return err
-	}
-
-	e.storeSymbolMapping(mapping)
-
-	return nil
-}
-
-func (e *TokocryptoExchange) loadLatestSubscriptions(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
-	if e.klineSubRepo == nil {
-		return fallback, nil
-	}
-
-	subs, err := e.klineSubRepo.GetByExchange(ctx, string(entity.ExchangeTokoCrypto))
-	if err != nil {
-		return nil, err
-	}
-
-	return subs, nil
-}
-
-func (e *TokocryptoExchange) loadResyncState(ctx context.Context) (klineResyncState, error) {
-	state := klineResyncState{}
-
-	if e.symbolMappingRepo != nil {
-		timestamp, err := e.symbolMappingRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeTokoCrypto))
-		if err != nil {
-			return klineResyncState{}, err
-		}
-		state.SymbolMappingUpdatedAt = timestamp
-	}
-
-	if e.klineSubRepo != nil {
-		timestamp, err := e.klineSubRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeTokoCrypto))
-		if err != nil {
-			return klineResyncState{}, err
-		}
-		state.KlineSubscriptionUpdatedAt = timestamp
-	}
-
-	return state, nil
-}
-
-func (e *TokocryptoExchange) resyncSymbolMappingAndSubscriptions(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
-	return resyncSymbolMappingAndSubscriptions(ctx, conn, fallback, e.refreshSymbolMapping, e.loadLatestSubscriptions, e.loadResyncState)
-}
-
 func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
+	deps := exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeTokoCrypto,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}
+
 	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
 		ExchangeName:    entity.ExchangeTokoCrypto,
 		WSURLEnvKey:     "TOKOCRYPTO_WS_URL",
 		DefaultWSURL:    "wss://stream-cloud.tokocrypto.site/stream",
-		Resync:          e.resyncSymbolMappingAndSubscriptions,
-		LoadResyncState: e.loadResyncState,
+		Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
+			return resyncSymbolMappingAndSubscriptions(
+				ctx,
+				conn,
+				fallback,
+				func(ctx context.Context) error {
+					return refreshExchangeSymbolMapping(ctx, deps)
+				},
+				func(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
+					return loadExchangeLatestSubscriptions(ctx, deps, fallback)
+				},
+				func(ctx context.Context) (klineResyncState, error) {
+					return loadExchangeResyncState(ctx, deps)
+				},
+			)
+		},
+		LoadResyncState: func(ctx context.Context) (klineResyncState, error) {
+			return loadExchangeResyncState(ctx, deps)
+		},
 		HandleMessage:   e.HandleKlineData,
 	}, subscriptions)
 }
@@ -421,7 +362,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
 	}
 
-	mapping := e.symbolMappingSnapshot()
+	mapping := snapshotSymbolMapping(&e.symbolMapping)
 	orderSymbol, ok := mapping[string(entity.ExchangeTokoCrypto)][order.Symbol]
 	if !ok {
 		orderSymbol = order.Symbol
@@ -577,7 +518,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	}
 
 	orderSymbol := orderHistory.Symbol
-	mapping := e.symbolMappingSnapshot()
+	mapping := snapshotSymbolMapping(&e.symbolMapping)
 	mapped, ok := mapping[string(entity.ExchangeTokoCrypto)][orderSymbol]
 	if ok {
 		orderSymbol = mapped
@@ -730,7 +671,12 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		avgFillPrice = &executedPrice
 	}
 
-	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeTokoCrypto,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}, resp.Symbol)
 	if resolvedSymbol == "" {
 		resolvedSymbol = order.Symbol
 	}
@@ -800,7 +746,12 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
 	}
 
-	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeTokoCrypto,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}, resp.Symbol)
 	if resolvedSymbol != "" {
 		orderHistory.Symbol = resolvedSymbol
 	}
