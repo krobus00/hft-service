@@ -11,7 +11,6 @@ import (
 	"io"
 	"math"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,7 +37,6 @@ const (
 	binanceWSReconnectMaxDelay = 15 * time.Second
 	binanceWSReconnectFactor   = 2.0
 	binanceWSDialTimeout       = 12 * time.Second
-	binanceWSReadPollInterval  = 1 * time.Second
 	binanceWSResyncInterval    = 30 * time.Second
 )
 
@@ -82,13 +80,13 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 	}
 
 	newExchange := &BinanceExchange{
-		apiKey:          strings.TrimSpace(exchangeConfig.APIKey),
-		apiSecret:       strings.TrimSpace(exchangeConfig.APISecret),
-		baseURL:         strings.TrimRight(baseURL, "/"),
-		recvWindow:      recvWindow,
-		httpClient:      &http.Client{Timeout: 15 * time.Second},
-		js:              js,
-		marketKlineRepo: marketKlineRepo,
+		apiKey:            strings.TrimSpace(exchangeConfig.APIKey),
+		apiSecret:         strings.TrimSpace(exchangeConfig.APISecret),
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		recvWindow:        recvWindow,
+		httpClient:        &http.Client{Timeout: 15 * time.Second},
+		js:                js,
+		marketKlineRepo:   marketKlineRepo,
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
 	}
@@ -499,8 +497,32 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 			}
 		}(conn)
 
+		messageCh := make(chan []byte, 1)
+		readErrCh := make(chan error, 1)
+		go func(c *websocket.Conn) {
+			for {
+				_, message, err := c.ReadMessage()
+				if err != nil {
+					select {
+					case readErrCh <- err:
+					default:
+					}
+					return
+				}
+
+				select {
+				case messageCh <- message:
+				case <-ctx.Done():
+					return
+				case <-stopPing:
+					return
+				}
+			}
+		}(conn)
+
 		readErr := false
 		shouldResubscribe := false
+	readLoop:
 		for {
 			select {
 			case <-ctx.Done():
@@ -516,16 +538,13 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 
 				activeSubscriptions = resyncedSubscriptions
 				shouldResubscribe = true
-			default:
-			}
-
-			_ = conn.SetReadDeadline(time.Now().Add(binanceWSReadPollInterval))
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			case message := <-messageCh:
+				err := e.HandleKlineData(ctx, message)
+				if err != nil {
+					logrus.Errorf("binance ws handle kline data failed: %v", err)
 					continue
 				}
-
+			case err := <-readErrCh:
 				if ctx.Err() != nil {
 					close(stopPing)
 					close(ctxDone)
@@ -533,18 +552,12 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 				}
 
 				if shouldResubscribe {
-					break
+					break readLoop
 				}
 
 				readErr = true
 				logrus.Errorf("binance ws read failed: %v", err)
-				break
-			}
-
-			err = e.HandleKlineData(ctx, message)
-			if err != nil {
-				logrus.Errorf("binance ws handle kline data failed: %v", err)
-				continue
+				break readLoop
 			}
 		}
 
