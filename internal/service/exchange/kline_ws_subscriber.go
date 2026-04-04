@@ -15,11 +15,12 @@ import (
 )
 
 type klineWSSubscriberConfig struct {
-	ExchangeName  entity.ExchangeName
-	WSURLEnvKey   string
-	DefaultWSURL  string
-	Resync        func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error)
-	HandleMessage func(ctx context.Context, message []byte) error
+	ExchangeName    entity.ExchangeName
+	WSURLEnvKey     string
+	DefaultWSURL    string
+	Resync          func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error)
+	LoadResyncState func(ctx context.Context) (klineResyncState, error)
+	HandleMessage   func(ctx context.Context, message []byte) error
 }
 
 func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriberConfig, subscriptions []entity.KlineSubscription) error {
@@ -40,12 +41,23 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	attempt := 0
 	activeSubscriptions := subscriptions
+	lastResyncState := klineResyncState{}
+
+	if cfg.LoadResyncState != nil {
+		state, err := cfg.LoadResyncState(ctx)
+		if err != nil {
+			logrus.WithError(err).Warnf("%s initial resync state load failed", cfg.ExchangeName)
+		} else {
+			lastResyncState = state
+		}
+	}
 
 	if cfg.Resync != nil {
-		if resyncedSubscriptions, err := cfg.Resync(ctx, nil, activeSubscriptions); err != nil {
+		if resyncedSubscriptions, state, err := cfg.Resync(ctx, nil, activeSubscriptions); err != nil {
 			logrus.WithError(err).Warnf("%s initial resync failed; starting with existing subscriptions", cfg.ExchangeName)
 		} else {
 			activeSubscriptions = resyncedSubscriptions
+			lastResyncState = state
 		}
 	}
 
@@ -172,13 +184,26 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 				close(ctxDone)
 				return nil
 			case <-resyncTickerC:
-				resyncedSubscriptions, err := cfg.Resync(ctx, conn, activeSubscriptions)
+				if cfg.LoadResyncState != nil {
+					currentState, err := cfg.LoadResyncState(ctx)
+					if err != nil {
+						logrus.WithError(err).Warnf("%s resync state load failed", cfg.ExchangeName)
+						continue
+					}
+
+					if currentState.Equal(lastResyncState) {
+						continue
+					}
+				}
+
+				resyncedSubscriptions, state, err := cfg.Resync(ctx, conn, activeSubscriptions)
 				if err != nil {
 					logrus.WithError(err).Warnf("%s resync failed", cfg.ExchangeName)
 					continue
 				}
 
 				activeSubscriptions = resyncedSubscriptions
+				lastResyncState = state
 				shouldResubscribe = true
 			case message := <-messageCh:
 				err := cfg.HandleMessage(ctx, message)

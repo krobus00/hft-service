@@ -378,8 +378,30 @@ func (e *BinanceExchange) loadLatestSubscriptions(ctx context.Context, fallback 
 	return subs, nil
 }
 
-func (e *BinanceExchange) resyncSymbolMappingAndSubscriptions(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
-	return resyncSymbolMappingAndSubscriptions(ctx, conn, fallback, e.refreshSymbolMapping, e.loadLatestSubscriptions)
+func (e *BinanceExchange) loadResyncState(ctx context.Context) (klineResyncState, error) {
+	state := klineResyncState{}
+
+	if e.symbolMappingRepo != nil {
+		timestamp, err := e.symbolMappingRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeBinance))
+		if err != nil {
+			return klineResyncState{}, err
+		}
+		state.SymbolMappingUpdatedAt = timestamp
+	}
+
+	if e.klineSubRepo != nil {
+		timestamp, err := e.klineSubRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeBinance))
+		if err != nil {
+			return klineResyncState{}, err
+		}
+		state.KlineSubscriptionUpdatedAt = timestamp
+	}
+
+	return state, nil
+}
+
+func (e *BinanceExchange) resyncSymbolMappingAndSubscriptions(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
+	return resyncSymbolMappingAndSubscriptions(ctx, conn, fallback, e.refreshSymbolMapping, e.loadLatestSubscriptions, e.loadResyncState)
 }
 
 func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
@@ -388,6 +410,7 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 		WSURLEnvKey:   "BINANCE_WS_URL",
 		DefaultWSURL:  "wss://stream.binance.com:9443/stream",
 		Resync:        e.resyncSymbolMappingAndSubscriptions,
+		LoadResyncState: e.loadResyncState,
 		HandleMessage: e.HandleKlineData,
 	}, subscriptions)
 }

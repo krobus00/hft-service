@@ -376,17 +376,40 @@ func (e *TokocryptoExchange) loadLatestSubscriptions(ctx context.Context, fallba
 	return subs, nil
 }
 
-func (e *TokocryptoExchange) resyncSymbolMappingAndSubscriptions(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
-	return resyncSymbolMappingAndSubscriptions(ctx, conn, fallback, e.refreshSymbolMapping, e.loadLatestSubscriptions)
+func (e *TokocryptoExchange) loadResyncState(ctx context.Context) (klineResyncState, error) {
+	state := klineResyncState{}
+
+	if e.symbolMappingRepo != nil {
+		timestamp, err := e.symbolMappingRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeTokoCrypto))
+		if err != nil {
+			return klineResyncState{}, err
+		}
+		state.SymbolMappingUpdatedAt = timestamp
+	}
+
+	if e.klineSubRepo != nil {
+		timestamp, err := e.klineSubRepo.GetLatestUpdatedAtByExchange(ctx, string(entity.ExchangeTokoCrypto))
+		if err != nil {
+			return klineResyncState{}, err
+		}
+		state.KlineSubscriptionUpdatedAt = timestamp
+	}
+
+	return state, nil
+}
+
+func (e *TokocryptoExchange) resyncSymbolMappingAndSubscriptions(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
+	return resyncSymbolMappingAndSubscriptions(ctx, conn, fallback, e.refreshSymbolMapping, e.loadLatestSubscriptions, e.loadResyncState)
 }
 
 func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
 	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
-		ExchangeName:  entity.ExchangeTokoCrypto,
-		WSURLEnvKey:   "TOKOCRYPTO_WS_URL",
-		DefaultWSURL:  "wss://stream-cloud.tokocrypto.site/stream",
-		Resync:        e.resyncSymbolMappingAndSubscriptions,
-		HandleMessage: e.HandleKlineData,
+		ExchangeName:    entity.ExchangeTokoCrypto,
+		WSURLEnvKey:     "TOKOCRYPTO_WS_URL",
+		DefaultWSURL:    "wss://stream-cloud.tokocrypto.site/stream",
+		Resync:          e.resyncSymbolMappingAndSubscriptions,
+		LoadResyncState: e.loadResyncState,
+		HandleMessage:   e.HandleKlineData,
 	}, subscriptions)
 }
 
