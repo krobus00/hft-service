@@ -17,6 +17,8 @@ services:
       migrate-market-data:
         condition: service_completed_successfully
     restart: unless-stopped
+    profiles:
+      - strategy
     cpus: "1.0"
     mem_limit: 512m
     networks:
@@ -40,6 +42,8 @@ services:
       migrate-market-data:
         condition: service_completed_successfully
     restart: unless-stopped
+    profiles:
+      - app
     cpus: "1.0"
     mem_limit: 512m
     networks:
@@ -63,6 +67,8 @@ services:
       migrate-market-data:
         condition: service_completed_successfully
     restart: unless-stopped
+    profiles:
+      - app
     cpus: "1.0"
     mem_limit: 512m
     networks:
@@ -89,6 +95,8 @@ services:
       - "9800:9800"
       - "9801:9801"
     restart: unless-stopped
+    profiles:
+      - app
     cpus: "1.0"
     mem_limit: 512m
     networks:
@@ -112,6 +120,8 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     restart: unless-stopped
+    profiles:
+      - app
     cpus: "1.0"
     mem_limit: 512m
     networks:
@@ -131,6 +141,8 @@ services:
       retries: 20
       start_period: 5s
     restart: unless-stopped
+    profiles:
+      - infra
     cpus: "0.50"
     mem_limit: 256m
     networks:
@@ -155,6 +167,8 @@ services:
       retries: 20
       start_period: 5s
     restart: unless-stopped
+    profiles:
+      - infra
     cpus: "0.50"
     mem_limit: 256m
     networks:
@@ -180,6 +194,8 @@ services:
       retries: 20
       start_period: 10s
     restart: unless-stopped
+    profiles:
+      - infra
     cpus: "1.0"
     mem_limit: 1g
     networks:
@@ -204,6 +220,8 @@ services:
     cpus: "0.50"
     mem_limit: 256m
     restart: "no"
+    profiles:
+      - infra
     networks:
       - hft-network
 
@@ -221,6 +239,8 @@ services:
     cpus: "0.50"
     mem_limit: 256m
     restart: "no"
+    profiles:
+      - infra
     networks:
       - hft-network
 
@@ -238,6 +258,8 @@ services:
     cpus: "0.50"
     mem_limit: 256m
     restart: "no"
+    profiles:
+      - infra
     networks:
       - hft-network
 
