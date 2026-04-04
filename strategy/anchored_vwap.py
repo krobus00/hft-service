@@ -3,11 +3,10 @@ import uvloop
 import orjson
 import uuid
 import time
-import math
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 import yaml
 from nats.aio.client import Client as NATS
 
@@ -34,6 +33,12 @@ GLOBAL_CONFIG = CONFIG.get("global", {})
 AVWAP_CONFIG = CONFIG.get("anchored_vwap", {})
 
 NATS_URL = GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222")
+NATS_ALLOW_RECONNECT = GLOBAL_CONFIG.get("nats_allow_reconnect", True)
+NATS_MAX_RECONNECT_ATTEMPTS = GLOBAL_CONFIG.get("nats_max_reconnect_attempts", -1)
+NATS_RECONNECT_TIME_WAIT_SEC = GLOBAL_CONFIG.get("nats_reconnect_time_wait_sec", 2)
+NATS_CONNECT_TIMEOUT_SEC = GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5)
+NATS_PING_INTERVAL_SEC = GLOBAL_CONFIG.get("nats_ping_interval_sec", 30)
+NATS_MAX_OUTSTANDING_PINGS = GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3)
 
 KLINE_SUBJECT = AVWAP_CONFIG.get("kline_subject", "KLINE.TOKOCRYPTO.>")
 PLACE_SUBJECT = AVWAP_CONFIG.get("place_subject", "order_engine.place_order")
@@ -83,6 +88,9 @@ TAKER_RATIO_LONG_MIN = AVWAP_CONFIG.get("taker_ratio_long_min", 0.52)
 # Signal smoothing
 CONFIRM_BARS = AVWAP_CONFIG.get("confirm_bars", 2)
 COOLDOWN_BARS = AVWAP_CONFIG.get("cooldown_bars", 3)
+
+# How long a "cross up" remains valid while waiting confirmation bars.
+ENTRY_ARM_BARS = AVWAP_CONFIG.get("entry_arm_bars", 3)
 
 QUEUE_NAME = AVWAP_CONFIG.get(
     "queue_name", "KLINE_STRATEGY_TOKOCRYPTO_AVWAP_IMPROVED_LONGONLY"
@@ -232,9 +240,12 @@ class Strategy:
         "vwap",
         "atr",
         "prev_close",
+        "last_close_time_ms",
         "pos",
         "cooldown",
         "buy_ok",
+        "entry_armed",
+        "entry_arm_left",
         "vol_buf",
         "trades_buf",
         "last_anchor_reset_ms",
@@ -244,10 +255,13 @@ class Strategy:
         self.vwap = AnchoredVWAP()
         self.atr = ATR(ATR_N)
         self.prev_close: Optional[float] = None
+        self.last_close_time_ms = 0
 
         self.pos = "FLAT"  # FLAT | LONG
         self.cooldown = 0
         self.buy_ok = 0
+        self.entry_armed = False
+        self.entry_arm_left = 0
 
         self.vol_buf = []
         self.trades_buf = []
@@ -263,6 +277,9 @@ class Strategy:
             self.trades_buf.pop(0)
 
     def should_reset_anchor(self, candle: Candle) -> bool:
+        # Keep the current anchor while in position to avoid anchor jumps triggering noisy exits.
+        if self.pos == "LONG":
+            return False
         if candle.close_time_ms - self.last_anchor_reset_ms < ANCHOR_RESET_COOLDOWN_MS:
             return False
         med_vol = median(self.vol_buf)
@@ -277,6 +294,12 @@ class Strategy:
         return candle.trade_count >= thr
 
     def on_closed_candle(self, candle: Candle):
+        # Deduplicate out-of-order or redelivered candles.
+        if candle.close_time_ms <= self.last_close_time_ms:
+            return None
+
+        self.last_close_time_ms = candle.close_time_ms
+
         if self.cooldown > 0:
             self.cooldown -= 1
 
@@ -289,46 +312,64 @@ class Strategy:
         avwap = self.vwap.update(candle)
         atr = self.atr.update(candle.h, candle.l, candle.c)
 
-        if avwap is None or atr is None:
-            self.prev_close = candle.c
-            return None
-
-        slope = self.vwap.slope_bps()
-        if slope is None or abs(slope) < SLOPE_MIN_BPS:
-            self.prev_close = candle.c
-            return None
-
-        if not self.participation_ok(candle):
-            self.prev_close = candle.c
-            return None
-
-        band = max(ATR_K * atr, MIN_BAND_PCT * avwap)
-        upper = avwap + band
-
         close = candle.c
         if self.prev_close is None:
             self.prev_close = close
             return None
 
-        crossed_up = self.prev_close <= avwap and close > avwap
-        crossed_down = self.prev_close >= avwap and close < avwap
+        # Exit logic should not be blocked by entry filters.
+        if avwap is not None:
+            crossed_down = self.prev_close >= avwap and close < avwap
+            if self.pos == "LONG" and crossed_down:
+                self.pos = "FLAT"
+                self.cooldown = COOLDOWN_BARS
+                self.buy_ok = 0
+                self.entry_armed = False
+                self.entry_arm_left = 0
+                self.prev_close = close
+                return ("SELL", close, avwap, avwap, 0.0, candle.taker_ratio, "EXIT_LONG")
 
-        # Exit LONG when cross down through AVWAP
-        if self.pos == "LONG" and crossed_down:
-            self.pos = "FLAT"
-            self.cooldown = COOLDOWN_BARS
+        if avwap is None or atr is None:
             self.prev_close = close
-            return ("SELL", close, avwap, upper, slope, candle.taker_ratio, "EXIT_LONG")
+            return None
+
+        slope = self.vwap.slope_bps()
+        # Long-only entries require upward AVWAP slope.
+        if slope is None or slope < SLOPE_MIN_BPS:
+            self.buy_ok = 0
+            self.entry_armed = False
+            self.entry_arm_left = 0
+            self.prev_close = close
+            return None
+
+        if not self.participation_ok(candle):
+            self.prev_close = close
+            return None
+
+        band = max(ATR_K * atr, MIN_BAND_PCT * avwap)
+        upper = avwap + band
+
+        crossed_up = self.prev_close <= avwap and close > avwap
+
+        if crossed_up:
+            self.entry_armed = True
+            self.entry_arm_left = ENTRY_ARM_BARS
+        elif self.entry_arm_left > 0:
+            self.entry_arm_left -= 1
+        else:
+            self.entry_armed = False
 
         # Enter LONG: cross up + close above upper band + taker filter + confirm
         buy_candidate = (close >= upper) and (candle.taker_ratio >= TAKER_RATIO_LONG_MIN)
         self.buy_ok = self.buy_ok + 1 if buy_candidate else 0
 
         if self.cooldown == 0 and self.pos == "FLAT":
-            if crossed_up and self.buy_ok >= CONFIRM_BARS:
+            if self.entry_armed and self.buy_ok >= CONFIRM_BARS:
                 self.pos = "LONG"
                 self.cooldown = COOLDOWN_BARS
                 self.buy_ok = 0
+                self.entry_armed = False
+                self.entry_arm_left = 0
                 self.prev_close = close
                 return ("BUY", close, avwap, upper, slope, candle.taker_ratio, "ENTER_LONG")
 
@@ -367,55 +408,135 @@ def make_order_payload(side: str, ref_px: float, qty: float) -> Dict[str, Any]:
 
 
 async def run():
+    if ORDER_QTY <= 0:
+        raise ValueError("order_qty must be > 0")
+
     strat = Strategy()
 
     nc = NATS()
-    await nc.connect(NATS_URL)
+
+    async def on_disconnected():
+        print("NATS disconnected, waiting to reconnect...", flush=True)
+
+    async def on_reconnected():
+        print(f"NATS reconnected, server={nc.connected_url}", flush=True)
+
+    async def on_error(exc):
+        print(f"NATS async error: {exc}", flush=True)
+
+    async def on_closed():
+        print("NATS connection closed", flush=True)
+
+    await nc.connect(
+        NATS_URL,
+        allow_reconnect=NATS_ALLOW_RECONNECT,
+        max_reconnect_attempts=NATS_MAX_RECONNECT_ATTEMPTS,
+        reconnect_time_wait=NATS_RECONNECT_TIME_WAIT_SEC,
+        connect_timeout=NATS_CONNECT_TIMEOUT_SEC,
+        ping_interval=NATS_PING_INTERVAL_SEC,
+        max_outstanding_pings=NATS_MAX_OUTSTANDING_PINGS,
+        disconnected_cb=on_disconnected,
+        reconnected_cb=on_reconnected,
+        error_cb=on_error,
+        closed_cb=on_closed,
+    )
     js = nc.jetstream()
 
     async def handler(msg):
-        payload = orjson.loads(msg.data)
-        d = payload["data"]
+        try:
+            payload = orjson.loads(msg.data)
+            d = payload["data"]
 
-        if d.get("Symbol") != SYMBOL_IN:
-            print("skipping different symbol, symbol=", d.get("Symbol"), ", expected=", SYMBOL_IN, flush=True)
-            await msg.ack()
-            return
-        if d.get("Interval") != "1m":
-            print("skipping non-1m interval, interval=", d.get("Interval"), ", expected=1m", flush=True)
-            await msg.ack()
-            return
-        if not d.get("IsClosed"):
-            await msg.ack()
-            return
+            if d.get("Symbol") != SYMBOL_IN:
+                print("skipping different symbol, symbol=", d.get("Symbol"), ", expected=", SYMBOL_IN, flush=True)
+                await msg.ack()
+                return
+            if d.get("Interval") != "1m":
+                print("skipping non-1m interval, interval=", d.get("Interval"), ", expected=1m", flush=True)
+                await msg.ack()
+                return
+            if not d.get("IsClosed"):
+                await msg.ack()
+                return
 
-        candle = Candle(
-            open_time_ms=parse_iso_to_ms(d["OpenTime"]),
-            close_time_ms=parse_iso_to_ms(d["CloseTime"]),
-            o=float(d["OpenPrice"]),
-            h=float(d["HighPrice"]),
-            l=float(d["LowPrice"]),
-            c=float(d["ClosePrice"]),
-            quote_volume=float(d.get("QuoteVolume", "0") or "0"),
-            taker_quote_volume=float(d.get("TakerQuoteVolume", "0") or "0"),
-            trade_count=int(d.get("TradeCount", 0)),
-        )
-
-        sig = strat.on_closed_candle(candle)
-        if sig:
-            side, close, avwap, upper, slope_bps, taker_ratio, reason = sig
-            out = make_order_payload(side, close, ORDER_QTY)
-
-            print(
-                f"[AVWAP+ LO] {reason} side={side} close={close:.4f} avwap={avwap:.4f} "
-                f"upper={upper:.4f} slope={slope_bps:.1f}bps taker={taker_ratio:.2f} "
-                f"trades={candle.trade_count} qv={candle.quote_volume:.2f}",
-                flush=True,
+            candle = Candle(
+                open_time_ms=parse_iso_to_ms(d["OpenTime"]),
+                close_time_ms=parse_iso_to_ms(d["CloseTime"]),
+                o=float(d["OpenPrice"]),
+                h=float(d["HighPrice"]),
+                l=float(d["LowPrice"]),
+                c=float(d["ClosePrice"]),
+                quote_volume=float(d.get("QuoteVolume", "0") or "0"),
+                taker_quote_volume=float(d.get("TakerQuoteVolume", "0") or "0"),
+                trade_count=int(d.get("TradeCount", 0)),
             )
 
-            await js.publish(PLACE_SUBJECT, orjson.dumps(out))
+            # Snapshot state so we can rollback if publish fails.
+            prev_state = (
+                strat.prev_close,
+                strat.last_close_time_ms,
+                strat.pos,
+                strat.cooldown,
+                strat.buy_ok,
+                strat.entry_armed,
+                strat.entry_arm_left,
+                strat.last_anchor_reset_ms,
+                strat.vwap.anchor_ms,
+                strat.vwap.cum_pv,
+                strat.vwap.cum_v,
+                list(strat.vwap.avwap_hist),
+                strat.atr.prev_close,
+                list(strat.atr.buf),
+                strat.atr.sum,
+                list(strat.vol_buf),
+                list(strat.trades_buf),
+            )
 
-        await msg.ack()
+            sig = strat.on_closed_candle(candle)
+            if sig:
+                side, close, avwap, upper, slope_bps, taker_ratio, reason = sig
+                out = make_order_payload(side, close, ORDER_QTY)
+
+                print(
+                    f"[AVWAP+ LO] {reason} side={side} close={close:.4f} avwap={avwap:.4f} "
+                    f"upper={upper:.4f} slope={slope_bps:.1f}bps taker={taker_ratio:.2f} "
+                    f"trades={candle.trade_count} qv={candle.quote_volume:.2f}",
+                    flush=True,
+                )
+
+                try:
+                    await js.publish(PLACE_SUBJECT, orjson.dumps(out))
+                except Exception:
+                    (
+                        strat.prev_close,
+                        strat.last_close_time_ms,
+                        strat.pos,
+                        strat.cooldown,
+                        strat.buy_ok,
+                        strat.entry_armed,
+                        strat.entry_arm_left,
+                        strat.last_anchor_reset_ms,
+                        strat.vwap.anchor_ms,
+                        strat.vwap.cum_pv,
+                        strat.vwap.cum_v,
+                        vwap_hist,
+                        strat.atr.prev_close,
+                        atr_buf,
+                        strat.atr.sum,
+                        vol_buf,
+                        trades_buf,
+                    ) = prev_state
+                    strat.vwap.avwap_hist = vwap_hist
+                    strat.atr.buf = atr_buf
+                    strat.vol_buf = vol_buf
+                    strat.trades_buf = trades_buf
+                    raise
+
+            await msg.ack()
+        except Exception as exc:
+            # Leave message unacked so JetStream can redeliver after transient failures.
+            print(f"handler error: {exc}", flush=True)
+            return
 
     await js.subscribe(
         KLINE_SUBJECT,
@@ -426,6 +547,8 @@ async def run():
 
     print("Anchored VWAP improved (long-only) running...", flush=True)
     while True:
+        if nc.is_closed:
+            raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
         await asyncio.sleep(1)
 
 

@@ -2,6 +2,9 @@ import asyncio
 import time
 import uuid
 from pathlib import Path
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
 
 import orjson
 import uvloop
@@ -28,6 +31,12 @@ GLOBAL_CONFIG = CONFIG.get("global", {})
 EXAMPLE_CONFIG = CONFIG.get("example", {})
 
 NATS_URL = GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222")
+NATS_ALLOW_RECONNECT = GLOBAL_CONFIG.get("nats_allow_reconnect", True)
+NATS_MAX_RECONNECT_ATTEMPTS = GLOBAL_CONFIG.get("nats_max_reconnect_attempts", -1)
+NATS_RECONNECT_TIME_WAIT_SEC = GLOBAL_CONFIG.get("nats_reconnect_time_wait_sec", 2)
+NATS_CONNECT_TIMEOUT_SEC = GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5)
+NATS_PING_INTERVAL_SEC = GLOBAL_CONFIG.get("nats_ping_interval_sec", 30)
+NATS_MAX_OUTSTANDING_PINGS = GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3)
 
 KLINE_SUBJECT = EXAMPLE_CONFIG.get("kline_subject", "KLINE.TOKOCRYPTO.>")
 ORDER_SUBJECT = EXAMPLE_CONFIG.get("order_subject", "order_engine.place_order")
@@ -45,6 +54,208 @@ IS_PAPER_TRADING = EXAMPLE_CONFIG.get("is_paper_trading", True)
 ORDER_TYPE = EXAMPLE_CONFIG.get("order_type", "LIMIT")
 ORDER_QTY = EXAMPLE_CONFIG.get("order_qty", 10)
 ORDER_SYMBOL = EXAMPLE_CONFIG.get("order_symbol", "SOLUSDT")
+LIMIT_SLIPPAGE_BPS = EXAMPLE_CONFIG.get("limit_slippage_bps", 3)
+
+# HFT signal params
+FAST_EMA_N = EXAMPLE_CONFIG.get("fast_ema_n", 8)
+SLOW_EMA_N = EXAMPLE_CONFIG.get("slow_ema_n", 21)
+RET_LOOKBACK = EXAMPLE_CONFIG.get("ret_lookback", 3)
+RET_ENTRY_BPS = EXAMPLE_CONFIG.get("ret_entry_bps", 7)
+MIN_TAKER_RATIO = EXAMPLE_CONFIG.get("min_taker_ratio", 0.53)
+
+TRADE_COUNT_WINDOW = EXAMPLE_CONFIG.get("trade_count_window", 80)
+MIN_TRADE_COUNT_PCTL = EXAMPLE_CONFIG.get("min_trade_count_pctl", 0.35)
+
+ATR_N = EXAMPLE_CONFIG.get("atr_n", 14)
+STOP_ATR = EXAMPLE_CONFIG.get("stop_atr", 1.0)
+TAKE_ATR = EXAMPLE_CONFIG.get("take_atr", 1.6)
+
+COOLDOWN_BARS = EXAMPLE_CONFIG.get("cooldown_bars", 2)
+MAX_HOLD_BARS = EXAMPLE_CONFIG.get("max_hold_bars", 20)
+LONG_ONLY = EXAMPLE_CONFIG.get("long_only", True)
+
+
+def bps_to_frac(bps: float) -> float:
+    return bps / 10_000.0
+
+
+def fmt_num(x: float) -> str:
+    return f"{x:.8f}".rstrip("0").rstrip(".")
+
+
+def parse_iso_to_ms(s: str) -> int:
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return int(dt.timestamp() * 1000)
+
+
+def percentile(xs, p: float) -> float:
+    if not xs:
+        return 0.0
+    ys = sorted(xs)
+    k = int(round((len(ys) - 1) * p))
+    return float(ys[max(0, min(len(ys) - 1, k))])
+
+
+@dataclass
+class Candle:
+    close_time_ms: int
+    close: float
+    high: float
+    low: float
+    quote_volume: float
+    taker_quote_volume: float
+    trade_count: int
+
+    @property
+    def taker_ratio(self) -> float:
+        if self.quote_volume <= 0:
+            return 0.0
+        r = self.taker_quote_volume / self.quote_volume
+        return max(0.0, min(1.0, r))
+
+
+class EMA:
+    __slots__ = ("alpha", "value", "ready")
+
+    def __init__(self, n: int):
+        self.alpha = 2.0 / (n + 1)
+        self.value = 0.0
+        self.ready = False
+
+    def update(self, x: float) -> float:
+        if not self.ready:
+            self.value = x
+            self.ready = True
+        else:
+            self.value = self.alpha * x + (1.0 - self.alpha) * self.value
+        return self.value
+
+
+class ATR:
+    __slots__ = ("n", "prev_close", "buf", "sum")
+
+    def __init__(self, n: int):
+        self.n = n
+        self.prev_close: Optional[float] = None
+        self.buf = []
+        self.sum = 0.0
+
+    def update(self, high: float, low: float, close: float) -> Optional[float]:
+        if self.prev_close is None:
+            tr = high - low
+        else:
+            tr = max(high - low, abs(high - self.prev_close), abs(low - self.prev_close))
+        self.prev_close = close
+
+        self.buf.append(tr)
+        self.sum += tr
+        if len(self.buf) > self.n:
+            self.sum -= self.buf.pop(0)
+
+        if len(self.buf) < self.n:
+            return None
+        return self.sum / len(self.buf)
+
+
+class HFTMomentumStrategy:
+    __slots__ = (
+        "ema_fast",
+        "ema_slow",
+        "atr",
+        "close_hist",
+        "trade_count_hist",
+        "last_close_time_ms",
+        "pos",
+        "entry_price",
+        "entry_atr",
+        "bars_in_pos",
+        "cooldown",
+    )
+
+    def __init__(self):
+        self.ema_fast = EMA(FAST_EMA_N)
+        self.ema_slow = EMA(SLOW_EMA_N)
+        self.atr = ATR(ATR_N)
+
+        self.close_hist = []
+        self.trade_count_hist = []
+        self.last_close_time_ms = 0
+
+        self.pos = "FLAT"  # FLAT | LONG
+        self.entry_price: Optional[float] = None
+        self.entry_atr: Optional[float] = None
+        self.bars_in_pos = 0
+        self.cooldown = 0
+
+    def on_closed_candle(self, c: Candle):
+        if c.close_time_ms <= self.last_close_time_ms:
+            return None
+        self.last_close_time_ms = c.close_time_ms
+
+        if self.cooldown > 0:
+            self.cooldown -= 1
+
+        ema_fast = self.ema_fast.update(c.close)
+        ema_slow = self.ema_slow.update(c.close)
+        atr = self.atr.update(c.high, c.low, c.close)
+
+        self.close_hist.append(c.close)
+        if len(self.close_hist) > max(RET_LOOKBACK + 5, 120):
+            self.close_hist.pop(0)
+
+        self.trade_count_hist.append(c.trade_count)
+        if len(self.trade_count_hist) > TRADE_COUNT_WINDOW:
+            self.trade_count_hist.pop(0)
+
+        if atr is None or len(self.close_hist) <= RET_LOOKBACK:
+            return None
+
+        ret = (c.close - self.close_hist[-RET_LOOKBACK - 1]) / max(1e-12, self.close_hist[-RET_LOOKBACK - 1])
+        ret_bps = ret * 10_000.0
+        trend_up = ema_fast > ema_slow
+
+        trades_ok = True
+        if len(self.trade_count_hist) >= 30:
+            thr = percentile(self.trade_count_hist, MIN_TRADE_COUNT_PCTL)
+            trades_ok = c.trade_count >= thr
+
+        buy_signal = (
+            trend_up
+            and ret_bps >= RET_ENTRY_BPS
+            and c.taker_ratio >= MIN_TAKER_RATIO
+            and trades_ok
+        )
+
+        if self.pos == "LONG":
+            self.bars_in_pos += 1
+            stop_price = self.entry_price - STOP_ATR * self.entry_atr
+            take_price = self.entry_price + TAKE_ATR * self.entry_atr
+            exit_signal = (
+                c.close <= stop_price
+                or c.close >= take_price
+                or ema_fast < ema_slow
+                or self.bars_in_pos >= MAX_HOLD_BARS
+            )
+            if exit_signal:
+                self.pos = "FLAT"
+                self.entry_price = None
+                self.entry_atr = None
+                self.bars_in_pos = 0
+                self.cooldown = COOLDOWN_BARS
+                return "SELL", c.close, "EXIT_LONG"
+
+        if self.pos == "FLAT" and self.cooldown == 0 and buy_signal:
+            self.pos = "LONG"
+            self.entry_price = c.close
+            self.entry_atr = atr
+            self.bars_in_pos = 0
+            return "BUY", c.close, "ENTER_LONG"
+
+        if not LONG_ONLY:
+            # Reserved for future short-side logic.
+            return None
+
+        return None
 
 
 def gen_id() -> str:
@@ -56,6 +267,13 @@ def now_ms() -> int:
 
 
 def build_order_payload(side: str, price: float) -> dict:
+    px = price
+    if ORDER_TYPE == "LIMIT":
+        if side == "BUY":
+            px = price * (1.0 + bps_to_frac(LIMIT_SLIPPAGE_BPS))
+        else:
+            px = price * (1.0 - bps_to_frac(LIMIT_SLIPPAGE_BPS))
+
     return {
         "retry": 0,
         "data": {
@@ -66,8 +284,8 @@ def build_order_payload(side: str, price: float) -> dict:
             "symbol": ORDER_SYMBOL,
             "type": ORDER_TYPE,
             "side": side,
-            "price": str(price),
-            "quantity": str(ORDER_QTY),
+            "price": fmt_num(px),
+            "quantity": fmt_num(float(ORDER_QTY)),
             "requested_at": now_ms(),
             "expired_at": None,
             "source": SOURCE,
@@ -77,40 +295,83 @@ def build_order_payload(side: str, price: float) -> dict:
     }
 
 
-def process_closed_candle(data: dict):
-    close_price = float(data["ClosePrice"])
-    return None, close_price
-
-
 async def run():
+    if ORDER_QTY <= 0:
+        raise ValueError("order_qty must be > 0")
+
+    strategy = HFTMomentumStrategy()
+
     nc = NATS()
-    await nc.connect(NATS_URL)
+
+    async def on_disconnected():
+        print("NATS disconnected, reconnecting...", flush=True)
+
+    async def on_reconnected():
+        print(f"NATS reconnected, server={nc.connected_url}", flush=True)
+
+    async def on_error(exc):
+        print(f"NATS async error: {exc}", flush=True)
+
+    async def on_closed():
+        print("NATS connection closed", flush=True)
+
+    await nc.connect(
+        NATS_URL,
+        allow_reconnect=NATS_ALLOW_RECONNECT,
+        max_reconnect_attempts=NATS_MAX_RECONNECT_ATTEMPTS,
+        reconnect_time_wait=NATS_RECONNECT_TIME_WAIT_SEC,
+        connect_timeout=NATS_CONNECT_TIMEOUT_SEC,
+        ping_interval=NATS_PING_INTERVAL_SEC,
+        max_outstanding_pings=NATS_MAX_OUTSTANDING_PINGS,
+        disconnected_cb=on_disconnected,
+        reconnected_cb=on_reconnected,
+        error_cb=on_error,
+        closed_cb=on_closed,
+    )
     js = nc.jetstream()
 
     async def handler(msg):
-        payload = orjson.loads(msg.data)
-        data = payload.get("data", {})
+        try:
+            payload = orjson.loads(msg.data)
+            data = payload.get("data", {})
 
-        if not data.get("IsClosed"):
+            if not data.get("IsClosed"):
+                await msg.ack()
+                return
+
+            if data.get("Symbol") != SYMBOL:
+                await msg.ack()
+                return
+
+            if data.get("Interval") != INTERVAL:
+                await msg.ack()
+                return
+            candle = Candle(
+                close_time_ms=parse_iso_to_ms(data["CloseTime"]),
+                close=float(data["ClosePrice"]),
+                high=float(data["HighPrice"]),
+                low=float(data["LowPrice"]),
+                quote_volume=float(data.get("QuoteVolume", "0") or "0"),
+                taker_quote_volume=float(data.get("TakerQuoteVolume", "0") or "0"),
+                trade_count=int(data.get("TradeCount", 0)),
+            )
+
+            signal = strategy.on_closed_candle(candle)
+            if signal:
+                side, px, reason = signal
+                out = build_order_payload(side, px)
+                await js.publish(ORDER_SUBJECT, orjson.dumps(out))
+                print(
+                    f"[HFT] {reason} side={side} symbol={ORDER_SYMBOL} close={px:.4f} "
+                    f"taker={candle.taker_ratio:.2f} trades={candle.trade_count}",
+                    flush=True,
+                )
+
             await msg.ack()
+        except Exception as exc:
+            # Keep message unacked for redelivery when failures are transient.
+            print(f"handler error: {exc}", flush=True)
             return
-
-        if data.get("Symbol") != SYMBOL:
-            await msg.ack()
-            return
-
-        if data.get("Interval") != INTERVAL:
-            await msg.ack()
-            return
-
-        side, close_price = process_closed_candle(data)
-
-        if side in ("BUY", "SELL"):
-            out = build_order_payload(side, close_price)
-            await js.publish(ORDER_SUBJECT, orjson.dumps(out))
-            print(f"published order side={side} symbol={ORDER_SYMBOL} close={close_price}")
-
-        await msg.ack()
 
     await js.subscribe(
         KLINE_SUBJECT,
@@ -119,8 +380,10 @@ async def run():
         cb=handler,
     )
 
-    print("Example strategy running...")
+    print("HFT momentum strategy running...", flush=True)
     while True:
+        if nc.is_closed:
+            raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
         await asyncio.sleep(1)
 
 

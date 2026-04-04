@@ -68,3 +68,39 @@ anchored_vwap:
 
   confirm_bars: 2
   cooldown_bars: 3
+
+example:
+  symbol: SOLUSDT
+  interval: 1m
+
+  exchange: tokocrypto
+  user_id: paper-1
+  source: python-example-hft
+  strategy_id: python-example-hft-momentum-v1
+  is_paper_trading: true
+
+  kline_subject: KLINE.TOKOCRYPTO.>
+  order_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_TOKOCRYPTO_EXAMPLE_HFT
+
+  order_type: LIMIT
+  order_qty: 10
+  order_symbol: SOLUSDT
+  limit_slippage_bps: 3
+
+  fast_ema_n: 8
+  slow_ema_n: 21
+  ret_lookback: 3
+  ret_entry_bps: 7
+  min_taker_ratio: 0.53
+
+  trade_count_window: 80
+  min_trade_count_pctl: 0.35
+
+  atr_n: 14
+  stop_atr: 1.0
+  take_atr: 1.6
+
+  cooldown_bars: 2
+  max_hold_bars: 20
+  long_only: true
