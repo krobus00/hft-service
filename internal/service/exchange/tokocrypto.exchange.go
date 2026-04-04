@@ -35,6 +35,7 @@ const (
 	tokocryptoWSReconnectMinDelay = 1 * time.Second
 	tokocryptoWSReconnectMaxDelay = 15 * time.Second
 	tokocryptoWSReconnectFactor   = 2.0
+	tokocryptoWSDialTimeout       = 12 * time.Second
 )
 
 var tokocryptoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
@@ -352,7 +353,12 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 		}
 
 		logrus.Infof("connecting to %s", wsHost.String())
-		conn, _, err := websocket.DefaultDialer.Dial(wsHost.String(), nil)
+		dialer := *websocket.DefaultDialer
+		dialer.HandshakeTimeout = tokocryptoWSDialTimeout
+
+		dialCtx, cancelDial := context.WithTimeout(ctx, tokocryptoWSDialTimeout)
+		conn, _, err := dialer.DialContext(dialCtx, wsHost.String(), nil)
+		cancelDial()
 		if err != nil {
 			wait := tokocryptoReconnectDelay(attempt, rng)
 			attempt++
@@ -364,6 +370,8 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 				return nil
 			}
 		}
+
+		logrus.Infof("connected to %s", wsHost.String())
 
 		attempt = 0
 		conn.SetPongHandler(func(string) error {
