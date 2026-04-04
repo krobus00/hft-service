@@ -1,0 +1,1077 @@
+package exchange
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"math/rand"
+	"net/http"
+	"net/url"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/krobus00/hft-service/internal/config"
+	"github.com/krobus00/hft-service/internal/constant"
+	"github.com/krobus00/hft-service/internal/entity"
+	"github.com/krobus00/hft-service/internal/repository"
+	"github.com/krobus00/hft-service/internal/util"
+	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
+	"github.com/sirupsen/logrus"
+)
+
+const (
+	binanceWSReconnectMinDelay = 1 * time.Second
+	binanceWSReconnectMaxDelay = 15 * time.Second
+	binanceWSReconnectFactor   = 2.0
+	binanceWSDialTimeout       = 12 * time.Second
+)
+
+var binanceClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+type BinanceExchange struct {
+	apiKey     string
+	apiSecret  string
+	baseURL    string
+	recvWindow int64
+	httpClient *http.Client
+
+	symbolPrecisionMu sync.RWMutex
+	symbolPrecision   map[string]binanceSymbolPrecision
+	symbolMapping     entity.ExchangeSymbolMapping
+	js                nats.JetStreamContext
+	marketKlineRepo   *repository.MarketKlineRepository
+}
+
+type binanceSymbolPrecision struct {
+	BasePrecision  int32
+	QuotePrecision int32
+}
+
+func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConfig, symbolMappingRepo *repository.SymbolMappingRepository, js nats.JetStreamContext, marketKlineRepo *repository.MarketKlineRepository) *BinanceExchange {
+	symbolMapping, err := symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeBinance))
+	util.ContinueOrFatal(err)
+
+	recvWindow := int64(5000)
+	if raw := strings.TrimSpace(os.Getenv("BINANCE_RECV_WINDOW")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 && parsed <= 60000 {
+			recvWindow = parsed
+		}
+	}
+
+	baseURL := strings.TrimSpace(os.Getenv("BINANCE_BASE_URL"))
+	if baseURL == "" {
+		baseURL = "https://api.binance.com"
+	}
+
+	newExchange := &BinanceExchange{
+		apiKey:          strings.TrimSpace(exchangeConfig.APIKey),
+		apiSecret:       strings.TrimSpace(exchangeConfig.APISecret),
+		baseURL:         strings.TrimRight(baseURL, "/"),
+		recvWindow:      recvWindow,
+		httpClient:      &http.Client{Timeout: 15 * time.Second},
+		symbolMapping:   symbolMapping,
+		js:              js,
+		marketKlineRepo: marketKlineRepo,
+	}
+
+	RegisterExchange(entity.ExchangeBinance, newExchange)
+
+	return newExchange
+}
+
+func (e *BinanceExchange) JetstreamEventInit(ctx context.Context) error {
+	streamConfig := &nats.StreamConfig{
+		Name:      constant.KlineStreamName,
+		Subjects:  []string{constant.KlineStreamSubjectAll},
+		Storage:   nats.FileStorage, // use MemoryStorage for ultra-low latency
+		Retention: nats.LimitsPolicy,
+		MaxAge:    5 * time.Minute,
+		Replicas:  1,
+	}
+
+	stream, err := e.js.StreamInfo(constant.KlineStreamName, nats.Context(ctx))
+	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
+		logrus.Error(err)
+		return err
+	}
+
+	if stream == nil {
+		logrus.Infof("creating stream: %s", constant.KlineStreamName)
+		_, err = e.js.AddStream(streamConfig, nats.Context(ctx))
+		return err
+	}
+
+	logrus.Infof("updating stream: %s", constant.KlineStreamName)
+	_, err = e.js.UpdateStream(streamConfig, nats.Context(ctx))
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
+	logrus.Infof("stream %s is ready", constant.KlineStreamName)
+
+	return nil
+}
+
+func (e *BinanceExchange) JetstreamEventSubscribe(ctx context.Context) error {
+	err := e.JetstreamEventInit(ctx)
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
+	_, err = e.js.QueueSubscribe(
+		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeBinance)),
+		constant.GetKlineInsertQueueGroup(string(entity.ExchangeBinance)),
+		func(msg *nats.Msg) {
+			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
+			if err != nil {
+				logrus.Errorf("error processing message: %v", err)
+				return
+			}
+
+			err = msg.Ack()
+			if err != nil {
+				logrus.Errorf("failed to acknowledge message: %v", err)
+				return
+			}
+		},
+		nats.ManualAck(),
+		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
+	)
+	util.ContinueOrFatal(err)
+
+	return nil
+}
+
+func (e *BinanceExchange) handleKlineDataEvent(ctx context.Context, msg *nats.Msg) (err error) {
+	logger := logrus.WithFields(logrus.Fields{
+		"req": string(msg.Data),
+	})
+
+	var req *entity.MarketKlineEvent
+	err = json.Unmarshal(msg.Data, &req)
+	if err != nil {
+		logger.Error(err)
+		return err
+	}
+
+	if req.Data.EventTime.UTC().Add(1 * time.Minute).Before(time.Now().UTC()) {
+		logger.Info("skipping kline data event that is too old")
+		return nil
+	}
+
+	defer func() {
+		if err != nil {
+			req.RetryCount++
+			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
+				err = nil
+				return
+			}
+
+			err := util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeBinance), req.Data.Symbol, req.Data.Interval), req)
+			if err != nil {
+				logger.Error(err)
+				return
+			}
+		}
+	}()
+
+	err = e.marketKlineRepo.Create(ctx, &req.Data)
+	if err != nil {
+		logger.Error(err)
+		return err
+	}
+
+	return nil
+}
+
+func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) error {
+	var payload struct {
+		Stream string `json:"stream"`
+		Data   struct {
+			Event     string `json:"e"`
+			EventTime int64  `json:"E"`
+			Symbol    string `json:"s"`
+			Kline     struct {
+				OpenTime         int64  `json:"t"`
+				CloseTime        int64  `json:"T"`
+				Symbol           string `json:"s"`
+				Interval         string `json:"i"`
+				FirstTradeID     int64  `json:"f"`
+				LastTradeID      int64  `json:"L"`
+				Open             string `json:"o"`
+				Close            string `json:"c"`
+				High             string `json:"h"`
+				Low              string `json:"l"`
+				BaseVolume       string `json:"v"`
+				TradeCount       int32  `json:"n"`
+				IsClosed         bool   `json:"x"`
+				QuoteVolume      string `json:"q"`
+				TakerBaseVolume  string `json:"V"`
+				TakerQuoteVolume string `json:"Q"`
+			} `json:"k"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(message, &payload); err != nil {
+		return err
+	}
+
+	if payload.Data.Event != "kline" || payload.Data.Kline.Close == "" {
+		return nil
+	}
+
+	openPrice, err := decimal.NewFromString(payload.Data.Kline.Open)
+	if err != nil {
+		return fmt.Errorf("invalid open price: %w", err)
+	}
+
+	closePrice, err := decimal.NewFromString(payload.Data.Kline.Close)
+	if err != nil {
+		return fmt.Errorf("invalid close price: %w", err)
+	}
+
+	highPrice, err := decimal.NewFromString(payload.Data.Kline.High)
+	if err != nil {
+		return fmt.Errorf("invalid high price: %w", err)
+	}
+
+	lowPrice, err := decimal.NewFromString(payload.Data.Kline.Low)
+	if err != nil {
+		return fmt.Errorf("invalid low price: %w", err)
+	}
+
+	baseVolume, err := decimal.NewFromString(payload.Data.Kline.BaseVolume)
+	if err != nil {
+		return fmt.Errorf("invalid base volume: %w", err)
+	}
+
+	quoteVolume, err := decimal.NewFromString(payload.Data.Kline.QuoteVolume)
+	if err != nil {
+		return fmt.Errorf("invalid quote volume: %w", err)
+	}
+
+	takerBaseVolume, err := decimal.NewFromString(payload.Data.Kline.TakerBaseVolume)
+	if err != nil {
+		return fmt.Errorf("invalid taker base volume: %w", err)
+	}
+
+	takerQuoteVolume, err := decimal.NewFromString(payload.Data.Kline.TakerQuoteVolume)
+	if err != nil {
+		return fmt.Errorf("invalid taker quote volume: %w", err)
+	}
+
+	eventAt := time.UnixMilli(payload.Data.EventTime).UTC()
+	openAt := time.UnixMilli(payload.Data.Kline.OpenTime).UTC()
+	closeAt := time.UnixMilli(payload.Data.Kline.CloseTime).UTC()
+	now := time.Now().UTC()
+
+	symbol := strings.TrimSpace(payload.Data.Kline.Symbol)
+	if symbol == "" {
+		symbol = strings.TrimSpace(payload.Data.Symbol)
+	}
+	symbol = e.resolveInternalSymbol(symbol)
+
+	data := entity.MarketKline{
+		Exchange:         string(entity.ExchangeBinance),
+		EventType:        payload.Data.Event,
+		EventTime:        eventAt,
+		Symbol:           symbol,
+		Interval:         payload.Data.Kline.Interval,
+		OpenTime:         openAt,
+		CloseTime:        closeAt,
+		OpenPrice:        openPrice,
+		HighPrice:        highPrice,
+		LowPrice:         lowPrice,
+		ClosePrice:       closePrice,
+		BaseVolume:       baseVolume,
+		QuoteVolume:      quoteVolume,
+		TakerBaseVolume:  takerBaseVolume,
+		TakerQuoteVolume: takerQuoteVolume,
+		TradeCount:       payload.Data.Kline.TradeCount,
+		IsClosed:         payload.Data.Kline.IsClosed,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	err = util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeBinance), data.Symbol, data.Interval), entity.MarketKlineEvent{
+		RetryCount: 0,
+		Data:       data,
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (e *BinanceExchange) resolveInternalSymbol(exchangeSymbol string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(exchangeSymbol))
+	if normalized == "" {
+		return ""
+	}
+
+	for internalSymbol, klineSymbol := range e.symbolMapping[string(entity.ExchangeBinance)] {
+		if strings.EqualFold(strings.TrimSpace(klineSymbol), normalized) {
+			return internalSymbol
+		}
+	}
+
+	return normalized
+}
+
+func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
+	wsURL := strings.TrimSpace(os.Getenv("BINANCE_WS_URL"))
+	if wsURL == "" {
+		wsURL = "wss://stream.binance.com:9443/stream"
+	}
+
+	wsHost, err := url.Parse(wsURL)
+	if err != nil {
+		return fmt.Errorf("invalid binance ws url: %w", err)
+	}
+
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	attempt := 0
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+
+		logrus.Infof("connecting to %s", wsHost.String())
+		dialer := *websocket.DefaultDialer
+		dialer.HandshakeTimeout = binanceWSDialTimeout
+
+		dialCtx, cancelDial := context.WithTimeout(ctx, binanceWSDialTimeout)
+		conn, _, err := dialer.DialContext(dialCtx, wsHost.String(), nil)
+		cancelDial()
+		if err != nil {
+			wait := binanceReconnectDelay(attempt, rng)
+			attempt++
+			logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("binance ws dial failed: %v", err)
+			select {
+			case <-time.After(wait):
+				continue
+			case <-ctx.Done():
+				return nil
+			}
+		}
+
+		logrus.Infof("connected to %s", wsHost.String())
+
+		attempt = 0
+		conn.SetPongHandler(func(string) error {
+			return nil
+		})
+
+		for _, v := range subscriptions {
+			// only subs binance kline data, ignore other subs if any
+			if v.Exchange != string(entity.ExchangeBinance) {
+				continue
+			}
+
+			logrus.Infof("start subscription for symbol: %s, interval: %s", v.Symbol, v.Interval)
+
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(v.Payload)); err != nil {
+				conn.Close()
+				wait := binanceReconnectDelay(attempt, rng)
+				attempt++
+				logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("binance ws subscribe failed: %v", err)
+				select {
+				case <-time.After(wait):
+					continue
+				case <-ctx.Done():
+					return nil
+				}
+			}
+		}
+
+		stopPing := make(chan struct{})
+		go func(c *websocket.Conn) {
+			ticker := time.NewTicker(2 * time.Minute)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
+						logrus.Error(err)
+						return
+					}
+				case <-ctx.Done():
+					return
+				case <-stopPing:
+					return
+				}
+			}
+		}(conn)
+
+		ctxDone := make(chan struct{})
+		go func(c *websocket.Conn) {
+			select {
+			case <-ctx.Done():
+				_ = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+				_ = c.Close()
+			case <-ctxDone:
+			}
+		}(conn)
+
+		readErr := false
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				if ctx.Err() != nil {
+					close(stopPing)
+					close(ctxDone)
+					return nil
+				}
+
+				readErr = true
+				logrus.Errorf("binance ws read failed: %v", err)
+				break
+			}
+
+			err = e.HandleKlineData(ctx, message)
+			if err != nil {
+				logrus.Errorf("binance ws handle kline data failed: %v", err)
+				continue
+			}
+		}
+
+		close(stopPing)
+		close(ctxDone)
+		_ = conn.Close()
+
+		if !readErr {
+			continue
+		}
+
+		wait := binanceReconnectDelay(attempt, rng)
+		attempt++
+		logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warn("reconnecting binance ws")
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if e.apiKey == "" || e.apiSecret == "" {
+		return nil, fmt.Errorf("binance credentials are missing in config")
+	}
+
+	orderSymbol, ok := e.symbolMapping[string(entity.ExchangeBinance)][order.Symbol]
+	if !ok {
+		orderSymbol = order.Symbol
+	}
+
+	typeCode, err := binanceOrderTypeCode(order.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	sideCode, err := binanceOrderSideCode(order.Side)
+	if err != nil {
+		return nil, err
+	}
+
+	normalizedQuantity := order.Quantity
+	normalizedPrice := order.Price
+
+	if precision, ok, err := e.getSymbolPrecision(ctx, orderSymbol); err != nil {
+		logrus.WithError(err).WithField("symbol", orderSymbol).Warn("failed to fetch binance symbol precision")
+	} else if ok {
+		normalizedQuantity = order.Quantity.Truncate(precision.BasePrecision)
+		if !normalizedQuantity.GreaterThan(decimal.Zero) {
+			return nil, fmt.Errorf("binance order quantity becomes zero after normalization: quantity=%s basePrecision=%d", order.Quantity.String(), precision.BasePrecision)
+		}
+
+		if order.Type == entity.OrderTypeLimit {
+			normalizedPrice = order.Price.Truncate(precision.QuotePrecision)
+			if !normalizedPrice.GreaterThan(decimal.Zero) {
+				return nil, fmt.Errorf("binance order price becomes zero after normalization: price=%s quotePrecision=%d", order.Price.String(), precision.QuotePrecision)
+			}
+		}
+	}
+
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	pairs := []string{
+		"symbol=" + orderSymbol,
+		"side=" + sideCode,
+		"type=" + typeCode,
+		"quantity=" + normalizedQuantity.String(),
+	}
+
+	if order.OrderID != nil && strings.TrimSpace(*order.OrderID) != "" {
+		clientID, err := normalizeBinanceClientID(strings.TrimSpace(*order.OrderID))
+		if err != nil {
+			return nil, err
+		}
+
+		pairs = append(pairs, "newClientOrderId="+url.QueryEscape(clientID))
+	}
+
+	if order.Type == entity.OrderTypeLimit {
+		pairs = append(pairs,
+			"price="+normalizedPrice.String(),
+			"timeInForce=GTC",
+		)
+	}
+
+	pairs = append(pairs,
+		"timestamp="+timestamp,
+		"recvWindow="+strconv.FormatInt(e.recvWindow, 10),
+	)
+
+	payload := strings.Join(pairs, "&")
+	signature := binanceHMACSHA256Hex(e.apiSecret, payload)
+	bodyPayload := payload + "&signature=" + signature
+
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("BINANCE_DEBUG_SIGN")), "true") {
+		logrus.WithFields(logrus.Fields{
+			"payload":   payload,
+			"signature": signature,
+		}).Info("binance signed payload")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/api/v3/order", strings.NewReader(bodyPayload))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("X-MBX-APIKEY", e.apiKey)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		var apiErr struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+		}
+		if err := json.Unmarshal(body, &apiErr); err != nil {
+			return nil, fmt.Errorf("binance order rejected: status=%d body=%s", resp.StatusCode, string(body))
+		}
+
+		logrus.Infof("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
+		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
+	}
+
+	var placeOrderResp binancePlaceOrderResponse
+	if err := json.Unmarshal(body, &placeOrderResp); err != nil {
+		return nil, fmt.Errorf("binance order parse failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	orderHistory, err := e.mapPlaceOrderResponseToOrderHistory(order, placeOrderResp)
+	if err != nil {
+		return nil, err
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"exchange":         order.Exchange,
+		"symbol":           orderSymbol,
+		"type":             order.Type,
+		"side":             order.Side,
+		"price":            normalizedPrice.String(),
+		"quantity":         normalizedQuantity.String(),
+		"source":           order.Source,
+		"response":         string(body),
+		"history_order_id": orderHistory.OrderID,
+		"history_status":   orderHistory.Status,
+	}).Info("order placed")
+
+	return &orderHistory, nil
+}
+
+func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory entity.OrderHistory) (*entity.OrderHistory, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if e.apiKey == "" || e.apiSecret == "" {
+		return nil, fmt.Errorf("binance credentials are missing in config")
+	}
+
+	orderSymbol := orderHistory.Symbol
+	if mapped, ok := e.symbolMapping[string(entity.ExchangeBinance)][orderSymbol]; ok {
+		orderSymbol = mapped
+	}
+	orderSymbol = strings.TrimSpace(orderSymbol)
+	if orderSymbol == "" {
+		return nil, fmt.Errorf("binance order symbol is empty")
+	}
+
+	if strings.TrimSpace(orderHistory.OrderID) == "" && !orderHistory.ClientOrderID.Valid {
+		return nil, fmt.Errorf("binance order history missing order id")
+	}
+
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	pairs := []string{
+		"symbol=" + orderSymbol,
+	}
+
+	if strings.TrimSpace(orderHistory.OrderID) != "" {
+		pairs = append(pairs, "orderId="+strings.TrimSpace(orderHistory.OrderID))
+	} else {
+		pairs = append(pairs, "origClientOrderId="+url.QueryEscape(strings.TrimSpace(orderHistory.ClientOrderID.String)))
+	}
+
+	pairs = append(pairs,
+		"timestamp="+timestamp,
+		"recvWindow="+strconv.FormatInt(e.recvWindow, 10),
+	)
+
+	payload := strings.Join(pairs, "&")
+	signature := binanceHMACSHA256Hex(e.apiSecret, payload)
+	endpoint := e.baseURL + "/api/v3/order?" + payload + "&signature=" + signature
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("X-MBX-APIKEY", e.apiKey)
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		var apiErr struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+		}
+		if err := json.Unmarshal(body, &apiErr); err != nil {
+			return nil, fmt.Errorf("binance order detail rejected: status=%d body=%s", resp.StatusCode, string(body))
+		}
+
+		return nil, fmt.Errorf("binance order detail rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
+	}
+
+	var detailResp binanceOrderDetailResponse
+	if err := json.Unmarshal(body, &detailResp); err != nil {
+		return nil, fmt.Errorf("binance order detail parse failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	updatedHistory, err := e.mapOrderHistorySyncResponse(orderHistory, detailResp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &updatedHistory, nil
+}
+
+func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.OrderRequest, resp binancePlaceOrderResponse) (entity.OrderHistory, error) {
+	price, err := decimal.NewFromString(resp.Price)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance order price: %w", err)
+	}
+
+	quantity, err := decimal.NewFromString(resp.OrigQty)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance order quantity: %w", err)
+	}
+
+	filledQuantity, err := decimal.NewFromString(resp.ExecutedQty)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance filled quantity: %w", err)
+	}
+
+	executedPrice := decimal.Zero
+	if filledQuantity.GreaterThan(decimal.Zero) {
+		quoteQty, err := binanceDecimalOrZero(resp.CummulativeQuoteQty)
+		if err != nil {
+			return entity.OrderHistory{}, fmt.Errorf("invalid binance cummulative quote quantity: %w", err)
+		}
+
+		executedPrice = quoteQty.Div(filledQuantity)
+	}
+
+	historySide, err := binanceOrderSideFromCode(resp.Side)
+	if err != nil {
+		return entity.OrderHistory{}, err
+	}
+
+	historyType, err := binanceOrderTypeFromCode(resp.Type)
+	if err != nil {
+		return entity.OrderHistory{}, err
+	}
+
+	historyStatus := binanceOrderStatusFromCode(resp.Status)
+	now := time.Now().UTC()
+
+	clientOrderID := sql.NullString{String: strings.TrimSpace(resp.ClientOrderID), Valid: strings.TrimSpace(resp.ClientOrderID) != ""}
+	strategyID := sql.NullString{}
+	if order.StrategyID != nil {
+		trimmed := strings.TrimSpace(*order.StrategyID)
+		if trimmed != "" {
+			strategyID = sql.NullString{String: trimmed, Valid: true}
+		}
+	}
+
+	createdAtExchange := sql.NullTime{}
+	if resp.TransactTime > 0 {
+		createdAtExchange = sql.NullTime{Time: time.UnixMilli(resp.TransactTime).UTC(), Valid: true}
+	}
+
+	sentAt := sql.NullTime{
+		Time:  time.Now(),
+		Valid: true,
+	}
+	if order.RequestedAt > 0 {
+		sentAt = sql.NullTime{Time: time.UnixMilli(order.RequestedAt).UTC(), Valid: true}
+	}
+
+	acknowledgedAt := sql.NullTime{Time: now, Valid: true}
+
+	var avgFillPrice *decimal.Decimal
+	if executedPrice.GreaterThan(decimal.Zero) {
+		avgFillPrice = &executedPrice
+	}
+
+	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	if resolvedSymbol == "" {
+		resolvedSymbol = order.Symbol
+	}
+
+	return entity.OrderHistory{
+		RequestID:         order.RequestID,
+		UserID:            order.UserID,
+		Exchange:          order.Exchange,
+		Symbol:            resolvedSymbol,
+		OrderID:           strconv.FormatInt(resp.OrderID, 10),
+		ClientOrderID:     clientOrderID,
+		Side:              historySide,
+		Type:              historyType,
+		Price:             &price,
+		Quantity:          quantity,
+		FilledQuantity:    filledQuantity,
+		AvgFillPrice:      avgFillPrice,
+		Status:            historyStatus,
+		Leverage:          nil,
+		Fee:               nil,
+		RealizedPnl:       nil,
+		CreatedAtExchange: createdAtExchange,
+		SentAt:            sentAt,
+		AcknowledgedAt:    acknowledgedAt,
+		FilledAt:          sql.NullTime{},
+		StrategyID:        strategyID,
+		ErrorMessage:      sql.NullString{},
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}, nil
+}
+
+func (e *BinanceExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp binanceOrderDetailResponse) (entity.OrderHistory, error) {
+	filledQuantity, err := binanceDecimalOrZero(resp.ExecutedQty)
+	if err != nil {
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance filled quantity: %w", err)
+	}
+
+	executedPrice := decimal.Zero
+	if filledQuantity.GreaterThan(decimal.Zero) {
+		quoteQty, err := binanceDecimalOrZero(resp.CummulativeQuoteQty)
+		if err != nil {
+			return entity.OrderHistory{}, fmt.Errorf("invalid binance cummulative quote quantity: %w", err)
+		}
+
+		executedPrice = quoteQty.Div(filledQuantity)
+	}
+
+	status := binanceOrderStatusFromCode(resp.Status)
+	now := time.Now().UTC()
+
+	orderHistory.Status = status
+	orderHistory.FilledQuantity = filledQuantity
+	if executedPrice.GreaterThan(decimal.Zero) {
+		orderHistory.AvgFillPrice = &executedPrice
+	}
+	orderHistory.UpdatedAt = now
+
+	if status == "FILLED" && !orderHistory.FilledAt.Valid {
+		orderHistory.FilledAt = sql.NullTime{Time: now, Valid: true}
+	}
+
+	if resp.OrderID > 0 && strings.TrimSpace(orderHistory.OrderID) == "" {
+		orderHistory.OrderID = strconv.FormatInt(resp.OrderID, 10)
+	}
+
+	if clientID := strings.TrimSpace(resp.ClientOrderID); clientID != "" && !orderHistory.ClientOrderID.Valid {
+		orderHistory.ClientOrderID = sql.NullString{String: clientID, Valid: true}
+	}
+
+	if resp.Time > 0 && !orderHistory.CreatedAtExchange.Valid {
+		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.Time).UTC(), Valid: true}
+	}
+
+	resolvedSymbol := e.resolveInternalSymbol(resp.Symbol)
+	if resolvedSymbol != "" {
+		orderHistory.Symbol = resolvedSymbol
+	}
+
+	return orderHistory, nil
+}
+
+func binanceOrderSideFromCode(code string) (entity.OrderSide, error) {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "BUY":
+		return entity.OrderSideBuy, nil
+	case "SELL":
+		return entity.OrderSideSell, nil
+	default:
+		return "", fmt.Errorf("unsupported binance order side code: %s", code)
+	}
+}
+
+func binanceOrderTypeFromCode(code string) (entity.OrderType, error) {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "LIMIT":
+		return entity.OrderTypeLimit, nil
+	case "MARKET":
+		return entity.OrderTypeMarket, nil
+	default:
+		return "", fmt.Errorf("unsupported binance order type code: %s", code)
+	}
+}
+
+func binanceOrderStatusFromCode(code string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "NEW":
+		return "NEW"
+	case "PARTIALLY_FILLED":
+		return "PARTIAL"
+	case "FILLED":
+		return "FILLED"
+	case "CANCELED", "EXPIRED", "PENDING_CANCEL":
+		return "CANCELED"
+	case "REJECTED":
+		return "REJECTED"
+	default:
+		if code == "" {
+			return "UNKNOWN"
+		}
+
+		return code
+	}
+}
+
+func binanceDecimalOrZero(raw string) (decimal.Decimal, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return decimal.Zero, nil
+	}
+	return decimal.NewFromString(trimmed)
+}
+
+func binanceOrderTypeCode(orderType entity.OrderType) (string, error) {
+	switch orderType {
+	case entity.OrderTypeLimit:
+		return "LIMIT", nil
+	case entity.OrderTypeMarket:
+		return "MARKET", nil
+	default:
+		return "", fmt.Errorf("unsupported order type for binance: %s", orderType)
+	}
+}
+
+func binanceOrderSideCode(orderSide entity.OrderSide) (string, error) {
+	switch orderSide {
+	case entity.OrderSideBuy:
+		return "BUY", nil
+	case entity.OrderSideSell:
+		return "SELL", nil
+	default:
+		return "", fmt.Errorf("unsupported order side for binance: %s", orderSide)
+	}
+}
+
+func normalizeBinanceClientID(raw string) (string, error) {
+	normalized := strings.TrimSpace(raw)
+	normalized = strings.ReplaceAll(normalized, "-", "")
+
+	if normalized == "" {
+		return "", fmt.Errorf("binance clientId is empty")
+	}
+
+	if len(normalized) > 36 {
+		normalized = normalized[:36]
+	}
+
+	if !binanceClientIDPattern.MatchString(normalized) {
+		return "", fmt.Errorf("binance clientId contains unsupported characters")
+	}
+
+	return normalized, nil
+}
+
+func binanceHMACSHA256Hex(secret, payload string) string {
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(payload))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (e *BinanceExchange) getSymbolPrecision(ctx context.Context, symbol string) (binanceSymbolPrecision, bool, error) {
+	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalizedSymbol == "" {
+		return binanceSymbolPrecision{}, false, nil
+	}
+
+	e.symbolPrecisionMu.RLock()
+	if precision, exists := e.symbolPrecision[normalizedSymbol]; exists {
+		e.symbolPrecisionMu.RUnlock()
+		return precision, true, nil
+	}
+	e.symbolPrecisionMu.RUnlock()
+
+	if err := e.refreshSymbolPrecision(ctx, normalizedSymbol); err != nil {
+		return binanceSymbolPrecision{}, false, err
+	}
+
+	e.symbolPrecisionMu.RLock()
+	precision, exists := e.symbolPrecision[normalizedSymbol]
+	e.symbolPrecisionMu.RUnlock()
+
+	return precision, exists, nil
+}
+
+func (e *BinanceExchange) refreshSymbolPrecision(ctx context.Context, symbol string) error {
+	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalizedSymbol == "" {
+		return nil
+	}
+
+	endpoint := e.baseURL + "/api/v3/exchangeInfo?symbol=" + url.QueryEscape(normalizedSymbol)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var symbolsResp struct {
+		Symbols []struct {
+			Symbol         string `json:"symbol"`
+			BasePrecision  int32  `json:"basePrecision"`
+			QuotePrecision int32  `json:"quotePrecision"`
+		} `json:"symbols"`
+	}
+
+	if err := json.Unmarshal(body, &symbolsResp); err != nil {
+		return fmt.Errorf("binance symbols parse failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("binance symbols request failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	for _, item := range symbolsResp.Symbols {
+		itemSymbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
+		if itemSymbol == "" {
+			continue
+		}
+
+		e.symbolPrecisionMu.Lock()
+		if e.symbolPrecision == nil {
+			e.symbolPrecision = make(map[string]binanceSymbolPrecision)
+		}
+		e.symbolPrecision[itemSymbol] = binanceSymbolPrecision{
+			BasePrecision:  item.BasePrecision,
+			QuotePrecision: item.QuotePrecision,
+		}
+		e.symbolPrecisionMu.Unlock()
+	}
+
+	return nil
+}
+
+type binancePlaceOrderResponse struct {
+	Symbol              string `json:"symbol"`
+	OrderID             int64  `json:"orderId"`
+	ClientOrderID       string `json:"clientOrderId"`
+	TransactTime        int64  `json:"transactTime"`
+	Price               string `json:"price"`
+	OrigQty             string `json:"origQty"`
+	ExecutedQty         string `json:"executedQty"`
+	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+	Status              string `json:"status"`
+	Type                string `json:"type"`
+	Side                string `json:"side"`
+}
+
+type binanceOrderDetailResponse struct {
+	Symbol              string `json:"symbol"`
+	OrderID             int64  `json:"orderId"`
+	ClientOrderID       string `json:"clientOrderId"`
+	Price               string `json:"price"`
+	OrigQty             string `json:"origQty"`
+	ExecutedQty         string `json:"executedQty"`
+	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+	Status              string `json:"status"`
+	Type                string `json:"type"`
+	Side                string `json:"side"`
+	Time                int64  `json:"time"`
+}
+
+func binanceReconnectDelay(attempt int, rng *rand.Rand) time.Duration {
+	backoff := float64(binanceWSReconnectMinDelay) * math.Pow(binanceWSReconnectFactor, float64(attempt))
+	if backoff > float64(binanceWSReconnectMaxDelay) {
+		backoff = float64(binanceWSReconnectMaxDelay)
+	}
+
+	base := time.Duration(backoff)
+	if binanceWSReconnectMaxDelay <= binanceWSReconnectMinDelay {
+		return base
+	}
+
+	jitterWindow := binanceWSReconnectMaxDelay - binanceWSReconnectMinDelay
+	jitter := time.Duration(rng.Int63n(int64(jitterWindow) + 1))
+	result := base + jitter
+	if result > binanceWSReconnectMaxDelay {
+		return binanceWSReconnectMaxDelay
+	}
+
+	return result
+}
