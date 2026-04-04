@@ -81,7 +81,8 @@ flowchart TB
 - Runs DB migration for `market_data` and `order_engine`.
 
 ## Supported Exchanges
-- Tokocrypto (currently supported).
+- Tokocrypto
+- Binance
 
 ## Quick Start (Local)
 
@@ -96,6 +97,8 @@ copy config.yml.example config.yml
 ```
 
 Update required values in `config.yml`:
+- `exchanges.binance.api_key`
+- `exchanges.binance.api_secret`
 - `exchanges.tokocrypto.api_key`
 - `exchanges.tokocrypto.api_secret`
 - `api_keys[*].key`
@@ -123,6 +126,22 @@ go run . migrate --databaseName=order_engine
 ```
 
 ### 6) Seed `market_data`
+Seed at least one subscription and symbol mapping per exchange you want to run.
+
+#### Binance example (BTCUSDT, 1m)
+```sql
+INSERT INTO kline_subscriptions
+(id, exchange, symbol, "interval", payload, created_at, updated_at)
+VALUES
+('3f040de8-c018-4f74-9ad8-7bcfe6f11db1', 'binance', 'BTC_USDT', '1m', '{"method": "SUBSCRIBE", "params": ["btcusdt@kline_1m"], "id": 1}'::jsonb, NOW(), NOW());
+
+INSERT INTO symbol_mappings
+(id, exchange, symbol, kline_symbol, order_symbol, created_at, updated_at)
+VALUES
+('f2e7bca4-d3f7-4b5f-a74f-5273f36ea565', 'binance', 'BTC_USDT', 'btcusdt', 'BTCUSDT', NOW(), NOW());
+```
+
+#### Tokocrypto example (TKOIDR, 1m)
 ```sql
 INSERT INTO kline_subscriptions
 (id, exchange, symbol, "interval", payload, created_at, updated_at)
@@ -133,10 +152,6 @@ INSERT INTO symbol_mappings
 (id, exchange, symbol, kline_symbol, order_symbol, created_at, updated_at)
 VALUES
 ('4494faed-468c-46b5-b7ca-389419ad63ad', 'tokocrypto', 'TKOIDR', 'tkoidr', 'TKO_IDR', '2026-02-22 14:36:22.978', '2026-02-22 14:36:22.978');
-
--- Example: create TKOIDR partition
--- SELECT create_symbol_partition('TKOIDR');
--- SELECT create_month_partition('TKOIDR', 2026, 2);
 ```
 
 ### 7) Run services (separate terminals)

@@ -7,7 +7,6 @@ import (
 	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/infrastructure"
 	"github.com/krobus00/hft-service/internal/repository"
-	"github.com/krobus00/hft-service/internal/service/exchange"
 	"github.com/krobus00/hft-service/internal/service/strategy/lazygrid"
 	"github.com/krobus00/hft-service/internal/util"
 	"github.com/spf13/cobra"
@@ -30,7 +29,7 @@ func StartLazyGridStrategy(cmd *cobra.Command, args []string) {
 	symbolMappingRepo := repository.NewSymbolMappingRepository(db)
 	marketKlineRepo := repository.NewMarketKlineRepository(db)
 
-	exchange.InitTokocryptoExchange(ctx, config.Env.Exchanges[string(entity.ExchangeTokoCrypto)], symbolMappingRepo, js, marketKlineRepo)
+	initConfiguredExchanges(ctx, symbolMappingRepo, nil, js, marketKlineRepo)
 
 	lazyGridConfig := lazygrid.DefaultLazyGridConfig()
 	lazyGridConfig.ResetStateOnStart = config.Env.Strategy.LazyGrid.ResetStateOnStart

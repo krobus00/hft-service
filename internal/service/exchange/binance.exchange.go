@@ -30,9 +30,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var tokocryptoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+const ()
 
-type TokocryptoExchange struct {
+var binanceClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+type BinanceExchange struct {
 	apiKey     string
 	apiSecret  string
 	baseURL    string
@@ -40,7 +42,7 @@ type TokocryptoExchange struct {
 	httpClient *http.Client
 
 	symbolPrecisionMu sync.RWMutex
-	symbolPrecision   map[string]tokocryptoSymbolPrecision
+	symbolPrecision   map[string]binanceSymbolPrecision
 	symbolMapping     atomic.Value
 	js                nats.JetStreamContext
 	marketKlineRepo   *repository.MarketKlineRepository
@@ -48,28 +50,28 @@ type TokocryptoExchange struct {
 	klineSubRepo      *repository.KlineSubscriptionRepository
 }
 
-type tokocryptoSymbolPrecision struct {
+type binanceSymbolPrecision struct {
 	BasePrecision  int32
 	QuotePrecision int32
 }
 
-func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeConfig, symbolMappingRepo *repository.SymbolMappingRepository, klineSubRepo *repository.KlineSubscriptionRepository, js nats.JetStreamContext, marketKlineRepo *repository.MarketKlineRepository) *TokocryptoExchange {
-	symbolMapping, err := symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeTokoCrypto))
+func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConfig, symbolMappingRepo *repository.SymbolMappingRepository, klineSubRepo *repository.KlineSubscriptionRepository, js nats.JetStreamContext, marketKlineRepo *repository.MarketKlineRepository) *BinanceExchange {
+	symbolMapping, err := symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeBinance))
 	util.ContinueOrFatal(err)
 
 	recvWindow := int64(5000)
-	if raw := strings.TrimSpace(os.Getenv("TOKOCRYPTO_RECV_WINDOW")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("BINANCE_RECV_WINDOW")); raw != "" {
 		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 && parsed <= 60000 {
 			recvWindow = parsed
 		}
 	}
 
-	baseURL := strings.TrimSpace(os.Getenv("TOKOCRYPTO_BASE_URL"))
+	baseURL := strings.TrimSpace(os.Getenv("BINANCE_BASE_URL"))
 	if baseURL == "" {
-		baseURL = "https://www.tokocrypto.com"
+		baseURL = "https://api.binance.com"
 	}
 
-	newExchange := &TokocryptoExchange{
+	newExchange := &BinanceExchange{
 		apiKey:            strings.TrimSpace(exchangeConfig.APIKey),
 		apiSecret:         strings.TrimSpace(exchangeConfig.APISecret),
 		baseURL:           strings.TrimRight(baseURL, "/"),
@@ -82,12 +84,12 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 	}
 	persistSymbolMapping(&newExchange.symbolMapping, symbolMapping)
 
-	RegisterExchange(entity.ExchangeTokoCrypto, newExchange)
+	RegisterExchange(entity.ExchangeBinance, newExchange)
 
 	return newExchange
 }
 
-func (e *TokocryptoExchange) JetstreamEventInit(ctx context.Context) error {
+func (e *BinanceExchange) JetstreamEventInit(ctx context.Context) error {
 	streamConfig := &nats.StreamConfig{
 		Name:      constant.KlineStreamName,
 		Subjects:  []string{constant.KlineStreamSubjectAll},
@@ -121,7 +123,7 @@ func (e *TokocryptoExchange) JetstreamEventInit(ctx context.Context) error {
 	return nil
 }
 
-func (e *TokocryptoExchange) JetstreamEventSubscribe(ctx context.Context) error {
+func (e *BinanceExchange) JetstreamEventSubscribe(ctx context.Context) error {
 	err := e.JetstreamEventInit(ctx)
 	if err != nil {
 		logrus.Error(err)
@@ -129,8 +131,8 @@ func (e *TokocryptoExchange) JetstreamEventSubscribe(ctx context.Context) error 
 	}
 
 	_, err = e.js.QueueSubscribe(
-		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeTokoCrypto)),
-		constant.GetKlineInsertQueueGroup(string(entity.ExchangeTokoCrypto)),
+		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeBinance)),
+		constant.GetKlineInsertQueueGroup(string(entity.ExchangeBinance)),
 		func(msg *nats.Msg) {
 			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
 			if err != nil {
@@ -152,7 +154,7 @@ func (e *TokocryptoExchange) JetstreamEventSubscribe(ctx context.Context) error 
 	return nil
 }
 
-func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats.Msg) (err error) {
+func (e *BinanceExchange) handleKlineDataEvent(ctx context.Context, msg *nats.Msg) (err error) {
 	logger := logrus.WithFields(logrus.Fields{
 		"req": string(msg.Data),
 	})
@@ -177,7 +179,7 @@ func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats
 				return
 			}
 
-			err := util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), req.Data.Symbol, req.Data.Interval), req)
+			err := util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeBinance), req.Data.Symbol, req.Data.Interval), req)
 			if err != nil {
 				logger.Error(err)
 				return
@@ -194,7 +196,7 @@ func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats
 	return nil
 }
 
-func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte) error {
+func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) error {
 	var payload struct {
 		Stream string `json:"stream"`
 		Data   struct {
@@ -280,14 +282,14 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 		symbol = strings.TrimSpace(payload.Data.Symbol)
 	}
 	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
+		ExchangeName:      entity.ExchangeBinance,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
 	}, symbol)
 
 	data := entity.MarketKline{
-		Exchange:         string(entity.ExchangeTokoCrypto),
+		Exchange:         string(entity.ExchangeBinance),
 		EventType:        payload.Data.Event,
 		EventTime:        eventAt,
 		Symbol:           symbol,
@@ -308,7 +310,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 		UpdatedAt:        now,
 	}
 
-	err = util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), data.Symbol, data.Interval), entity.MarketKlineEvent{
+	err = util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeBinance), data.Symbol, data.Interval), entity.MarketKlineEvent{
 		RetryCount: 0,
 		Data:       data,
 	})
@@ -319,18 +321,18 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 	return nil
 }
 
-func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
+func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
 	deps := exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
+		ExchangeName:      entity.ExchangeBinance,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
 	}
 
 	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
-		ExchangeName:    entity.ExchangeTokoCrypto,
-		WSURLEnvKey:     "TOKOCRYPTO_WS_URL",
-		DefaultWSURL:    "wss://stream-cloud.tokocrypto.site/stream",
+		ExchangeName: entity.ExchangeBinance,
+		WSURLEnvKey:  "BINANCE_WS_URL",
+		DefaultWSURL: "wss://stream.binance.com:9443/stream",
 		Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
 			return resyncSymbolMappingAndSubscriptions(
 				ctx,
@@ -350,30 +352,30 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 		LoadResyncState: func(ctx context.Context) (klineResyncState, error) {
 			return loadExchangeResyncState(ctx, deps)
 		},
-		HandleMessage:   e.HandleKlineData,
+		HandleMessage: e.HandleKlineData,
 	}, subscriptions)
 }
 
-func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
+func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if e.apiKey == "" || e.apiSecret == "" {
-		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
+		return nil, fmt.Errorf("binance credentials are missing in config")
 	}
 
 	mapping := snapshotSymbolMapping(&e.symbolMapping)
-	orderSymbol, ok := mapping[string(entity.ExchangeTokoCrypto)][order.Symbol]
+	orderSymbol, ok := mapping[string(entity.ExchangeBinance)][order.Symbol]
 	if !ok {
 		orderSymbol = order.Symbol
 	}
 
-	typeCode, err := tokocryptoOrderTypeCode(order.Type)
+	typeCode, err := binanceOrderTypeCode(order.Type)
 	if err != nil {
 		return nil, err
 	}
 
-	sideCode, err := tokocryptoOrderSideCode(order.Side)
+	sideCode, err := binanceOrderSideCode(order.Side)
 	if err != nil {
 		return nil, err
 	}
@@ -382,17 +384,17 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	normalizedPrice := order.Price
 
 	if precision, ok, err := e.getSymbolPrecision(ctx, orderSymbol); err != nil {
-		logrus.WithError(err).WithField("symbol", orderSymbol).Warn("failed to fetch tokocrypto symbol precision")
+		logrus.WithError(err).WithField("symbol", orderSymbol).Warn("failed to fetch binance symbol precision")
 	} else if ok {
 		normalizedQuantity = order.Quantity.Truncate(precision.BasePrecision)
 		if !normalizedQuantity.GreaterThan(decimal.Zero) {
-			return nil, fmt.Errorf("tokocrypto order quantity becomes zero after normalization: quantity=%s basePrecision=%d", order.Quantity.String(), precision.BasePrecision)
+			return nil, fmt.Errorf("binance order quantity becomes zero after normalization: quantity=%s basePrecision=%d", order.Quantity.String(), precision.BasePrecision)
 		}
 
 		if order.Type == entity.OrderTypeLimit {
 			normalizedPrice = order.Price.Truncate(precision.QuotePrecision)
 			if !normalizedPrice.GreaterThan(decimal.Zero) {
-				return nil, fmt.Errorf("tokocrypto order price becomes zero after normalization: price=%s quotePrecision=%d", order.Price.String(), precision.QuotePrecision)
+				return nil, fmt.Errorf("binance order price becomes zero after normalization: price=%s quotePrecision=%d", order.Price.String(), precision.QuotePrecision)
 			}
 		}
 	}
@@ -400,24 +402,24 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	pairs := []string{
 		"symbol=" + orderSymbol,
-		"side=" + strconv.Itoa(sideCode),
-		"type=" + strconv.Itoa(typeCode),
+		"side=" + sideCode,
+		"type=" + typeCode,
 		"quantity=" + normalizedQuantity.String(),
 	}
 
 	if order.OrderID != nil && strings.TrimSpace(*order.OrderID) != "" {
-		clientID, err := normalizeTokocryptoClientID(strings.TrimSpace(*order.OrderID))
+		clientID, err := normalizeBinanceClientID(strings.TrimSpace(*order.OrderID))
 		if err != nil {
 			return nil, err
 		}
 
-		pairs = append(pairs, "clientId="+url.QueryEscape(clientID))
+		pairs = append(pairs, "newClientOrderId="+url.QueryEscape(clientID))
 	}
 
 	if order.Type == entity.OrderTypeLimit {
 		pairs = append(pairs,
 			"price="+normalizedPrice.String(),
-			"timeInForce=1",
+			"timeInForce=GTC",
 		)
 	}
 
@@ -427,17 +429,17 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := hmacSHA256Hex(e.apiSecret, payload)
+	signature := binanceHMACSHA256Hex(e.apiSecret, payload)
 	bodyPayload := payload + "&signature=" + signature
 
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("TOKOCRYPTO_DEBUG_SIGN")), "true") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("BINANCE_DEBUG_SIGN")), "true") {
 		logrus.WithFields(logrus.Fields{
 			"payload":   payload,
 			"signature": signature,
-		}).Info("tokocrypto signed payload")
+		}).Info("binance signed payload")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/open/v1/orders", strings.NewReader(bodyPayload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/api/v3/order", strings.NewReader(bodyPayload))
 	if err != nil {
 		return nil, err
 	}
@@ -456,36 +458,22 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, err
 	}
 
-	var apiResp struct {
-		Code      int             `json:"code"`
-		Msg       string          `json:"msg"`
-		Message   string          `json:"message"`
-		Success   *bool           `json:"success"`
-		Timestamp int64           `json:"timestamp"`
-		Data      json.RawMessage `json:"data"`
-	}
-
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, fmt.Errorf("tokocrypto order parse failed: status=%d body=%s", resp.StatusCode, string(body))
-	}
-
-	if resp.StatusCode >= http.StatusBadRequest || apiResp.Code != 0 || (apiResp.Success != nil && !*apiResp.Success) {
-		errMsg := apiResp.Message
-		if errMsg == "" {
-			errMsg = apiResp.Msg
+	if resp.StatusCode >= http.StatusBadRequest {
+		var apiErr struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
 		}
-		if errMsg == "" {
-			errMsg = "unknown error"
+		if err := json.Unmarshal(body, &apiErr); err != nil {
+			return nil, fmt.Errorf("binance order rejected: status=%d body=%s", resp.StatusCode, string(body))
 		}
 
-		logrus.Infof("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
-
-		return nil, fmt.Errorf("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
+		logrus.Infof("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
+		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
 	}
 
-	var placeOrderResp entity.TokocryptoPlaceOrderResponse
-	if err := json.Unmarshal(apiResp.Data, &placeOrderResp); err != nil {
-		return nil, fmt.Errorf("tokocrypto order data parse failed: %w", err)
+	var placeOrderResp binancePlaceOrderResponse
+	if err := json.Unmarshal(body, &placeOrderResp); err != nil {
+		return nil, fmt.Errorf("binance order parse failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
 	orderHistory, err := e.mapPlaceOrderResponseToOrderHistory(order, placeOrderResp)
@@ -501,7 +489,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		"price":            normalizedPrice.String(),
 		"quantity":         normalizedQuantity.String(),
 		"source":           order.Source,
-		"response":         string(apiResp.Data),
+		"response":         string(body),
 		"history_order_id": orderHistory.OrderID,
 		"history_status":   orderHistory.Status,
 	}).Info("order placed")
@@ -509,27 +497,27 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	return &orderHistory, nil
 }
 
-func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory entity.OrderHistory) (*entity.OrderHistory, error) {
+func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory entity.OrderHistory) (*entity.OrderHistory, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if e.apiKey == "" || e.apiSecret == "" {
-		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
+		return nil, fmt.Errorf("binance credentials are missing in config")
 	}
 
 	orderSymbol := orderHistory.Symbol
 	mapping := snapshotSymbolMapping(&e.symbolMapping)
-	mapped, ok := mapping[string(entity.ExchangeTokoCrypto)][orderSymbol]
+	mapped, ok := mapping[string(entity.ExchangeBinance)][orderSymbol]
 	if ok {
 		orderSymbol = mapped
 	}
 	orderSymbol = strings.TrimSpace(orderSymbol)
 	if orderSymbol == "" {
-		return nil, fmt.Errorf("tokocrypto order symbol is empty")
+		return nil, fmt.Errorf("binance order symbol is empty")
 	}
 
 	if strings.TrimSpace(orderHistory.OrderID) == "" && !orderHistory.ClientOrderID.Valid {
-		return nil, fmt.Errorf("tokocrypto order history missing order id")
+		return nil, fmt.Errorf("binance order history missing order id")
 	}
 
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
@@ -540,7 +528,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	if strings.TrimSpace(orderHistory.OrderID) != "" {
 		pairs = append(pairs, "orderId="+strings.TrimSpace(orderHistory.OrderID))
 	} else {
-		pairs = append(pairs, "clientId="+url.QueryEscape(strings.TrimSpace(orderHistory.ClientOrderID.String)))
+		pairs = append(pairs, "origClientOrderId="+url.QueryEscape(strings.TrimSpace(orderHistory.ClientOrderID.String)))
 	}
 
 	pairs = append(pairs,
@@ -549,8 +537,8 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := hmacSHA256Hex(e.apiSecret, payload)
-	endpoint := e.baseURL + "/open/v1/orders/detail?" + payload + "&signature=" + signature
+	signature := binanceHMACSHA256Hex(e.apiSecret, payload)
+	endpoint := e.baseURL + "/api/v3/order?" + payload + "&signature=" + signature
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -570,34 +558,21 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 		return nil, err
 	}
 
-	var apiResp struct {
-		Code      int             `json:"code"`
-		Msg       string          `json:"msg"`
-		Message   string          `json:"message"`
-		Success   *bool           `json:"success"`
-		Timestamp int64           `json:"timestamp"`
-		Data      json.RawMessage `json:"data"`
-	}
-
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, fmt.Errorf("tokocrypto order detail parse failed: status=%d body=%s", resp.StatusCode, string(body))
-	}
-
-	if resp.StatusCode >= http.StatusBadRequest || apiResp.Code != 0 || (apiResp.Success != nil && !*apiResp.Success) {
-		errMsg := apiResp.Message
-		if errMsg == "" {
-			errMsg = apiResp.Msg
+	if resp.StatusCode >= http.StatusBadRequest {
+		var apiErr struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
 		}
-		if errMsg == "" {
-			errMsg = "unknown error"
+		if err := json.Unmarshal(body, &apiErr); err != nil {
+			return nil, fmt.Errorf("binance order detail rejected: status=%d body=%s", resp.StatusCode, string(body))
 		}
 
-		return nil, fmt.Errorf("tokocrypto order detail rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
+		return nil, fmt.Errorf("binance order detail rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
 	}
 
-	var detailResp entity.TokocryptoOrderDetailResponse
-	if err := json.Unmarshal(apiResp.Data, &detailResp); err != nil {
-		return nil, fmt.Errorf("tokocrypto order detail data parse failed: %w", err)
+	var detailResp binanceOrderDetailResponse
+	if err := json.Unmarshal(body, &detailResp); err != nil {
+		return nil, fmt.Errorf("binance order detail parse failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
 	updatedHistory, err := e.mapOrderHistorySyncResponse(orderHistory, detailResp)
@@ -608,41 +583,46 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	return &updatedHistory, nil
 }
 
-func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.OrderRequest, resp entity.TokocryptoPlaceOrderResponse) (entity.OrderHistory, error) {
+func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.OrderRequest, resp binancePlaceOrderResponse) (entity.OrderHistory, error) {
 	price, err := decimal.NewFromString(resp.Price)
 	if err != nil {
-		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto order price: %w", err)
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance order price: %w", err)
 	}
 
 	quantity, err := decimal.NewFromString(resp.OrigQty)
 	if err != nil {
-		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto order quantity: %w", err)
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance order quantity: %w", err)
 	}
 
 	filledQuantity, err := decimal.NewFromString(resp.ExecutedQty)
 	if err != nil {
-		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto filled quantity: %w", err)
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance filled quantity: %w", err)
 	}
 
-	executedPrice, err := decimal.NewFromString(resp.ExecutedPrice)
-	if err != nil {
-		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto executed price: %w", err)
+	executedPrice := decimal.Zero
+	if filledQuantity.GreaterThan(decimal.Zero) {
+		quoteQty, err := binanceDecimalOrZero(resp.CummulativeQuoteQty)
+		if err != nil {
+			return entity.OrderHistory{}, fmt.Errorf("invalid binance cummulative quote quantity: %w", err)
+		}
+
+		executedPrice = quoteQty.Div(filledQuantity)
 	}
 
-	historySide, err := tokocryptoOrderSideFromCode(resp.Side)
+	historySide, err := binanceOrderSideFromCode(resp.Side)
 	if err != nil {
 		return entity.OrderHistory{}, err
 	}
 
-	historyType, err := tokocryptoOrderTypeFromCode(resp.Type)
+	historyType, err := binanceOrderTypeFromCode(resp.Type)
 	if err != nil {
 		return entity.OrderHistory{}, err
 	}
 
-	historyStatus := tokocryptoOrderStatusFromCode(resp.Status)
+	historyStatus := binanceOrderStatusFromCode(resp.Status)
 	now := time.Now().UTC()
 
-	clientOrderID := sql.NullString{String: strings.TrimSpace(resp.ClientID), Valid: strings.TrimSpace(resp.ClientID) != ""}
+	clientOrderID := sql.NullString{String: strings.TrimSpace(resp.ClientOrderID), Valid: strings.TrimSpace(resp.ClientOrderID) != ""}
 	strategyID := sql.NullString{}
 	if order.StrategyID != nil {
 		trimmed := strings.TrimSpace(*order.StrategyID)
@@ -652,8 +632,8 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 	}
 
 	createdAtExchange := sql.NullTime{}
-	if resp.CreateTime > 0 {
-		createdAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
+	if resp.TransactTime > 0 {
+		createdAtExchange = sql.NullTime{Time: time.UnixMilli(resp.TransactTime).UTC(), Valid: true}
 	}
 
 	sentAt := sql.NullTime{
@@ -672,7 +652,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 	}
 
 	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
+		ExchangeName:      entity.ExchangeBinance,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -686,7 +666,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
 		Symbol:            resolvedSymbol,
-		OrderID:           fmt.Sprintf("%d", resp.OrderID),
+		OrderID:           strconv.FormatInt(resp.OrderID, 10),
 		ClientOrderID:     clientOrderID,
 		Side:              historySide,
 		Type:              historyType,
@@ -709,18 +689,23 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 	}, nil
 }
 
-func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp entity.TokocryptoOrderDetailResponse) (entity.OrderHistory, error) {
-	filledQuantity, err := tokocryptoDecimalOrZero(resp.ExecutedQty)
+func (e *BinanceExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp binanceOrderDetailResponse) (entity.OrderHistory, error) {
+	filledQuantity, err := binanceDecimalOrZero(resp.ExecutedQty)
 	if err != nil {
-		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto filled quantity: %w", err)
+		return entity.OrderHistory{}, fmt.Errorf("invalid binance filled quantity: %w", err)
 	}
 
-	executedPrice, err := tokocryptoDecimalOrZero(resp.ExecutedPrice)
-	if err != nil {
-		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto executed price: %w", err)
+	executedPrice := decimal.Zero
+	if filledQuantity.GreaterThan(decimal.Zero) {
+		quoteQty, err := binanceDecimalOrZero(resp.CummulativeQuoteQty)
+		if err != nil {
+			return entity.OrderHistory{}, fmt.Errorf("invalid binance cummulative quote quantity: %w", err)
+		}
+
+		executedPrice = quoteQty.Div(filledQuantity)
 	}
 
-	status := tokocryptoOrderStatusFromCode(resp.Status)
+	status := binanceOrderStatusFromCode(resp.Status)
 	now := time.Now().UTC()
 
 	orderHistory.Status = status
@@ -734,20 +719,20 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 		orderHistory.FilledAt = sql.NullTime{Time: now, Valid: true}
 	}
 
-	if strings.TrimSpace(resp.OrderID) != "" && strings.TrimSpace(orderHistory.OrderID) == "" {
-		orderHistory.OrderID = resp.OrderID
+	if resp.OrderID > 0 && strings.TrimSpace(orderHistory.OrderID) == "" {
+		orderHistory.OrderID = strconv.FormatInt(resp.OrderID, 10)
 	}
 
-	if clientID := strings.TrimSpace(resp.ClientID); clientID != "" && !orderHistory.ClientOrderID.Valid {
+	if clientID := strings.TrimSpace(resp.ClientOrderID); clientID != "" && !orderHistory.ClientOrderID.Valid {
 		orderHistory.ClientOrderID = sql.NullString{String: clientID, Valid: true}
 	}
 
-	if resp.CreateTime > 0 && !orderHistory.CreatedAtExchange.Valid {
-		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
+	if resp.Time > 0 && !orderHistory.CreatedAtExchange.Valid {
+		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.Time).UTC(), Valid: true}
 	}
 
 	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
+		ExchangeName:      entity.ExchangeBinance,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -759,46 +744,50 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 	return orderHistory, nil
 }
 
-func tokocryptoOrderSideFromCode(code int32) (entity.OrderSide, error) {
-	switch code {
-	case 0:
+func binanceOrderSideFromCode(code string) (entity.OrderSide, error) {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "BUY":
 		return entity.OrderSideBuy, nil
-	case 1:
+	case "SELL":
 		return entity.OrderSideSell, nil
 	default:
-		return "", fmt.Errorf("unsupported tokocrypto order side code: %d", code)
+		return "", fmt.Errorf("unsupported binance order side code: %s", code)
 	}
 }
 
-func tokocryptoOrderTypeFromCode(code int32) (entity.OrderType, error) {
-	switch code {
-	case 1:
+func binanceOrderTypeFromCode(code string) (entity.OrderType, error) {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "LIMIT":
 		return entity.OrderTypeLimit, nil
-	case 2:
+	case "MARKET":
 		return entity.OrderTypeMarket, nil
 	default:
-		return "", fmt.Errorf("unsupported tokocrypto order type code: %d", code)
+		return "", fmt.Errorf("unsupported binance order type code: %s", code)
 	}
 }
 
-func tokocryptoOrderStatusFromCode(code int32) string {
-	switch code {
-	case 0:
+func binanceOrderStatusFromCode(code string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "NEW":
 		return "NEW"
-	case 1:
+	case "PARTIALLY_FILLED":
 		return "PARTIAL"
-	case 2:
+	case "FILLED":
 		return "FILLED"
-	case 3:
+	case "CANCELED", "EXPIRED", "PENDING_CANCEL":
 		return "CANCELED"
-	case 4:
+	case "REJECTED":
 		return "REJECTED"
 	default:
-		return fmt.Sprintf("UNKNOWN_%d", code)
+		if code == "" {
+			return "UNKNOWN"
+		}
+
+		return code
 	}
 }
 
-func tokocryptoDecimalOrZero(raw string) (decimal.Decimal, error) {
+func binanceDecimalOrZero(raw string) (decimal.Decimal, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return decimal.Zero, nil
@@ -806,57 +795,57 @@ func tokocryptoDecimalOrZero(raw string) (decimal.Decimal, error) {
 	return decimal.NewFromString(trimmed)
 }
 
-func tokocryptoOrderTypeCode(orderType entity.OrderType) (int, error) {
+func binanceOrderTypeCode(orderType entity.OrderType) (string, error) {
 	switch orderType {
 	case entity.OrderTypeLimit:
-		return 1, nil
+		return "LIMIT", nil
 	case entity.OrderTypeMarket:
-		return 2, nil
+		return "MARKET", nil
 	default:
-		return 0, fmt.Errorf("unsupported order type for tokocrypto: %s", orderType)
+		return "", fmt.Errorf("unsupported order type for binance: %s", orderType)
 	}
 }
 
-func tokocryptoOrderSideCode(orderSide entity.OrderSide) (int, error) {
+func binanceOrderSideCode(orderSide entity.OrderSide) (string, error) {
 	switch orderSide {
 	case entity.OrderSideBuy:
-		return 0, nil
+		return "BUY", nil
 	case entity.OrderSideSell:
-		return 1, nil
+		return "SELL", nil
 	default:
-		return 0, fmt.Errorf("unsupported order side for tokocrypto: %s", orderSide)
+		return "", fmt.Errorf("unsupported order side for binance: %s", orderSide)
 	}
 }
 
-func normalizeTokocryptoClientID(raw string) (string, error) {
+func normalizeBinanceClientID(raw string) (string, error) {
 	normalized := strings.TrimSpace(raw)
 	normalized = strings.ReplaceAll(normalized, "-", "")
 
 	if normalized == "" {
-		return "", fmt.Errorf("tokocrypto clientId is empty")
+		return "", fmt.Errorf("binance clientId is empty")
 	}
 
-	if len(normalized) > 32 {
-		normalized = normalized[:32]
+	if len(normalized) > 36 {
+		normalized = normalized[:36]
 	}
 
-	if !tokocryptoClientIDPattern.MatchString(normalized) {
-		return "", fmt.Errorf("tokocrypto clientId contains unsupported characters")
+	if !binanceClientIDPattern.MatchString(normalized) {
+		return "", fmt.Errorf("binance clientId contains unsupported characters")
 	}
 
 	return normalized, nil
 }
 
-func hmacSHA256Hex(secret, payload string) string {
+func binanceHMACSHA256Hex(secret, payload string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(payload))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func (e *TokocryptoExchange) getSymbolPrecision(ctx context.Context, symbol string) (tokocryptoSymbolPrecision, bool, error) {
+func (e *BinanceExchange) getSymbolPrecision(ctx context.Context, symbol string) (binanceSymbolPrecision, bool, error) {
 	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
 	if normalizedSymbol == "" {
-		return tokocryptoSymbolPrecision{}, false, nil
+		return binanceSymbolPrecision{}, false, nil
 	}
 
 	e.symbolPrecisionMu.RLock()
@@ -867,7 +856,7 @@ func (e *TokocryptoExchange) getSymbolPrecision(ctx context.Context, symbol stri
 	e.symbolPrecisionMu.RUnlock()
 
 	if err := e.refreshSymbolPrecision(ctx, normalizedSymbol); err != nil {
-		return tokocryptoSymbolPrecision{}, false, err
+		return binanceSymbolPrecision{}, false, err
 	}
 
 	e.symbolPrecisionMu.RLock()
@@ -877,13 +866,13 @@ func (e *TokocryptoExchange) getSymbolPrecision(ctx context.Context, symbol stri
 	return precision, exists, nil
 }
 
-func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol string) error {
+func (e *BinanceExchange) refreshSymbolPrecision(ctx context.Context, symbol string) error {
 	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
 	if normalizedSymbol == "" {
 		return nil
 	}
 
-	endpoint := e.baseURL + "/bapi/asset/v1/public/asset-service/product/get-exchange-info?symbol=" + url.QueryEscape(normalizedSymbol)
+	endpoint := e.baseURL + "/api/v3/exchangeInfo?symbol=" + url.QueryEscape(normalizedSymbol)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -901,25 +890,22 @@ func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol 
 	}
 
 	var symbolsResp struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Success *bool  `json:"success"`
-		Data    []struct {
+		Symbols []struct {
 			Symbol         string `json:"symbol"`
 			BasePrecision  int32  `json:"basePrecision"`
 			QuotePrecision int32  `json:"quotePrecision"`
-		} `json:"data"`
+		} `json:"symbols"`
 	}
 
 	if err := json.Unmarshal(body, &symbolsResp); err != nil {
-		return fmt.Errorf("tokocrypto symbols parse failed: status=%d body=%s", resp.StatusCode, string(body))
+		return fmt.Errorf("binance symbols parse failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
-	if resp.StatusCode >= http.StatusBadRequest || symbolsResp.Code != 0 || (symbolsResp.Success != nil && !*symbolsResp.Success) {
-		return fmt.Errorf("tokocrypto symbols request failed: status=%d code=%d message=%s", resp.StatusCode, symbolsResp.Code, symbolsResp.Message)
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("binance symbols request failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
-	for _, item := range symbolsResp.Data {
+	for _, item := range symbolsResp.Symbols {
 		itemSymbol := strings.ToUpper(strings.TrimSpace(item.Symbol))
 		if itemSymbol == "" {
 			continue
@@ -927,9 +913,9 @@ func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol 
 
 		e.symbolPrecisionMu.Lock()
 		if e.symbolPrecision == nil {
-			e.symbolPrecision = make(map[string]tokocryptoSymbolPrecision)
+			e.symbolPrecision = make(map[string]binanceSymbolPrecision)
 		}
-		e.symbolPrecision[itemSymbol] = tokocryptoSymbolPrecision{
+		e.symbolPrecision[itemSymbol] = binanceSymbolPrecision{
 			BasePrecision:  item.BasePrecision,
 			QuotePrecision: item.QuotePrecision,
 		}
@@ -937,4 +923,32 @@ func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol 
 	}
 
 	return nil
+}
+
+type binancePlaceOrderResponse struct {
+	Symbol              string `json:"symbol"`
+	OrderID             int64  `json:"orderId"`
+	ClientOrderID       string `json:"clientOrderId"`
+	TransactTime        int64  `json:"transactTime"`
+	Price               string `json:"price"`
+	OrigQty             string `json:"origQty"`
+	ExecutedQty         string `json:"executedQty"`
+	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+	Status              string `json:"status"`
+	Type                string `json:"type"`
+	Side                string `json:"side"`
+}
+
+type binanceOrderDetailResponse struct {
+	Symbol              string `json:"symbol"`
+	OrderID             int64  `json:"orderId"`
+	ClientOrderID       string `json:"clientOrderId"`
+	Price               string `json:"price"`
+	OrigQty             string `json:"origQty"`
+	ExecutedQty         string `json:"executedQty"`
+	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
+	Status              string `json:"status"`
+	Type                string `json:"type"`
+	Side                string `json:"side"`
+	Time                int64  `json:"time"`
 }

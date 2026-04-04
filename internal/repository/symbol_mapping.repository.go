@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"database/sql"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/krobus00/hft-service/internal/entity"
@@ -49,4 +51,18 @@ func (r *SymbolMappingRepository) GetByExchange(ctx context.Context, exchange st
 	}
 
 	return exchangeSymbolMapping, nil
+}
+
+func (r *SymbolMappingRepository) GetLatestUpdatedAtByExchange(ctx context.Context, exchange string) (time.Time, error) {
+	var updatedAt sql.NullTime
+	err := r.db.GetContext(ctx, &updatedAt, "SELECT MAX(updated_at) FROM symbol_mappings WHERE exchange = $1", exchange)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if !updatedAt.Valid {
+		return time.Time{}, nil
+	}
+
+	return updatedAt.Time, nil
 }

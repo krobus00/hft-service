@@ -122,6 +122,7 @@ func (e *OrderEngineService) handlePlaceOrderEvent(ctx context.Context, msg *nat
 			logger.Error(err)
 			req.RetryCount++
 			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
+				err = nil
 				return
 			}
 

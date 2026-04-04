@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/krobus00/hft-service/internal/config"
-	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/infrastructure"
 	"github.com/krobus00/hft-service/internal/repository"
 	"github.com/krobus00/hft-service/internal/service/exchange"
@@ -36,7 +35,7 @@ func StartOrderEngineWorker(cmd *cobra.Command, args []string) {
 	marketKlineRepo := repository.NewMarketKlineRepository(marketDataDB)
 	orderHistoryRepo := repository.NewOrderHistoryRepository(orderEngineDB)
 
-	exchange.InitTokocryptoExchange(ctx, config.Env.Exchanges[string(entity.ExchangeTokoCrypto)], symbolMappingRepo, js, marketKlineRepo)
+	initConfiguredExchanges(ctx, symbolMappingRepo, nil, js, marketKlineRepo)
 
 	syncInterval := resolveOrderHistorySyncInterval()
 	orderHistorySyncService := orderengine.NewOrderHistorySyncService(exchange.GlobalExchangeRegistry, orderHistoryRepo, syncInterval)

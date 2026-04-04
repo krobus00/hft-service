@@ -29,7 +29,7 @@ func StartMarketDataGateway(cmd *cobra.Command, args []string) {
 	symbolMappingRepo := repository.NewSymbolMappingRepository(db)
 	marketKlineRepo := repository.NewMarketKlineRepository(db)
 
-	exchange.InitTokocryptoExchange(ctx, config.Env.Exchanges[string(entity.ExchangeTokoCrypto)], symbolMappingRepo, js, marketKlineRepo)
+	initConfiguredExchanges(ctx, symbolMappingRepo, klineSubscriptionRepo, js, marketKlineRepo)
 
 	var subscriptionWG sync.WaitGroup
 
@@ -66,7 +66,7 @@ func StartMarketDataGateway(cmd *cobra.Command, args []string) {
 	}
 
 	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
-		"tokocrypto-ws connection": func(ctx context.Context) error {
+		"exchange-ws connection": func(ctx context.Context) error {
 			cancel()
 			subscriptionWG.Wait()
 			return nil

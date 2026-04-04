@@ -42,7 +42,7 @@ func StartOrderEngineGateway(cmd *cobra.Command, args []string) {
 	marketKlineRepo := repository.NewMarketKlineRepository(marketDataDB)
 	orderHistoryRepo := repository.NewOrderHistoryRepository(orderEngineDB)
 
-	exchange.InitTokocryptoExchange(ctx, config.Env.Exchanges[string(entity.ExchangeTokoCrypto)], symbolMappingRepo, js, marketKlineRepo)
+	initConfiguredExchanges(ctx, symbolMappingRepo, nil, js, marketKlineRepo)
 
 	orderEngineService := orderengine.NewOrderEngineService(exchange.GlobalExchangeRegistry, orderHistoryRepo, js)
 

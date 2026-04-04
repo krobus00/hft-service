@@ -16,6 +16,13 @@ services:
         condition: service_healthy
       migrate-market-data:
         condition: service_completed_successfully
+    restart: unless-stopped
+    profiles:
+      - strategy
+    cpus: "1.0"
+    mem_limit: 512m
+    networks:
+      - hft-network
 
   market-data-gateway:
     build:
@@ -34,6 +41,13 @@ services:
         condition: service_healthy
       migrate-market-data:
         condition: service_completed_successfully
+    restart: unless-stopped
+    profiles:
+      - app
+    cpus: "1.0"
+    mem_limit: 512m
+    networks:
+      - hft-network
 
   market-data-worker:
     build:
@@ -52,6 +66,13 @@ services:
         condition: service_healthy
       migrate-market-data:
         condition: service_completed_successfully
+    restart: unless-stopped
+    profiles:
+      - app
+    cpus: "1.0"
+    mem_limit: 512m
+    networks:
+      - hft-network
 
   order-engine-gateway:
     build:
@@ -73,6 +94,13 @@ services:
     ports:
       - "9800:9800"
       - "9801:9801"
+    restart: unless-stopped
+    profiles:
+      - app
+    cpus: "1.0"
+    mem_limit: 512m
+    networks:
+      - hft-network
 
   order-engine-worker:
     build:
@@ -91,6 +119,13 @@ services:
         condition: service_healthy
       migrate-order-engine:
         condition: service_completed_successfully
+    restart: unless-stopped
+    profiles:
+      - app
+    cpus: "1.0"
+    mem_limit: 512m
+    networks:
+      - hft-network
 
   redis:
     image: redis:7-alpine
@@ -105,6 +140,13 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    restart: unless-stopped
+    profiles:
+      - infra
+    cpus: "0.50"
+    mem_limit: 256m
+    networks:
+      - hft-network
 
   nats:
     image: nats:2.12.4-alpine
@@ -124,28 +166,40 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    restart: unless-stopped
+    profiles:
+      - infra
+    cpus: "0.50"
+    mem_limit: 256m
+    networks:
+      - hft-network
 
   postgresql:
     build: ./tools/postgre
     container_name: hft-postgresql
     environment:
-      POSTGRES_DB: hft
       POSTGRES_USER: root
       POSTGRES_PASSWORD: root
-    command: >
-      postgres
-      -c shared_preload_libraries=pg_cron
-      -c cron.database_name=hft
+      POSTGRES_DB: hft
+      POSTGRES_MULTIPLE_DATABASES: market_data,order_engine,analytics
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./tools/postgre/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U root -d hft"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 10s
+    restart: unless-stopped
+    profiles:
+      - infra
+    cpus: "1.0"
+    mem_limit: 1g
+    networks:
+      - hft-network
 
   database-init:
     image: postgres:16-alpine
@@ -163,7 +217,13 @@ services:
     command: |
       psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='market_data'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE market_data;"
       psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='order_engine'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE order_engine;"
+    cpus: "0.50"
+    mem_limit: 256m
     restart: "no"
+    profiles:
+      - infra
+    networks:
+      - hft-network
 
   migrate-market-data:
     build:
@@ -176,7 +236,13 @@ services:
     depends_on:
       database-init:
         condition: service_completed_successfully
+    cpus: "0.50"
+    mem_limit: 256m
     restart: "no"
+    profiles:
+      - infra
+    networks:
+      - hft-network
 
   migrate-order-engine:
     build:
@@ -189,9 +255,19 @@ services:
     depends_on:
       database-init:
         condition: service_completed_successfully
+    cpus: "0.50"
+    mem_limit: 256m
     restart: "no"
+    profiles:
+      - infra
+    networks:
+      - hft-network
 
 volumes:
   redis_data:
   nats_data:
   postgres_data:
+
+networks:
+  hft-network:
+    driver: bridge
