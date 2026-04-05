@@ -54,13 +54,13 @@ IS_PAPER_TRADING = EXAMPLE_CONFIG.get("is_paper_trading", True)
 ORDER_TYPE = EXAMPLE_CONFIG.get("order_type", "LIMIT")
 ORDER_QTY = EXAMPLE_CONFIG.get("order_qty", 10)
 ORDER_SYMBOL = EXAMPLE_CONFIG.get("order_symbol", "SOLUSDT")
-LIMIT_SLIPPAGE_BPS = EXAMPLE_CONFIG.get("limit_slippage_bps", 3)
+LIMIT_SLIPPAGE_PCT = EXAMPLE_CONFIG.get("limit_slippage_pct", EXAMPLE_CONFIG.get("limit_slippage_bps", 3) / 100.0)
 
 # HFT signal params
 FAST_EMA_N = EXAMPLE_CONFIG.get("fast_ema_n", 8)
 SLOW_EMA_N = EXAMPLE_CONFIG.get("slow_ema_n", 21)
 RET_LOOKBACK = EXAMPLE_CONFIG.get("ret_lookback", 3)
-RET_ENTRY_BPS = EXAMPLE_CONFIG.get("ret_entry_bps", 7)
+RET_ENTRY_PCT = EXAMPLE_CONFIG.get("ret_entry_pct", EXAMPLE_CONFIG.get("ret_entry_bps", 7) / 100.0)
 MIN_TAKER_RATIO = EXAMPLE_CONFIG.get("min_taker_ratio", 0.53)
 
 TRADE_COUNT_WINDOW = EXAMPLE_CONFIG.get("trade_count_window", 80)
@@ -70,12 +70,12 @@ ATR_N = EXAMPLE_CONFIG.get("atr_n", 14)
 STOP_ATR = EXAMPLE_CONFIG.get("stop_atr", 1.0)
 TAKE_ATR = EXAMPLE_CONFIG.get("take_atr", 1.6)
 
-MIN_EMA_SPREAD_BPS = EXAMPLE_CONFIG.get("min_ema_spread_bps", 4)
-MIN_ATR_BPS = EXAMPLE_CONFIG.get("min_atr_bps", 8)
-MIN_RANGE_BPS = EXAMPLE_CONFIG.get("min_range_bps", 10)
+MIN_EMA_SPREAD_PCT = EXAMPLE_CONFIG.get("min_ema_spread_pct", EXAMPLE_CONFIG.get("min_ema_spread_bps", 4) / 100.0)
+MIN_ATR_PCT = EXAMPLE_CONFIG.get("min_atr_pct", EXAMPLE_CONFIG.get("min_atr_bps", 8) / 100.0)
+MIN_RANGE_PCT = EXAMPLE_CONFIG.get("min_range_pct", EXAMPLE_CONFIG.get("min_range_bps", 10) / 100.0)
 ENTRY_CONFIRM_BARS = EXAMPLE_CONFIG.get("entry_confirm_bars", 2)
 MIN_HOLD_BARS = EXAMPLE_CONFIG.get("min_hold_bars", 3)
-ROUND_TRIP_COST_BPS = EXAMPLE_CONFIG.get("round_trip_cost_bps", 12)
+ROUND_TRIP_COST_PCT = EXAMPLE_CONFIG.get("round_trip_cost_pct", EXAMPLE_CONFIG.get("round_trip_cost_bps", 12) / 100.0)
 MIN_EXPECTED_EDGE_MULT = EXAMPLE_CONFIG.get("min_expected_edge_mult", 1.3)
 
 COOLDOWN_BARS = EXAMPLE_CONFIG.get("cooldown_bars", 2)
@@ -83,8 +83,8 @@ MAX_HOLD_BARS = EXAMPLE_CONFIG.get("max_hold_bars", 20)
 LONG_ONLY = EXAMPLE_CONFIG.get("long_only", True)
 
 
-def bps_to_frac(bps: float) -> float:
-    return bps / 10_000.0
+def pct_to_frac(pct: float) -> float:
+    return pct / 100.0
 
 
 def fmt_num(x: float) -> str:
@@ -221,13 +221,13 @@ class HFTMomentumStrategy:
             return None
 
         ret = (c.close - self.close_hist[-RET_LOOKBACK - 1]) / max(1e-12, self.close_hist[-RET_LOOKBACK - 1])
-        ret_bps = ret * 10_000.0
-        ema_spread_bps = (ema_fast - ema_slow) / max(1e-12, c.close) * 10_000.0
-        atr_bps = atr / max(1e-12, c.close) * 10_000.0
-        range_bps = (c.high - c.low) / max(1e-12, c.close) * 10_000.0
-        trend_up = ema_fast > ema_slow and ema_spread_bps >= MIN_EMA_SPREAD_BPS
-        vol_ok = atr_bps >= MIN_ATR_BPS and range_bps >= MIN_RANGE_BPS
-        edge_ok = (TAKE_ATR * atr_bps) >= (ROUND_TRIP_COST_BPS * MIN_EXPECTED_EDGE_MULT)
+        ret_pct = ret * 100.0
+        ema_spread_pct = (ema_fast - ema_slow) / max(1e-12, c.close) * 100.0
+        atr_pct = atr / max(1e-12, c.close) * 100.0
+        range_pct = (c.high - c.low) / max(1e-12, c.close) * 100.0
+        trend_up = ema_fast > ema_slow and ema_spread_pct >= MIN_EMA_SPREAD_PCT
+        vol_ok = atr_pct >= MIN_ATR_PCT and range_pct >= MIN_RANGE_PCT
+        edge_ok = (TAKE_ATR * atr_pct) >= (ROUND_TRIP_COST_PCT * MIN_EXPECTED_EDGE_MULT)
 
         trades_ok = True
         if len(self.trade_count_hist) >= 30:
@@ -236,7 +236,7 @@ class HFTMomentumStrategy:
 
         raw_buy_signal = (
             trend_up
-            and ret_bps >= RET_ENTRY_BPS
+            and ret_pct >= RET_ENTRY_PCT
             and c.taker_ratio >= MIN_TAKER_RATIO
             and trades_ok
             and vol_ok
@@ -305,9 +305,9 @@ def build_order_payload(side: str, price: float) -> dict:
     px = price
     if ORDER_TYPE == "LIMIT":
         if side == "BUY":
-            px = price * (1.0 + bps_to_frac(LIMIT_SLIPPAGE_BPS))
+            px = price * (1.0 + pct_to_frac(LIMIT_SLIPPAGE_PCT))
         else:
-            px = price * (1.0 - bps_to_frac(LIMIT_SLIPPAGE_BPS))
+            px = price * (1.0 - pct_to_frac(LIMIT_SLIPPAGE_PCT))
 
     return {
         "retry": 0,

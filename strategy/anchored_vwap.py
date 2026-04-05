@@ -58,7 +58,7 @@ LONG_ONLY = AVWAP_CONFIG.get("long_only", True)
 # Execution
 ORDER_TYPE = AVWAP_CONFIG.get("order_type", "LIMIT")         # "LIMIT" or "MARKET"
 ORDER_QTY = AVWAP_CONFIG.get("order_qty", 10.0)
-LIMIT_SLIPPAGE_BPS = AVWAP_CONFIG.get("limit_slippage_bps", 3)       # BUY: price*(1+slip), SELL: price*(1-slip)
+LIMIT_SLIPPAGE_PCT = AVWAP_CONFIG.get("limit_slippage_pct", AVWAP_CONFIG.get("limit_slippage_bps", 3) / 100.0)  # BUY: price*(1+slip), SELL: price*(1-slip)
 
 # =========================
 # SIGNAL PARAMS (tune)
@@ -70,12 +70,12 @@ MIN_BAND_PCT = AVWAP_CONFIG.get("min_band_pct", 0.0008)       # 0.08%
 
 # AVWAP slope filter (avoid chop)
 SLOPE_LOOKBACK = AVWAP_CONFIG.get("slope_lookback", 20)
-SLOPE_MIN_BPS = AVWAP_CONFIG.get("slope_min_bps", 8)
+SLOPE_MIN_PCT = AVWAP_CONFIG.get("slope_min_pct", AVWAP_CONFIG.get("slope_min_bps", 8) / 100.0)
 
 # Volume shock anchor reset
 VOL_MED_N = AVWAP_CONFIG.get("vol_med_n", 60)
 VOL_SHOCK_X = AVWAP_CONFIG.get("vol_shock_x", 2.5)
-RANGE_MIN_BPS = AVWAP_CONFIG.get("range_min_bps", 15)
+RANGE_MIN_PCT = AVWAP_CONFIG.get("range_min_pct", AVWAP_CONFIG.get("range_min_bps", 15) / 100.0)
 ANCHOR_RESET_COOLDOWN_MS = AVWAP_CONFIG.get("anchor_reset_cooldown_ms", 10 * 60_000)
 
 # Participation filters
@@ -106,8 +106,8 @@ def now_ms() -> int:
 def gen_request_id() -> str:
     return uuid.uuid4().hex
 
-def bps_to_frac(bps: float) -> float:
-    return bps / 10_000.0
+def pct_to_frac(pct: float) -> float:
+    return pct / 100.0
 
 def fmt_num(x: float) -> str:
     return f"{x:.8f}".rstrip("0").rstrip(".")
@@ -151,10 +151,10 @@ class Candle:
         return (self.h + self.l + self.c) / 3.0
 
     @property
-    def range_bps(self) -> float:
+    def range_pct(self) -> float:
         if self.c <= 0:
             return 0.0
-        return (self.h - self.l) / self.c * 10_000.0
+        return (self.h - self.l) / self.c * 100.0
 
     @property
     def taker_ratio(self) -> float:
@@ -225,14 +225,14 @@ class AnchoredVWAP:
             self.avwap_hist.pop(0)
         return avwap
 
-    def slope_bps(self) -> Optional[float]:
+    def slope_pct(self) -> Optional[float]:
         if len(self.avwap_hist) <= SLOPE_LOOKBACK:
             return None
         a0 = self.avwap_hist[-SLOPE_LOOKBACK - 1]
         a1 = self.avwap_hist[-1]
         if a0 <= 0:
             return None
-        return (a1 - a0) / a0 * 10_000.0
+        return (a1 - a0) / a0 * 100.0
 
 
 class Strategy:
@@ -285,7 +285,7 @@ class Strategy:
         med_vol = median(self.vol_buf)
         if med_vol <= 0:
             return False
-        return (candle.quote_volume >= med_vol * VOL_SHOCK_X) and (candle.range_bps >= RANGE_MIN_BPS)
+        return (candle.quote_volume >= med_vol * VOL_SHOCK_X) and (candle.range_pct >= RANGE_MIN_PCT)
 
     def participation_ok(self, candle: Candle) -> bool:
         if len(self.trades_buf) < 30:
@@ -333,9 +333,9 @@ class Strategy:
             self.prev_close = close
             return None
 
-        slope = self.vwap.slope_bps()
+        slope = self.vwap.slope_pct()
         # Long-only entries require upward AVWAP slope.
-        if slope is None or slope < SLOPE_MIN_BPS:
+        if slope is None or slope < SLOPE_MIN_PCT:
             self.buy_ok = 0
             self.entry_armed = False
             self.entry_arm_left = 0
@@ -381,9 +381,9 @@ def make_order_payload(side: str, ref_px: float, qty: float) -> Dict[str, Any]:
     px = ref_px
     if ORDER_TYPE == "LIMIT":
         if side == "BUY":
-            px = px * (1.0 + bps_to_frac(LIMIT_SLIPPAGE_BPS))
+            px = px * (1.0 + pct_to_frac(LIMIT_SLIPPAGE_PCT))
         else:
-            px = px * (1.0 - bps_to_frac(LIMIT_SLIPPAGE_BPS))
+            px = px * (1.0 - pct_to_frac(LIMIT_SLIPPAGE_PCT))
 
     # NOTE: keys are snake_case here to match your MACD script.
     return {
@@ -494,12 +494,12 @@ async def run():
 
             sig = strat.on_closed_candle(candle)
             if sig:
-                side, close, avwap, upper, slope_bps, taker_ratio, reason = sig
+                side, close, avwap, upper, slope_pct, taker_ratio, reason = sig
                 out = make_order_payload(side, close, ORDER_QTY)
 
                 print(
                     f"[AVWAP+ LO] {reason} side={side} close={close:.4f} avwap={avwap:.4f} "
-                    f"upper={upper:.4f} slope={slope_bps:.1f}bps taker={taker_ratio:.2f} "
+                    f"upper={upper:.4f} slope={slope_pct:.4f}% taker={taker_ratio:.2f} "
                     f"trades={candle.trade_count} qv={candle.quote_volume:.2f}",
                     flush=True,
                 )

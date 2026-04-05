@@ -55,18 +55,18 @@ IS_PAPER_TRADING = VWAP_CONFIG.get("is_paper_trading", True)
 ORDER_TYPE = VWAP_CONFIG.get("order_type", "LIMIT")
 ORDER_QTY = VWAP_CONFIG.get("order_qty", 10)
 ORDER_SYMBOL = VWAP_CONFIG.get("order_symbol", "SOLUSDT")
-LIMIT_SLIPPAGE_BPS = VWAP_CONFIG.get("limit_slippage_bps", 2)
+LIMIT_SLIPPAGE_PCT = VWAP_CONFIG.get("limit_slippage_pct", VWAP_CONFIG.get("limit_slippage_bps", 2) / 100.0)
 
 VWAP_WINDOW = VWAP_CONFIG.get("vwap_window", 30)
-ENTRY_THRESHOLD_BPS = VWAP_CONFIG.get("entry_threshold_bps", 5)
-TP_BPS = VWAP_CONFIG.get("tp_bps", 2)
-SL_BPS = VWAP_CONFIG.get("sl_bps", 8)
+ENTRY_THRESHOLD_PCT = VWAP_CONFIG.get("entry_threshold_pct", VWAP_CONFIG.get("entry_threshold_bps", 5) / 100.0)
+TP_PCT = VWAP_CONFIG.get("tp_pct", VWAP_CONFIG.get("tp_bps", 2) / 100.0)
+SL_PCT = VWAP_CONFIG.get("sl_pct", VWAP_CONFIG.get("sl_bps", 8) / 100.0)
 MAX_HOLD_BARS = VWAP_CONFIG.get("max_hold_bars", 8)
 COOLDOWN_BARS = VWAP_CONFIG.get("cooldown_bars", 1)
 
 
-def bps_to_frac(bps: float) -> float:
-    return bps / 10_000.0
+def pct_to_frac(pct: float) -> float:
+    return pct / 100.0
 
 
 def fmt_num(x: float) -> str:
@@ -115,6 +115,7 @@ class VWAPMeanReversionHF:
     __slots__ = (
         "vwap",
         "last_close_time_ms",
+        "last_vwap",
         "pos",
         "entry_price",
         "bars_in_pos",
@@ -124,6 +125,7 @@ class VWAPMeanReversionHF:
     def __init__(self):
         self.vwap = RollingVWAP(VWAP_WINDOW)
         self.last_close_time_ms = 0
+        self.last_vwap: Optional[float] = None
 
         self.pos = "FLAT"  # FLAT | LONG | SHORT
         self.entry_price: Optional[float] = None
@@ -131,10 +133,11 @@ class VWAPMeanReversionHF:
         self.cooldown = 0
 
     def _entry_band(self, vwap_px: float):
-        band = vwap_px * bps_to_frac(ENTRY_THRESHOLD_BPS)
+        band = vwap_px * pct_to_frac(ENTRY_THRESHOLD_PCT)
         return vwap_px - band, vwap_px + band
 
     def on_closed_candle(self, c: Candle):
+        # print("c:",c)
         if c.close_time_ms <= self.last_close_time_ms:
             return None
         self.last_close_time_ms = c.close_time_ms
@@ -145,13 +148,15 @@ class VWAPMeanReversionHF:
         vwap_px = self.vwap.update(c.close, c.quote_volume)
         if vwap_px is None:
             return None
+        self.last_vwap = vwap_px
 
         lower, upper = self._entry_band(vwap_px)
+        # print(f"close={c.close:.4f} vwap={vwap_px:.4f} band=({lower:.4f},{upper:.4f})")
 
         if self.pos == "LONG":
             self.bars_in_pos += 1
-            take_px = self.entry_price * (1.0 + bps_to_frac(TP_BPS))
-            stop_px = self.entry_price * (1.0 - bps_to_frac(SL_BPS))
+            take_px = self.entry_price * (1.0 + pct_to_frac(TP_PCT))
+            stop_px = self.entry_price * (1.0 - pct_to_frac(SL_PCT))
             exit_signal = c.close >= take_px or c.close <= stop_px or c.close >= vwap_px or self.bars_in_pos >= MAX_HOLD_BARS
             if exit_signal:
                 if c.close >= take_px:
@@ -170,8 +175,8 @@ class VWAPMeanReversionHF:
 
         elif self.pos == "SHORT":
             self.bars_in_pos += 1
-            take_px = self.entry_price * (1.0 - bps_to_frac(TP_BPS))
-            stop_px = self.entry_price * (1.0 + bps_to_frac(SL_BPS))
+            take_px = self.entry_price * (1.0 - pct_to_frac(TP_PCT))
+            stop_px = self.entry_price * (1.0 + pct_to_frac(SL_PCT))
             exit_signal = c.close <= take_px or c.close >= stop_px or c.close <= vwap_px or self.bars_in_pos >= MAX_HOLD_BARS
             if exit_signal:
                 if c.close <= take_px:
@@ -215,9 +220,9 @@ def build_order_payload(side: str, price: float) -> dict:
     px = price
     if ORDER_TYPE == "LIMIT":
         if side == "BUY":
-            px = price * (1.0 + bps_to_frac(LIMIT_SLIPPAGE_BPS))
+            px = price * (1.0 + pct_to_frac(LIMIT_SLIPPAGE_PCT))
         else:
-            px = price * (1.0 - bps_to_frac(LIMIT_SLIPPAGE_BPS))
+            px = price * (1.0 - pct_to_frac(LIMIT_SLIPPAGE_PCT))
 
     return {
         "retry": 0,
@@ -279,12 +284,14 @@ async def run():
         try:
             payload = orjson.loads(msg.data)
             data = payload.get("data", {})
+            # print(data)
 
             if not data.get("IsClosed"):
                 await msg.ack()
                 return
 
             if data.get("Symbol") != SYMBOL:
+                # print(f"Received candle for symbol {data.get('Symbol')}, expected {SYMBOL}. Ignoring.", flush=True)
                 await msg.ack()
                 return
 
@@ -299,6 +306,11 @@ async def run():
             )
 
             signal = strategy.on_closed_candle(candle)
+            # if strategy.last_vwap is not None:
+            #     print(
+            #         f"[VWAP-HF] close={candle.close:.4f} vwap={strategy.last_vwap:.4f} symbol={SYMBOL} interval={INTERVAL}",
+            #         flush=True,
+            #     )
             if signal:
                 side, px, reason, vwap_px, lower, upper = signal
                 out = build_order_payload(side, px)
