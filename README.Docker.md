@@ -32,3 +32,4 @@ Run protobuf generation with the dedicated dev tools profile:
 This generates Go files for:
 - `pb/order_engine/order.proto`
 - `pb/order_engine/order_engine.proto`
+- `pb/market_data/market_data.proto`

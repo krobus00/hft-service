@@ -11,6 +11,13 @@ type KlineData struct {
 	IsClosed bool
 }
 
+type MarketKlineBackfillRequest struct {
+	Symbol    string
+	Interval  string
+	StartTime time.Time
+	EndTime   time.Time
+}
+
 type MarketKlineEvent struct {
 	RetryCount int         `json:"retry"`
 	Data       MarketKline `json:"data"`
