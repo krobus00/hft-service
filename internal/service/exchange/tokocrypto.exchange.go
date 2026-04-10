@@ -331,6 +331,9 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 		ExchangeName: entity.ExchangeTokoCrypto,
 		WSURLEnvKey:  "TOKOCRYPTO_WS_URL",
 		DefaultWSURL: "wss://stream-cloud.tokocrypto.site/stream",
+		NormalizeSubs: func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription {
+			return normalizeExchangeSubscriptions(deps, subscriptions)
+		},
 		Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
 			return resyncSymbolMappingAndSubscriptions(
 				ctx,
@@ -372,9 +375,15 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
 	}
 
-	mapping := snapshotSymbolMapping(&e.symbolMapping)
-	orderSymbol, ok := mapping[string(entity.ExchangeTokoCrypto)][order.Symbol]
-	if !ok {
+	deps := exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeTokoCrypto,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}
+
+	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, order.Symbol)
+	if strings.TrimSpace(orderSymbol) == "" {
 		orderSymbol = order.Symbol
 	}
 
@@ -527,12 +536,14 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
 	}
 
-	orderSymbol := orderHistory.Symbol
-	mapping := snapshotSymbolMapping(&e.symbolMapping)
-	mapped, ok := mapping[string(entity.ExchangeTokoCrypto)][orderSymbol]
-	if ok {
-		orderSymbol = mapped
+	deps := exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeTokoCrypto,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
 	}
+
+	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, orderHistory.Symbol)
 	orderSymbol = strings.TrimSpace(orderSymbol)
 	if orderSymbol == "" {
 		return nil, fmt.Errorf("tokocrypto order symbol is empty")
@@ -681,7 +692,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		avgFillPrice = &executedPrice
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
@@ -756,7 +767,7 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,

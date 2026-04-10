@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -28,19 +29,129 @@ type exchangeKlineResyncDeps struct {
 }
 
 func resolveInternalSymbolFromMapping(deps exchangeKlineResyncDeps, exchangeSymbol string) string {
+	return resolveInternalSymbolFromKlineMapping(deps, exchangeSymbol)
+}
+
+func resolveInternalSymbolFromKlineMapping(deps exchangeKlineResyncDeps, exchangeSymbol string) string {
 	normalized := strings.ToUpper(strings.TrimSpace(exchangeSymbol))
 	if normalized == "" {
 		return ""
 	}
 
 	mapping := snapshotSymbolMapping(deps.SymbolMapping)
-	for internalSymbol, klineSymbol := range mapping[string(deps.ExchangeName)] {
-		if strings.EqualFold(strings.TrimSpace(klineSymbol), normalized) {
-			return internalSymbol
-		}
+	indexes, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalized
+	}
+
+	if internalSymbol, ok := indexes.KlineToInternal[normalized]; ok {
+		return internalSymbol
 	}
 
 	return normalized
+}
+
+func resolveInternalSymbolFromOrderMapping(deps exchangeKlineResyncDeps, exchangeSymbol string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(exchangeSymbol))
+	if normalized == "" {
+		return ""
+	}
+
+	mapping := snapshotSymbolMapping(deps.SymbolMapping)
+	indexes, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalized
+	}
+
+	if internalSymbol, ok := indexes.OrderToInternal[normalized]; ok {
+		return internalSymbol
+	}
+
+	return normalized
+}
+
+func resolveExchangeKlineSymbolFromMapping(deps exchangeKlineResyncDeps, internalSymbol string) string {
+	normalizedInternal := strings.ToUpper(strings.TrimSpace(internalSymbol))
+	if normalizedInternal == "" {
+		return ""
+	}
+
+	mapping := snapshotSymbolMapping(deps.SymbolMapping)
+	indexes, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalizedInternal
+	}
+
+	if exchangeSymbol, ok := indexes.InternalToKline[normalizedInternal]; ok {
+		trimmed := strings.TrimSpace(exchangeSymbol)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+
+	return normalizedInternal
+}
+
+func resolveExchangeOrderSymbolFromMapping(deps exchangeKlineResyncDeps, internalSymbol string) string {
+	normalizedInternal := strings.ToUpper(strings.TrimSpace(internalSymbol))
+	if normalizedInternal == "" {
+		return ""
+	}
+
+	mapping := snapshotSymbolMapping(deps.SymbolMapping)
+	indexes, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalizedInternal
+	}
+
+	if exchangeSymbol, ok := indexes.InternalToOrder[normalizedInternal]; ok {
+		trimmed := strings.TrimSpace(exchangeSymbol)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+
+	return normalizedInternal
+}
+
+func normalizeExchangeSubscriptions(deps exchangeKlineResyncDeps, subs []entity.KlineSubscription) []entity.KlineSubscription {
+	if len(subs) == 0 {
+		return subs
+	}
+
+	normalized := make([]entity.KlineSubscription, 0, len(subs))
+	for _, sub := range subs {
+		if sub.Exchange != string(deps.ExchangeName) {
+			normalized = append(normalized, sub)
+			continue
+		}
+
+		internalSymbol := resolveInternalSymbolFromKlineMapping(deps, sub.Symbol)
+		exchangeSymbol := resolveExchangeKlineSymbolFromMapping(deps, internalSymbol)
+		interval := strings.TrimSpace(sub.Interval)
+
+		sub.Symbol = internalSymbol
+		sub.Payload = buildKlineSubscriptionPayload(exchangeSymbol, interval)
+		normalized = append(normalized, sub)
+	}
+
+	return normalized
+}
+
+func buildKlineSubscriptionPayload(exchangeKlineSymbol, interval string) string {
+	params := []string{strings.ToLower(strings.TrimSpace(exchangeKlineSymbol)) + "@kline_" + strings.TrimSpace(interval)}
+	payload := map[string]any{
+		"method": "SUBSCRIBE",
+		"params": params,
+		"id":     1,
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+
+	return string(raw)
 }
 
 func snapshotSymbolMapping(symbolMapping *atomic.Value) entity.ExchangeSymbolMapping {
@@ -86,7 +197,7 @@ func refreshExchangeSymbolMapping(ctx context.Context, deps exchangeKlineResyncD
 
 func loadExchangeLatestSubscriptions(ctx context.Context, deps exchangeKlineResyncDeps, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
 	if deps.KlineSubRepo == nil {
-		return fallback, nil
+		return normalizeExchangeSubscriptions(deps, fallback), nil
 	}
 
 	subs, err := deps.KlineSubRepo.GetByExchange(ctx, string(deps.ExchangeName))
@@ -94,7 +205,7 @@ func loadExchangeLatestSubscriptions(ctx context.Context, deps exchangeKlineResy
 		return nil, err
 	}
 
-	return subs, nil
+	return normalizeExchangeSubscriptions(deps, subs), nil
 }
 
 func loadExchangeResyncState(ctx context.Context, deps exchangeKlineResyncDeps) (klineResyncState, error) {

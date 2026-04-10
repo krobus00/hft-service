@@ -333,6 +333,9 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 		ExchangeName: entity.ExchangeBinance,
 		WSURLEnvKey:  "BINANCE_WS_URL",
 		DefaultWSURL: "wss://stream.binance.com:9443/stream",
+		NormalizeSubs: func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription {
+			return normalizeExchangeSubscriptions(deps, subscriptions)
+		},
 		Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
 			return resyncSymbolMappingAndSubscriptions(
 				ctx,
@@ -374,9 +377,15 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		return nil, fmt.Errorf("binance credentials are missing in config")
 	}
 
-	mapping := snapshotSymbolMapping(&e.symbolMapping)
-	orderSymbol, ok := mapping[string(entity.ExchangeBinance)][order.Symbol]
-	if !ok {
+	deps := exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeBinance,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}
+
+	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, order.Symbol)
+	if strings.TrimSpace(orderSymbol) == "" {
 		orderSymbol = order.Symbol
 	}
 
@@ -515,12 +524,14 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 		return nil, fmt.Errorf("binance credentials are missing in config")
 	}
 
-	orderSymbol := orderHistory.Symbol
-	mapping := snapshotSymbolMapping(&e.symbolMapping)
-	mapped, ok := mapping[string(entity.ExchangeBinance)][orderSymbol]
-	if ok {
-		orderSymbol = mapped
+	deps := exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeBinance,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
 	}
+
+	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, orderHistory.Symbol)
 	orderSymbol = strings.TrimSpace(orderSymbol)
 	if orderSymbol == "" {
 		return nil, fmt.Errorf("binance order symbol is empty")
@@ -661,7 +672,7 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 		avgFillPrice = &executedPrice
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeBinance,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
@@ -741,7 +752,7 @@ func (e *BinanceExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderH
 		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.Time).UTC(), Valid: true}
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeBinance,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
