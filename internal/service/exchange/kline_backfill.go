@@ -115,12 +115,12 @@ func resolveExchangeKlineSymbol(deps marketKlineBackfillDeps, internalSymbol str
 		return internalSymbol
 	}
 
-	exchangeMapping := mapping[string(deps.ExchangeName)]
-	if exchangeMapping == nil {
+	indexes, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
 		return internalSymbol
 	}
 
-	if symbol, ok := exchangeMapping[internalSymbol]; ok && strings.TrimSpace(symbol) != "" {
+	if symbol, ok := indexes.InternalToKline[internalSymbol]; ok && strings.TrimSpace(symbol) != "" {
 		return strings.ToUpper(strings.TrimSpace(symbol))
 	}
 

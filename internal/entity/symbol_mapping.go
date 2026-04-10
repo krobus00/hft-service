@@ -12,5 +12,12 @@ type SymbolMapping struct {
 	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// [exchange][symbol] = {kline_symbol, order_symbol}
-type ExchangeSymbolMapping map[string]map[string]string
+type ExchangeSymbols struct {
+	InternalToKline map[string]string
+	InternalToOrder map[string]string
+	KlineToInternal map[string]string
+	OrderToInternal map[string]string
+}
+
+// [exchange] = mapping indexes where keys are normalized symbols.
+type ExchangeSymbolMapping map[string]ExchangeSymbols

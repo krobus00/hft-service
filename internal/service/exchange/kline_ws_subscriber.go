@@ -18,6 +18,7 @@ type klineWSSubscriberConfig struct {
 	ExchangeName    entity.ExchangeName
 	WSURLEnvKey     string
 	DefaultWSURL    string
+	NormalizeSubs   func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription
 	Resync          func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error)
 	LoadResyncState func(ctx context.Context) (klineResyncState, error)
 	HandleMessage   func(ctx context.Context, message []byte) error
@@ -41,6 +42,9 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	attempt := 0
 	activeSubscriptions := subscriptions
+	if cfg.NormalizeSubs != nil {
+		activeSubscriptions = cfg.NormalizeSubs(activeSubscriptions)
+	}
 	lastResyncState := klineResyncState{}
 
 	if cfg.LoadResyncState != nil {
@@ -57,6 +61,9 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			logrus.WithError(err).Warnf("%s initial resync failed; starting with existing subscriptions", cfg.ExchangeName)
 		} else {
 			activeSubscriptions = resyncedSubscriptions
+			if cfg.NormalizeSubs != nil {
+				activeSubscriptions = cfg.NormalizeSubs(activeSubscriptions)
+			}
 			lastResyncState = state
 		}
 	}
@@ -203,6 +210,9 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 				}
 
 				activeSubscriptions = resyncedSubscriptions
+				if cfg.NormalizeSubs != nil {
+					activeSubscriptions = cfg.NormalizeSubs(activeSubscriptions)
+				}
 				lastResyncState = state
 				shouldResubscribe = true
 			case message := <-messageCh:

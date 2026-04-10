@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -24,15 +25,7 @@ func (r *SymbolMappingRepository) GetAll(ctx context.Context) (entity.ExchangeSy
 		return nil, err
 	}
 
-	exchangeSymbolMapping := make(entity.ExchangeSymbolMapping)
-	for _, mapping := range mappings {
-		if _, ok := exchangeSymbolMapping[mapping.Exchange]; !ok {
-			exchangeSymbolMapping[mapping.Exchange] = make(map[string]string)
-		}
-		exchangeSymbolMapping[mapping.Exchange][mapping.KlineSymbol] = mapping.OrderSymbol
-	}
-
-	return exchangeSymbolMapping, nil
+	return buildExchangeSymbolMapping(mappings), nil
 }
 
 func (r *SymbolMappingRepository) GetByExchange(ctx context.Context, exchange string) (entity.ExchangeSymbolMapping, error) {
@@ -42,15 +35,48 @@ func (r *SymbolMappingRepository) GetByExchange(ctx context.Context, exchange st
 		return nil, err
 	}
 
+	return buildExchangeSymbolMapping(mappings), nil
+}
+
+func buildExchangeSymbolMapping(mappings []entity.SymbolMapping) entity.ExchangeSymbolMapping {
 	exchangeSymbolMapping := make(entity.ExchangeSymbolMapping)
+
 	for _, mapping := range mappings {
-		if _, ok := exchangeSymbolMapping[mapping.Exchange]; !ok {
-			exchangeSymbolMapping[mapping.Exchange] = make(map[string]string)
+		exchange := strings.TrimSpace(mapping.Exchange)
+		if exchange == "" {
+			continue
 		}
-		exchangeSymbolMapping[mapping.Exchange][mapping.KlineSymbol] = mapping.OrderSymbol
+
+		indexes, ok := exchangeSymbolMapping[exchange]
+		if !ok {
+			indexes = entity.ExchangeSymbols{
+				InternalToKline: make(map[string]string),
+				InternalToOrder: make(map[string]string),
+				KlineToInternal: make(map[string]string),
+				OrderToInternal: make(map[string]string),
+			}
+		}
+
+		internalSymbol := strings.ToUpper(strings.TrimSpace(mapping.Symbol))
+		klineSymbol := strings.TrimSpace(mapping.KlineSymbol)
+		orderSymbol := strings.TrimSpace(mapping.OrderSymbol)
+
+		if internalSymbol != "" {
+			if klineSymbol != "" {
+				indexes.InternalToKline[internalSymbol] = klineSymbol
+				indexes.KlineToInternal[strings.ToUpper(klineSymbol)] = internalSymbol
+			}
+
+			if orderSymbol != "" {
+				indexes.InternalToOrder[internalSymbol] = orderSymbol
+				indexes.OrderToInternal[strings.ToUpper(orderSymbol)] = internalSymbol
+			}
+		}
+
+		exchangeSymbolMapping[exchange] = indexes
 	}
 
-	return exchangeSymbolMapping, nil
+	return exchangeSymbolMapping
 }
 
 func (r *SymbolMappingRepository) GetLatestUpdatedAtByExchange(ctx context.Context, exchange string) (time.Time, error) {
