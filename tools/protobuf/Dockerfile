@@ -17,4 +17,4 @@ RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERS
 
 WORKDIR /workspace
 
-CMD ["sh", "-lc", "protoc -I . --plugin=protoc-gen-go=/usr/local/bin/protoc-gen-go --plugin=protoc-gen-go-grpc=/usr/local/bin/protoc-gen-go-grpc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative pb/order_engine/order.proto pb/order_engine/order_engine.proto"]
+CMD ["sh", "-lc", "protoc -I . --plugin=protoc-gen-go=/usr/local/bin/protoc-gen-go --plugin=protoc-gen-go-grpc=/usr/local/bin/protoc-gen-go-grpc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative pb/order_engine/order.proto pb/order_engine/order_engine.proto pb/market_data/market_data.proto"]

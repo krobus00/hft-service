@@ -217,6 +217,17 @@ curl --request POST \
 }
 ```
 
+### Market Data gRPC backfill payload example
+```json
+{
+  "end_time": "1775725027000",
+  "exchange": "tokocrypto",
+  "interval": "15m",
+  "start_time": "1773046627000",
+  "symbol": "TKOIDR"
+}
+```
+
 ## TODO
 - Build analytic service that consumes market data.
 - Support HA deployment for all services.

@@ -1,0 +1,22 @@
+syntax = "proto3";
+package pb.market_data;
+
+option go_package = "pb/market_data";
+
+// MarketDataService serves market data operations.
+service MarketDataService {
+    // BackfillMarketKlines pulls historical klines and persists them to market_klines.
+    rpc BackfillMarketKlines(BackfillMarketKlinesRequest) returns (BackfillMarketKlinesResponse);
+}
+
+message BackfillMarketKlinesRequest {
+    string exchange = 1;
+    string symbol = 2;
+    string interval = 3;
+    int64 start_time = 4;
+    int64 end_time = 5;
+}
+
+message BackfillMarketKlinesResponse {
+    int64 inserted_count = 1;
+}

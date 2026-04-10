@@ -138,3 +138,31 @@ vwap:
   sl_pct: 0.08
   max_hold_bars: 8
   cooldown_bars: 1
+
+krobot01:
+  symbol: SOLUSDT
+  interval: 1m
+
+  exchange: tokocrypto
+  user_id: paper-1
+  source: python-krobot01
+  strategy_id: python-krobot01-ema200-vwap-macd
+  is_paper_trading: true
+
+  kline_subject: KLINE.TOKOCRYPTO.>
+  order_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_TOKOCRYPTO_KROBOT01
+
+  order_type: LIMIT
+  order_qty: 10
+  order_symbol: SOLUSDT
+  limit_slippage_pct: 0.02
+
+  ema_period: 200
+  vwap_window: 200
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+
+  historical_limit: 800
+  cooldown_bars: 1

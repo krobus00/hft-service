@@ -2,16 +2,23 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"sync"
 
 	"github.com/krobus00/hft-service/internal/config"
+	"github.com/krobus00/hft-service/internal/constant"
 	"github.com/krobus00/hft-service/internal/entity"
+	grpcHandler "github.com/krobus00/hft-service/internal/handler/marketdata/grpc"
 	"github.com/krobus00/hft-service/internal/infrastructure"
 	"github.com/krobus00/hft-service/internal/repository"
 	"github.com/krobus00/hft-service/internal/service/exchange"
 	"github.com/krobus00/hft-service/internal/util"
+	pb "github.com/krobus00/hft-service/pb/market_data"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 func StartMarketDataGateway(cmd *cobra.Command, args []string) {
@@ -65,7 +72,33 @@ func StartMarketDataGateway(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	grpcServer := grpc.NewServer()
+	marketDataGRPCServer := grpcHandler.NewMarketDataGRPCServer(exchange.GlobalExchangeRegistry)
+	pb.RegisterMarketDataServiceServer(grpcServer, marketDataGRPCServer)
+
+	if config.Env.Env == constant.DevelopmentEnvironment {
+		reflection.Register(grpcServer)
+	}
+
+	grpcPort := config.Env.Port["market_data_gateway_grpc"]
+	if grpcPort == "" {
+		grpcPort = "9802"
+	}
+
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", grpcPort))
+	util.ContinueOrFatal(err)
+
+	go func() {
+		if serveErr := grpcServer.Serve(lis); serveErr != nil {
+			logrus.Errorf("market data grpc server stopped: %v", serveErr)
+		}
+	}()
+	logrus.Infof("market data grpc server started on :%s", grpcPort)
+
 	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
+		"grpc": func(ctx context.Context) error {
+			return lis.Close()
+		},
 		"exchange-ws connection": func(ctx context.Context) error {
 			cancel()
 			subscriptionWG.Wait()

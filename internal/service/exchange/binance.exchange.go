@@ -356,6 +356,16 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 	}, subscriptions)
 }
 
+func (e *BinanceExchange) BackfillMarketKlines(ctx context.Context, req entity.MarketKlineBackfillRequest) (int, error) {
+	return backfillMarketKlines(ctx, marketKlineBackfillDeps{
+		ExchangeName:  entity.ExchangeBinance,
+		BaseURL:       e.baseURL,
+		KlinePath:     "/api/v3/klines",
+		HTTPClient:    e.httpClient,
+		SymbolMapping: &e.symbolMapping,
+	}, e.marketKlineRepo, req)
+}
+
 func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

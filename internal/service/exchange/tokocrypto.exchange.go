@@ -328,9 +328,9 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 	}
 
 	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
-		ExchangeName:    entity.ExchangeTokoCrypto,
-		WSURLEnvKey:     "TOKOCRYPTO_WS_URL",
-		DefaultWSURL:    "wss://stream-cloud.tokocrypto.site/stream",
+		ExchangeName: entity.ExchangeTokoCrypto,
+		WSURLEnvKey:  "TOKOCRYPTO_WS_URL",
+		DefaultWSURL: "wss://stream-cloud.tokocrypto.site/stream",
 		Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
 			return resyncSymbolMappingAndSubscriptions(
 				ctx,
@@ -350,8 +350,18 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 		LoadResyncState: func(ctx context.Context) (klineResyncState, error) {
 			return loadExchangeResyncState(ctx, deps)
 		},
-		HandleMessage:   e.HandleKlineData,
+		HandleMessage: e.HandleKlineData,
 	}, subscriptions)
+}
+
+func (e *TokocryptoExchange) BackfillMarketKlines(ctx context.Context, req entity.MarketKlineBackfillRequest) (int, error) {
+	return backfillMarketKlines(ctx, marketKlineBackfillDeps{
+		ExchangeName:  entity.ExchangeTokoCrypto,
+		BaseURL:       "https://www.tokocrypto.site",
+		KlinePath:     "/api/v3/klines",
+		HTTPClient:    e.httpClient,
+		SymbolMapping: &e.symbolMapping,
+	}, e.marketKlineRepo, req)
 }
 
 func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderRequest) (*entity.OrderHistory, error) {
