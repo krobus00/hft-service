@@ -186,7 +186,7 @@ class MACD:
 
 
 class Krobot01Strategy:
-    __slots__ = ("ema", "vwap", "macd", "last_close_time_ms", "cooldown")
+    __slots__ = ("ema", "vwap", "macd", "last_close_time_ms", "cooldown", "position_side")
 
     def __init__(self):
         self.ema = EMA(EMA_PERIOD)
@@ -194,6 +194,7 @@ class Krobot01Strategy:
         self.macd = MACD(MACD_FAST, MACD_SLOW, MACD_SIGNAL)
         self.last_close_time_ms = 0
         self.cooldown = 0
+        self.position_side: Optional[str] = None
 
     def on_closed_candle(self, c: Candle):
         if c.close_time_ms <= self.last_close_time_ms:
@@ -221,10 +222,16 @@ class Krobot01Strategy:
             flush=True,)
 
         if long_cond:
+            if self.position_side == "LONG":
+                return None
+            self.position_side = "LONG"
             self.cooldown = COOLDOWN_BARS
             return "BUY", c.close, "ENTER_LONG", ema, vwap_px
 
         if short_cond:
+            if self.position_side == "SHORT":
+                return None
+            self.position_side = "SHORT"
             self.cooldown = COOLDOWN_BARS
             return "SELL", c.close, "ENTER_SHORT", ema, vwap_px
 
