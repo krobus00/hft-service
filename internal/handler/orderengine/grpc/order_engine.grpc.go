@@ -10,6 +10,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+func decimalPtrToStringPtr(v *decimal.Decimal) *string {
+	if v == nil {
+		return nil
+	}
+
+	s := v.String()
+	return &s
+}
+
 type Server struct {
 	orderEngineService *orderengine.OrderEngineService
 	pb.UnimplementedOrderEngineServiceServer
@@ -64,14 +73,14 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		ClientOrderId:     null.NewString(orderHistory.ClientOrderID.String, orderHistory.ClientOrderID.Valid).Ptr(),
 		Side:              string(orderHistory.Side),
 		Type:              string(orderHistory.Type),
-		Price:             null.NewString(orderHistory.Price.String(), orderHistory.Price != nil).Ptr(),
+		Price:             decimalPtrToStringPtr(orderHistory.Price),
 		Quantity:          orderHistory.Quantity.String(),
 		FilledQuantity:    orderHistory.FilledQuantity.String(),
-		AvgFillPrice:      null.NewString(orderHistory.AvgFillPrice.String(), orderHistory.AvgFillPrice != nil).Ptr(),
+		AvgFillPrice:      decimalPtrToStringPtr(orderHistory.AvgFillPrice),
 		Status:            orderHistory.Status,
-		Leverage:          null.NewString(orderHistory.Leverage.String(), orderHistory.Leverage != nil).Ptr(),
-		Fee:               null.NewString(orderHistory.Fee.String(), orderHistory.Fee != nil).Ptr(),
-		RealizedPnl:       null.NewString(orderHistory.RealizedPnl.String(), orderHistory.RealizedPnl != nil).Ptr(),
+		Leverage:          decimalPtrToStringPtr(orderHistory.Leverage),
+		Fee:               decimalPtrToStringPtr(orderHistory.Fee),
+		RealizedPnl:       decimalPtrToStringPtr(orderHistory.RealizedPnl),
 		CreatedAtExchange: null.NewInt(orderHistory.CreatedAtExchange.Time.UnixMilli(), orderHistory.CreatedAtExchange.Valid).Ptr(),
 		SentAt:            null.NewInt(orderHistory.SentAt.Time.UnixMilli(), orderHistory.SentAt.Valid).Ptr(),
 		AcknowledgedAt:    null.NewInt(orderHistory.AcknowledgedAt.Time.UnixMilli(), orderHistory.AcknowledgedAt.Valid).Ptr(),
