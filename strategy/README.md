@@ -6,8 +6,8 @@ docker build \
   -f tools/python-strategy/Dockerfile \
   .
 
-## Run a specific strategy file (example: anchored_vwap.py)
-STRATEGY_FILE=anchored_vwap.py
+## Run a specific strategy file (example: krobot01.py)
+STRATEGY_FILE=krobot01.py
 docker run --rm \
   --name strategy-runner \
   -v $(pwd)/strategy:/app \
