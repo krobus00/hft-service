@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 
 	"github.com/krobus00/hft-service/internal/config"
 	"github.com/krobus00/hft-service/internal/constant"
@@ -79,7 +78,7 @@ func StartOrderEngineGateway(cmd *cobra.Command, args []string) {
 	logrus.Info(fmt.Sprintf("grpc server started on %s", grpcPort))
 
 	orderEngineHTTPHandler := httpHandler.NewOrderEngineHTTPHandler(orderEngineService)
-	httpMux := http.NewServeMux()
+	httpMux := infrastructure.NewAPIServeMux()
 	orderEngineHTTPHandler.Register(httpMux)
 
 	httpPort := fmt.Sprintf(":%s", config.Env.Port["order_engine_gateway_http"])

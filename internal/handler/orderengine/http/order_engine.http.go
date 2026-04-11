@@ -2,15 +2,16 @@ package http
 
 import (
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/guregu/null/v6"
 	"github.com/krobus00/hft-service/internal/config"
 	"github.com/krobus00/hft-service/internal/entity"
+	"github.com/krobus00/hft-service/internal/infrastructure"
 	"github.com/krobus00/hft-service/internal/service/orderengine"
 	"github.com/shopspring/decimal"
 )
@@ -93,31 +94,31 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		infrastructure.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
 	defer r.Body.Close()
 
 	var req PlaceOrderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+	if err := decodeJSONBody(r, &req); err != nil {
+		infrastructure.WriteError(w, http.StatusBadRequest, "INVALID_JSON_BODY", "invalid json body")
 		return
 	}
 
 	if err := validateAPIKey(resolveAPIKey(r, &req)); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+		infrastructure.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
 		return
 	}
 
 	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Exchange) == "" || strings.TrimSpace(req.Symbol) == "" || strings.TrimSpace(req.Type) == "" || strings.TrimSpace(req.Side) == "" || strings.TrimSpace(req.Quantity) == "" || strings.TrimSpace(req.Source) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required fields"})
+		infrastructure.WriteError(w, http.StatusBadRequest, "MISSING_REQUIRED_FIELDS", "missing required fields")
 		return
 	}
 
 	orderReq, err := mapHTTPRequestToOrderRequest(&req)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		infrastructure.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
 
@@ -125,46 +126,46 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, orderengine.ErrDuplicateOrder):
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "duplicate request"})
+			infrastructure.WriteError(w, http.StatusConflict, "DUPLICATE_REQUEST", "duplicate request")
 		case errors.Is(err, orderengine.ErrExchangeNotFound):
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "exchange not found"})
+			infrastructure.WriteError(w, http.StatusBadRequest, "EXCHANGE_NOT_FOUND", "exchange not found")
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal server error"})
+			infrastructure.WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "internal server error")
 		}
 		return
 	}
 
 	resp := mapOrderHistoryToHTTPResponse(history)
-	writeJSON(w, http.StatusOK, resp)
+	infrastructure.WriteSuccess(w, http.StatusOK, resp, "order placed")
 }
 
 func (h *Handler) PlaceOrderAsync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		infrastructure.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
 	defer r.Body.Close()
 
 	var req PlaceOrderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+	if err := decodeJSONBody(r, &req); err != nil {
+		infrastructure.WriteError(w, http.StatusBadRequest, "INVALID_JSON_BODY", "invalid json body")
 		return
 	}
 
 	if err := validateAPIKey(resolveAPIKey(r, &req)); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+		infrastructure.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
 		return
 	}
 
 	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Exchange) == "" || strings.TrimSpace(req.Symbol) == "" || strings.TrimSpace(req.Type) == "" || strings.TrimSpace(req.Side) == "" || strings.TrimSpace(req.Quantity) == "" || strings.TrimSpace(req.Source) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required fields"})
+		infrastructure.WriteError(w, http.StatusBadRequest, "MISSING_REQUIRED_FIELDS", "missing required fields")
 		return
 	}
 
 	orderReq, err := mapHTTPRequestToOrderRequest(&req)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		infrastructure.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
 
@@ -172,17 +173,17 @@ func (h *Handler) PlaceOrderAsync(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, orderengine.ErrPublishOrderEventFailed):
-			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+			infrastructure.WriteError(w, http.StatusBadGateway, "PUBLISH_ORDER_EVENT_FAILED", err.Error())
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			infrastructure.WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		}
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, PlaceOrderAsyncResponse{
+	infrastructure.WriteSuccess(w, http.StatusAccepted, PlaceOrderAsyncResponse{
 		RequestID: orderReq.RequestID,
 		Status:    "queued",
-	})
+	}, "order queued")
 }
 
 func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, error) {
@@ -321,18 +322,18 @@ func mapOrderHistoryToHTTPResponse(orderHistory *entity.OrderHistory) *PlaceOrde
 	}
 }
 
-func writeJSON(w http.ResponseWriter, code int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
 func resolveAPIKey(r *http.Request, req *PlaceOrderRequest) string {
 	if headerKey := strings.TrimSpace(r.Header.Get("X-API-Key")); headerKey != "" {
 		return headerKey
 	}
 
 	return strings.TrimSpace(req.ApiKey)
+}
+
+func decodeJSONBody(r *http.Request, out any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(out)
 }
 
 func validateAPIKey(rawAPIKey string) error {

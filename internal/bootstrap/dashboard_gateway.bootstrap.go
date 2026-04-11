@@ -3,7 +3,6 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"net/http"
 
 	"github.com/krobus00/hft-service/internal/config"
 	httpHandler "github.com/krobus00/hft-service/internal/handler/dashboard/http"
@@ -27,7 +26,7 @@ func StartDashboardGateway(cmd *cobra.Command, args []string) {
 	authService := dashboard.NewDashboardAuthService(authRepo)
 	authHandler := httpHandler.NewDashboardAuthHTTPHandler(authService)
 
-	httpMux := http.NewServeMux()
+	httpMux := infrastructure.NewAPIServeMux()
 	authHandler.Register(httpMux)
 
 	httpPort := fmt.Sprintf(":%s", config.Env.Port["dashboard_gateway_http"])

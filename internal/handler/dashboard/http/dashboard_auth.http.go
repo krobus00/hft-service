@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/krobus00/hft-service/internal/infrastructure"
 	"github.com/krobus00/hft-service/internal/service/dashboard"
 )
 
@@ -46,7 +47,7 @@ func (h *DashboardAuthHandler) Register(mux *http.ServeMux) {
 
 func (h *DashboardAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		infrastructure.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
@@ -54,7 +55,7 @@ func (h *DashboardAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+		infrastructure.WriteError(w, http.StatusBadRequest, "INVALID_JSON_BODY", "invalid json body")
 		return
 	}
 
@@ -64,7 +65,7 @@ func (h *DashboardAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, authResponse{
+	infrastructure.WriteSuccess(w, http.StatusOK, authResponse{
 		AccessToken:           pair.AccessToken,
 		RefreshToken:          pair.RefreshToken,
 		TokenType:             "Bearer",
@@ -73,12 +74,12 @@ func (h *DashboardAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Role:                  user.Role,
 		UserID:                user.ID,
 		Username:              user.Username,
-	})
+	}, "login success")
 }
 
 func (h *DashboardAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		infrastructure.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
@@ -86,7 +87,7 @@ func (h *DashboardAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	var req refreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+		infrastructure.WriteError(w, http.StatusBadRequest, "INVALID_JSON_BODY", "invalid json body")
 		return
 	}
 
@@ -96,7 +97,7 @@ func (h *DashboardAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, authResponse{
+	infrastructure.WriteSuccess(w, http.StatusOK, authResponse{
 		AccessToken:           pair.AccessToken,
 		RefreshToken:          pair.RefreshToken,
 		TokenType:             "Bearer",
@@ -105,12 +106,12 @@ func (h *DashboardAuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		Role:                  user.Role,
 		UserID:                user.ID,
 		Username:              user.Username,
-	})
+	}, "refresh success")
 }
 
 func (h *DashboardAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		infrastructure.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
@@ -120,15 +121,15 @@ func (h *DashboardAuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	infrastructure.WriteSuccess(w, http.StatusOK, map[string]any{
 		"user_id": claims.Sub,
 		"role":    claims.Role,
-	})
+	}, "authenticated user")
 }
 
 func (h *DashboardAuthHandler) AdminPing(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		infrastructure.WriteError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
@@ -143,10 +144,10 @@ func (h *DashboardAuthHandler) AdminPing(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	infrastructure.WriteSuccess(w, http.StatusOK, map[string]any{
 		"message": "dashboard admin authenticated",
 		"role":    claims.Role,
-	})
+	}, "admin authorized")
 }
 
 func (h *DashboardAuthHandler) authenticateRequest(r *http.Request) (*dashboard.TokenClaims, error) {
@@ -166,18 +167,12 @@ func (h *DashboardAuthHandler) authenticateRequest(r *http.Request) (*dashboard.
 func handleAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, dashboard.ErrDashboardInvalidCredential), errors.Is(err, dashboard.ErrDashboardTokenInvalid), errors.Is(err, dashboard.ErrDashboardTokenTypeInvalid), errors.Is(err, dashboard.ErrDashboardTokenExpired):
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+		infrastructure.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
 	case errors.Is(err, dashboard.ErrDashboardUserInactive):
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+		infrastructure.WriteError(w, http.StatusForbidden, "USER_INACTIVE", err.Error())
 	case errors.Is(err, dashboard.ErrDashboardForbiddenRole):
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+		infrastructure.WriteError(w, http.StatusForbidden, "FORBIDDEN_ROLE", err.Error())
 	default:
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal server error"})
+		infrastructure.WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "internal server error")
 	}
-}
-
-func writeJSON(w http.ResponseWriter, code int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(payload)
 }

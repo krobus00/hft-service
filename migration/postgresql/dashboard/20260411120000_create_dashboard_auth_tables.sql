@@ -27,7 +27,7 @@ CREATE INDEX idx_dashboard_refresh_tokens_expires_at
 ON dashboard_refresh_tokens(expires_at);
 
 INSERT INTO dashboard_users (username, password_hash, role)
-VALUES ('admin', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'admin');
+VALUES ('admin', '$2a$10$mhJOp90/nmINlHXjat0aMOSonijfgyHFuYOVHrgG2CJGnsD4VqfnK', 'admin');
 -- +goose StatementEnd
 
 -- +goose Down

@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	defaultHTTPAddr         = ":8080"
-	defaultReadTimeout      = 5 * time.Second
+	defaultHTTPAddr          = ":8080"
+	defaultReadTimeout       = 5 * time.Second
 	defaultReadHeaderTimeout = 2 * time.Second
-	defaultWriteTimeout     = 15 * time.Second
-	defaultIdleTimeout      = 60 * time.Second
-	defaultShutdownTimeout  = 10 * time.Second
-	defaultMaxHeaderBytes   = 1 << 20
+	defaultWriteTimeout      = 15 * time.Second
+	defaultIdleTimeout       = 60 * time.Second
+	defaultShutdownTimeout   = 10 * time.Second
+	defaultMaxHeaderBytes    = 1 << 20
 )
 
 type HTTPServer struct {
@@ -65,6 +65,7 @@ func NewHTTPServerWithConfig(cfg HTTPServerConfig, handler http.Handler) *HTTPSe
 	withMiddlewares := chainHTTPMiddleware(
 		handler,
 		httpRequestIDMiddleware,
+		httpCORSMiddleware,
 		httpRecoveryMiddleware,
 		httpSecurityHeadersMiddleware,
 		httpAccessLogMiddleware,
@@ -132,14 +133,16 @@ func (h *HTTPServer) Handler() http.Handler {
 }
 
 func defaultHTTPMux() *http.ServeMux {
+	return NewAPIServeMux()
+}
+
+func NewAPIServeMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		WriteSuccess(w, http.StatusOK, map[string]string{"status": "ok"}, "service is healthy")
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ready"))
+		WriteSuccess(w, http.StatusOK, map[string]string{"status": "ready"}, "service is ready")
 	})
 
 	return mux
@@ -177,6 +180,22 @@ func httpSecurityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func httpCORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-API-Key,X-Request-Id")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func httpRecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -187,8 +206,7 @@ func httpRecoveryMiddleware(next http.Handler) http.Handler {
 					"panic":  recovered,
 				}).Error("panic recovered in http handler")
 
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte("internal server error"))
+				WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "internal server error")
 			}
 		}()
 
