@@ -263,6 +263,7 @@ func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
 		MarketType:        order.MarketType,
+		PositionSide:      order.PositionSide,
 		Symbol:            order.Symbol,
 		OrderID:           fmt.Sprintf("paper-%s", order.RequestID),
 		ClientOrderID:     clientOrderID,

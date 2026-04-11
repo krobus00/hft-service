@@ -714,6 +714,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
 		MarketType:        string(entity.MarketTypeSpot),
+		PositionSide:      string(entity.PositionSideBoth),
 		Symbol:            resolvedSymbol,
 		OrderID:           fmt.Sprintf("%d", resp.OrderID),
 		ClientOrderID:     clientOrderID,

@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -9,6 +10,7 @@ import (
 
 type OrderType string
 type OrderSide string
+type PositionSide string
 
 const (
 	OrderSideBuy  OrderSide = "BUY"
@@ -16,7 +18,22 @@ const (
 
 	OrderTypeLimit  OrderType = "LIMIT"
 	OrderTypeMarket OrderType = "MARKET"
+
+	PositionSideBoth  PositionSide = "BOTH"
+	PositionSideLong  PositionSide = "LONG"
+	PositionSideShort PositionSide = "SHORT"
 )
+
+func NormalizePositionSide(raw string) PositionSide {
+	switch PositionSide(strings.ToUpper(strings.TrimSpace(raw))) {
+	case PositionSideLong:
+		return PositionSideLong
+	case PositionSideShort:
+		return PositionSideShort
+	default:
+		return PositionSideBoth
+	}
+}
 
 type OrderRequest struct {
 	RequestID      string          `json:"request_id"`
@@ -24,6 +41,7 @@ type OrderRequest struct {
 	OrderID        *string         `json:"order_id"`
 	Exchange       string          `json:"exchange"`
 	MarketType     string          `json:"market_type"`
+	PositionSide   string          `json:"position_side"`
 	Symbol         string          `json:"symbol"`
 	Type           OrderType       `json:"type"`
 	Side           OrderSide       `json:"side"`
@@ -47,6 +65,7 @@ type OrderHistory struct {
 	UserID            string           `db:"user_id" json:"user_id"`
 	Exchange          string           `db:"exchange" json:"exchange"`
 	MarketType        string           `db:"market_type" json:"market_type"`
+	PositionSide      string           `db:"position_side" json:"position_side"`
 	Symbol            string           `db:"symbol" json:"symbol"`
 	OrderID           string           `db:"order_id" json:"order_id"`
 	ClientOrderID     sql.NullString   `db:"client_order_id" json:"client_order_id"`

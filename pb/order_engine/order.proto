@@ -19,6 +19,7 @@ message PlaceOrderRequest {
   optional string strategy_id      = 13;
   bool            is_paper_trading = 14;
   string          market_type      = 15;
+  string          position_side    = 16;
 }
 
 message PlaceOrderResponse {
@@ -49,4 +50,5 @@ message PlaceOrderResponse {
   int64           updated_at          = 25;
   bool            is_paper_trading    = 26;
   string          market_type         = 27;
+  string          position_side       = 28;
 }

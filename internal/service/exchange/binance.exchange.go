@@ -490,18 +490,11 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		}
 	}
 
-	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	pairs := []string{
+	basePairs := []string{
 		"symbol=" + orderSymbol,
 		"side=" + sideCode,
 		"type=" + typeCode,
 		"quantity=" + normalizedQuantity.String(),
-	}
-
-	futuresPositionSide := ""
-	if marketType == entity.MarketTypeFutures {
-		futuresPositionSide = e.futuresPositionSide(order.Side)
-		pairs = append(pairs, "positionSide="+futuresPositionSide)
 	}
 
 	if order.OrderID != nil && strings.TrimSpace(*order.OrderID) != "" {
@@ -510,16 +503,25 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 			return nil, err
 		}
 
-		pairs = append(pairs, "newClientOrderId="+url.QueryEscape(clientID))
+		basePairs = append(basePairs, "newClientOrderId="+url.QueryEscape(clientID))
 	}
 
 	if order.Type == entity.OrderTypeLimit {
-		pairs = append(pairs,
+		basePairs = append(basePairs,
 			"price="+normalizedPrice.String(),
 			"timeInForce=GTC",
 		)
 	}
 
+	futuresPositionSide := ""
+	if marketType == entity.MarketTypeFutures {
+		futuresPositionSide = e.futuresPositionSide(order)
+		basePairs = append(basePairs, "positionSide="+futuresPositionSide)
+	}
+
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	pairs := make([]string, 0, len(basePairs)+2)
+	pairs = append(pairs, basePairs...)
 	pairs = append(pairs,
 		"timestamp="+timestamp,
 		"recvWindow="+strconv.FormatInt(e.recvWindow, 10),
@@ -548,11 +550,11 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	body, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -576,6 +578,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 			"price":         normalizedPrice.String(),
 			"position_side": futuresPositionSide,
 		}).Info("binance order rejected")
+
 		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
 	}
 
@@ -594,6 +597,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		"symbol":           orderSymbol,
 		"type":             order.Type,
 		"side":             order.Side,
+		"position_side":    futuresPositionSide,
 		"price":            normalizedPrice.String(),
 		"quantity":         normalizedQuantity.String(),
 		"source":           order.Source,
@@ -783,6 +787,7 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
 		MarketType:        string(marketType),
+		PositionSide:      string(entity.NormalizePositionSide(order.PositionSide)),
 		Symbol:            resolvedSymbol,
 		OrderID:           strconv.FormatInt(resp.OrderID, 10),
 		ClientOrderID:     clientOrderID,
@@ -1206,7 +1211,12 @@ func (e *BinanceExchange) symbolPrecisionCacheKey(marketType entity.MarketType, 
 	return string(entity.NormalizeMarketType(string(marketType))) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
 }
 
-func (e *BinanceExchange) futuresPositionSide(orderSide entity.OrderSide) string {
+func (e *BinanceExchange) futuresPositionSide(order entity.OrderRequest) string {
+	explicit := entity.NormalizePositionSide(order.PositionSide)
+	if explicit == entity.PositionSideLong || explicit == entity.PositionSideShort {
+		return string(explicit)
+	}
+
 	override := strings.ToUpper(strings.TrimSpace(os.Getenv("BINANCE_FUTURES_POSITION_SIDE")))
 	switch override {
 	case "BOTH", "LONG", "SHORT":
@@ -1215,7 +1225,7 @@ func (e *BinanceExchange) futuresPositionSide(orderSide entity.OrderSide) string
 
 	mode := strings.ToUpper(strings.TrimSpace(os.Getenv("BINANCE_FUTURES_POSITION_MODE")))
 	if mode == "HEDGE" || mode == "HEDGE_MODE" || mode == "DUAL" {
-		if orderSide == entity.OrderSideSell {
+		if order.Side == entity.OrderSideSell {
 			return "SHORT"
 		}
 		return "LONG"
