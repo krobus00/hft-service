@@ -44,6 +44,8 @@ KLINE_SUBJECT = AVWAP_CONFIG.get("kline_subject", "KLINE.TOKOCRYPTO.>")
 PLACE_SUBJECT = AVWAP_CONFIG.get("place_subject", "order_engine.place_order")
 
 EXCHANGE = AVWAP_CONFIG.get("exchange", "tokocrypto")
+MARKET_TYPE = AVWAP_CONFIG.get("market_type", "spot")
+POSITION_SIDE = AVWAP_CONFIG.get("position_side", "BOTH")
 SYMBOL_IN = AVWAP_CONFIG.get("symbol_in", "SOLUSDT")
 SYMBOL_OUT = AVWAP_CONFIG.get("symbol_out", "SOLUSDT")
 
@@ -393,6 +395,8 @@ def make_order_payload(side: str, ref_px: float, qty: float) -> Dict[str, Any]:
             "user_id": USER_ID,
             "order_id": gen_request_id(),
             "exchange": EXCHANGE,
+            "market_type": MARKET_TYPE,
+            "position_side": POSITION_SIDE,
             "symbol": SYMBOL_OUT,
             "type": ORDER_TYPE,
             "side": side,

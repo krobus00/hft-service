@@ -15,6 +15,8 @@ macd:
   trend_ema_slow: 200
 
   exchange: tokocrypto
+  market_type: spot
+  position_side: BOTH
   user_id: paper-1
   source: python-macd
   strategy_id: python-macd
@@ -30,6 +32,8 @@ macd:
 
 anchored_vwap:
   exchange: tokocrypto
+  market_type: spot
+  position_side: BOTH
   symbol_in: SOLUSDT
   symbol_out: SOLUSDT
 
@@ -74,6 +78,8 @@ example:
   interval: 1m
 
   exchange: tokocrypto
+  market_type: spot
+  position_side: BOTH
   user_id: paper-1
   source: python-example-hft
   strategy_id: python-example-hft-momentum-v1
@@ -118,6 +124,8 @@ vwap:
   interval: 1m
 
   exchange: tokocrypto
+  market_type: spot
+  position_side: BOTH
   user_id: paper-1
   source: python-vwap
   strategy_id: python-vwap-mean-revert-hf-v1
@@ -144,6 +152,8 @@ krobot01:
   interval: 1m
 
   exchange: tokocrypto
+  market_type: spot
+  position_side: BOTH
   user_id: paper-1
   source: python-krobot01
   strategy_id: python-krobot01-ema200-vwap-macd

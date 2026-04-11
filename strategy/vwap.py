@@ -48,6 +48,8 @@ INTERVAL = VWAP_CONFIG.get("interval", "1m")
 
 USER_ID = VWAP_CONFIG.get("user_id", "paper-1")
 EXCHANGE = VWAP_CONFIG.get("exchange", "tokocrypto")
+MARKET_TYPE = VWAP_CONFIG.get("market_type", "spot")
+POSITION_SIDE = VWAP_CONFIG.get("position_side", "BOTH")
 SOURCE = VWAP_CONFIG.get("source", "python-vwap")
 STRATEGY_ID = VWAP_CONFIG.get("strategy_id", "python-vwap-mean-revert-hf-v1")
 IS_PAPER_TRADING = VWAP_CONFIG.get("is_paper_trading", True)
@@ -231,6 +233,8 @@ def build_order_payload(side: str, price: float) -> dict:
             "user_id": USER_ID,
             "order_id": gen_id(),
             "exchange": EXCHANGE,
+            "market_type": MARKET_TYPE,
+            "position_side": POSITION_SIDE,
             "symbol": ORDER_SYMBOL,
             "type": ORDER_TYPE,
             "side": side,

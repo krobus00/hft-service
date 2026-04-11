@@ -50,6 +50,8 @@ INTERVAL = KROBOT01_CONFIG.get("interval", "1m")
 
 USER_ID = KROBOT01_CONFIG.get("user_id", "paper-1")
 EXCHANGE = KROBOT01_CONFIG.get("exchange", "tokocrypto")
+MARKET_TYPE = KROBOT01_CONFIG.get("market_type", "spot")
+POSITION_SIDE = KROBOT01_CONFIG.get("position_side", "BOTH")
 SOURCE = KROBOT01_CONFIG.get("source", "python-krobot01")
 STRATEGY_ID = KROBOT01_CONFIG.get("strategy_id", "python-krobot01-ema-vwap-macd")
 IS_PAPER_TRADING = KROBOT01_CONFIG.get("is_paper_trading", True)
@@ -253,6 +255,8 @@ def build_order_payload(side: str, price: float) -> dict:
             "user_id": USER_ID,
             "order_id": gen_id(),
             "exchange": EXCHANGE,
+            "market_type": MARKET_TYPE,
+            "position_side": POSITION_SIDE,
             "symbol": ORDER_SYMBOL,
             "type": ORDER_TYPE,
             "side": side,
