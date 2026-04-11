@@ -86,6 +86,13 @@ func EnsureConsumer(ctx context.Context, js nats.JetStreamContext, streamName st
 
 	_, err := js.ConsumerInfo(streamName, durable, nats.Context(ctx))
 	if err == nil {
+		_, updateErr := js.UpdateConsumer(streamName, consumerConfig, nats.Context(ctx))
+		if updateErr != nil {
+			logrus.WithError(updateErr).WithFields(logrus.Fields{
+				"stream":   streamName,
+				"consumer": durable,
+			}).Warn("failed to update consumer config; using existing consumer")
+		}
 		return nil
 	}
 
