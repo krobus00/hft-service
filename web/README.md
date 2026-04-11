@@ -32,6 +32,36 @@ Copy [.env.example](.env.example) and adjust values if needed.
 - Tokens are stored as httpOnly cookies.
 - Middleware guards dashboard routes in [middleware.ts](middleware.ts).
 
+## User Management API
+
+Dashboard user management is proxied through Next API routes:
+
+- GET [src/app/api/dashboard/users/route.ts](src/app/api/dashboard/users/route.ts)
+- POST [src/app/api/dashboard/users/route.ts](src/app/api/dashboard/users/route.ts)
+- GET [src/app/api/dashboard/users/[id]/route.ts](src/app/api/dashboard/users/[id]/route.ts)
+- PATCH [src/app/api/dashboard/users/[id]/route.ts](src/app/api/dashboard/users/[id]/route.ts)
+- DELETE [src/app/api/dashboard/users/[id]/route.ts](src/app/api/dashboard/users/[id]/route.ts)
+
+These call dashboard-gateway endpoints under `/dashboard/v1/users`.
+
+## Pagination Standard
+
+Pagination request query for list endpoints:
+
+- `page` (int, starts at 1)
+- `page_size` (int, max 100)
+- `search` (optional)
+
+Standard paginated response shape:
+
+- `data.items`: list payload
+- `data.pagination.page`
+- `data.pagination.page_size`
+- `data.pagination.total_items`
+- `data.pagination.total_pages`
+- `data.pagination.has_next`
+- `data.pagination.has_prev`
+
 ## Design System
 
 Follow [DESIGN_GUIDE.md](DESIGN_GUIDE.md) for all new screens.

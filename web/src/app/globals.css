@@ -461,6 +461,217 @@ body {
   gap: 8px;
 }
 
+.users-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.users-search-form {
+  display: flex;
+  gap: 8px;
+}
+
+.users-search-form input,
+.users-form input,
+.users-form select {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.users-search-form input {
+  min-width: 220px;
+}
+
+.users-grid {
+  grid-template-columns: 1fr;
+}
+
+.users-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.users-table-wrap {
+  overflow-x: auto;
+}
+
+.users-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.users-table th,
+.users-table td {
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  padding: 10px 8px;
+  font-size: 14px;
+}
+
+.users-table th {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.users-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.users-actions button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--foreground);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.users-pagination {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.users-form {
+  margin-top: 4px;
+  display: grid;
+  gap: 8px;
+}
+
+.users-form label {
+  font-size: 13px;
+  color: #334155;
+  font-weight: 600;
+}
+
+.users-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.users-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.users-detail-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.users-detail-note p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.38);
+  display: grid;
+  place-items: center;
+  z-index: 60;
+  padding: 20px;
+}
+
+.modal-card {
+  width: min(640px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18);
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-header h3 {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.modal-close {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+}
+
+.modal-body {
+  padding: 16px 18px;
+}
+
+.modal-footer {
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  height: 38px;
+  padding: 0 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.modal-button.secondary {
+  background: var(--surface-muted);
+  color: var(--foreground);
+}
+
+.modal-button.primary {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
+}
+
+.modal-button.primary:hover {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+}
+
+.modal-button.danger {
+  background: #d63649;
+  color: #fff;
+  border-color: #d63649;
+}
+
+.modal-button.danger:hover {
+  background: #b82b3c;
+  border-color: #b82b3c;
+}
+
 @media (max-width: 980px) {
   .dashboard-root {
     grid-template-columns: 1fr;
@@ -500,6 +711,32 @@ body {
 
   .dashboard-grid {
     grid-template-columns: 1fr;
+  }
+
+  .users-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .users-search-form {
+    width: 100%;
+  }
+
+  .users-search-form input {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .users-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-footer {
+    flex-direction: column;
+  }
+
+  .modal-button {
+    width: 100%;
   }
 
   .user-chip {

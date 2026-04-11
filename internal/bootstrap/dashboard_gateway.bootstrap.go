@@ -24,10 +24,13 @@ func StartDashboardGateway(cmd *cobra.Command, args []string) {
 
 	authRepo := repository.NewDashboardAuthRepository(dashboardDB)
 	authService := dashboard.NewDashboardAuthService(authRepo)
+	userService := dashboard.NewDashboardUserService(authRepo)
 	authHandler := httpHandler.NewDashboardAuthHTTPHandler(authService)
+	userHandler := httpHandler.NewDashboardUserHTTPHandler(authService, userService)
 
 	httpMux := infrastructure.NewAPIServeMux()
 	authHandler.Register(httpMux)
+	userHandler.Register(httpMux)
 
 	httpPort := fmt.Sprintf(":%s", config.Env.Port["dashboard_gateway_http"])
 	httpServer := infrastructure.NewHTTPServerWithConfig(infrastructure.HTTPServerConfig{

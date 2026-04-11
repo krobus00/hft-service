@@ -5,6 +5,7 @@ import { UserChip } from "@/components/dashboard/user-chip";
 
 const navItems = [
 	{ href: "/dashboard", label: "Overview" },
+	{ href: "/dashboard/users", label: "Users" },
 	{ href: "/dashboard/profile", label: "Profile" },
 ];
 
