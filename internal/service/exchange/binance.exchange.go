@@ -616,7 +616,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", statusCode, apiErr.Code, apiErr.Msg)
 	}
 
-	parseSuccess:
+parseSuccess:
 	placeOrderResp, err := parseBinancePlaceOrderResponse(body, marketType == entity.MarketTypeFutures)
 	if err != nil {
 		return nil, fmt.Errorf("binance order parse failed: status=%d body=%s", statusCode, string(body))
