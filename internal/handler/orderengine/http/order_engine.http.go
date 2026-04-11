@@ -28,6 +28,8 @@ type PlaceOrderRequest struct {
 	UserID         string `json:"user_id"`
 	OrderID        string `json:"order_id"`
 	Exchange       string `json:"exchange"`
+	MarketType     string `json:"market_type"`
+	PositionSide   string `json:"position_side"`
 	Symbol         string `json:"symbol"`
 	Type           string `json:"type"`
 	Side           string `json:"side"`
@@ -45,6 +47,8 @@ type PlaceOrderResponse struct {
 	RequestID         string  `json:"request_id"`
 	UserID            string  `json:"user_id"`
 	Exchange          string  `json:"exchange"`
+	MarketType        string  `json:"market_type"`
+	PositionSide      string  `json:"position_side"`
 	Symbol            string  `json:"symbol"`
 	OrderID           string  `json:"order_id"`
 	ClientOrderID     *string `json:"client_order_id,omitempty"`
@@ -197,6 +201,8 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 		UserID:         req.UserID,
 		OrderID:        null.NewString(req.OrderID, req.OrderID != "").Ptr(),
 		Exchange:       req.Exchange,
+		MarketType:     string(entity.NormalizeMarketType(req.MarketType)),
+		PositionSide:   string(entity.NormalizePositionSide(req.PositionSide)),
 		Symbol:         req.Symbol,
 		Type:           entity.OrderType(strings.ToUpper(req.Type)),
 		Side:           entity.OrderSide(strings.ToUpper(req.Side)),
@@ -288,6 +294,8 @@ func mapOrderHistoryToHTTPResponse(orderHistory *entity.OrderHistory) *PlaceOrde
 		RequestID:         orderHistory.RequestID,
 		UserID:            orderHistory.UserID,
 		Exchange:          orderHistory.Exchange,
+		MarketType:        orderHistory.MarketType,
+		PositionSide:      orderHistory.PositionSide,
 		Symbol:            orderHistory.Symbol,
 		OrderID:           orderHistory.OrderID,
 		ClientOrderID:     clientOrderID,

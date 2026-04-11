@@ -1,29 +1,4 @@
 services:
-  lazy-grid-strategy:
-    build:
-      context: .
-      target: final
-    command: ["lazy-grid-strategy"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
-    depends_on:
-      redis:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-    restart: unless-stopped
-    profiles:
-      - strategy
-    cpus: "1.0"
-    mem_limit: 512m
-    networks:
-      - hft-network
-
   market-data-gateway:
     build:
       context: .

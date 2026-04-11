@@ -19,7 +19,7 @@ const (
 	defaultNatsMinJitter       = 100 * time.Millisecond
 	defaultNatsMaxJitter       = 2 * time.Second
 	defaultNatsConnectTimeout  = 5 * time.Second
-	defaultNatsDrainTimeout   = 10 * time.Second
+	defaultNatsDrainTimeout    = 10 * time.Second
 	defaultNatsPingInterval    = 30 * time.Second
 	defaultNatsPingOutstanding = 3
 	defaultJetStreamMaxWait    = 5 * time.Second
@@ -61,7 +61,7 @@ func NewJetstream() (nc *nats.Conn, js nats.JetStreamContext, err error) {
 		nats.Timeout(defaultNatsConnectTimeout),
 		nats.DrainTimeout(defaultNatsDrainTimeout),
 		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(maxRetries),
+		nats.MaxReconnects(int(maxRetries)),
 		nats.PingInterval(defaultNatsPingInterval),
 		nats.MaxPingsOutstanding(defaultNatsPingOutstanding),
 		nats.CustomReconnectDelay(func(attempts int) time.Duration {

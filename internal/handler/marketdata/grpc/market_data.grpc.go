@@ -53,6 +53,7 @@ func (s *Server) BackfillMarketKlines(ctx context.Context, req *pb.BackfillMarke
 	}
 
 	insertedCount, err := exchangeClient.BackfillMarketKlines(ctx, entity.MarketKlineBackfillRequest{
+		MarketType: entity.NormalizeMarketType(req.GetMarketType()),
 		Symbol:    symbol,
 		Interval:  interval,
 		StartTime: time.UnixMilli(req.GetStartTime()).UTC(),

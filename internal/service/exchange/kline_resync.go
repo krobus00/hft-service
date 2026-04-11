@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/repository"
+	"github.com/sirupsen/logrus"
 )
 
 type klineResyncState struct {
@@ -23,9 +24,14 @@ func (s klineResyncState) Equal(other klineResyncState) bool {
 
 type exchangeKlineResyncDeps struct {
 	ExchangeName      entity.ExchangeName
+	MarketType        entity.MarketType
 	SymbolMapping     *atomic.Value
 	SymbolMappingRepo *repository.SymbolMappingRepository
 	KlineSubRepo      *repository.KlineSubscriptionRepository
+}
+
+func effectiveMarketType(raw entity.MarketType) string {
+	return string(entity.NormalizeMarketType(string(raw)))
 }
 
 func resolveInternalSymbolFromMapping(deps exchangeKlineResyncDeps, exchangeSymbol string) string {
@@ -39,7 +45,12 @@ func resolveInternalSymbolFromKlineMapping(deps exchangeKlineResyncDeps, exchang
 	}
 
 	mapping := snapshotSymbolMapping(deps.SymbolMapping)
-	indexes, ok := mapping[string(deps.ExchangeName)]
+	marketTypeMapping, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalized
+	}
+
+	indexes, ok := marketTypeMapping[effectiveMarketType(deps.MarketType)]
 	if !ok {
 		return normalized
 	}
@@ -58,7 +69,12 @@ func resolveInternalSymbolFromOrderMapping(deps exchangeKlineResyncDeps, exchang
 	}
 
 	mapping := snapshotSymbolMapping(deps.SymbolMapping)
-	indexes, ok := mapping[string(deps.ExchangeName)]
+	marketTypeMapping, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalized
+	}
+
+	indexes, ok := marketTypeMapping[effectiveMarketType(deps.MarketType)]
 	if !ok {
 		return normalized
 	}
@@ -77,7 +93,12 @@ func resolveExchangeKlineSymbolFromMapping(deps exchangeKlineResyncDeps, interna
 	}
 
 	mapping := snapshotSymbolMapping(deps.SymbolMapping)
-	indexes, ok := mapping[string(deps.ExchangeName)]
+	marketTypeMapping, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalizedInternal
+	}
+
+	indexes, ok := marketTypeMapping[effectiveMarketType(deps.MarketType)]
 	if !ok {
 		return normalizedInternal
 	}
@@ -99,7 +120,12 @@ func resolveExchangeOrderSymbolFromMapping(deps exchangeKlineResyncDeps, interna
 	}
 
 	mapping := snapshotSymbolMapping(deps.SymbolMapping)
-	indexes, ok := mapping[string(deps.ExchangeName)]
+	marketTypeMapping, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return normalizedInternal
+	}
+
+	indexes, ok := marketTypeMapping[effectiveMarketType(deps.MarketType)]
 	if !ok {
 		return normalizedInternal
 	}
@@ -125,12 +151,16 @@ func normalizeExchangeSubscriptions(deps exchangeKlineResyncDeps, subs []entity.
 			normalized = append(normalized, sub)
 			continue
 		}
+		if string(entity.NormalizeMarketType(sub.MarketType)) != effectiveMarketType(deps.MarketType) {
+			continue
+		}
 
 		internalSymbol := resolveInternalSymbolFromKlineMapping(deps, sub.Symbol)
 		exchangeSymbol := resolveExchangeKlineSymbolFromMapping(deps, internalSymbol)
 		interval := strings.TrimSpace(sub.Interval)
 
 		sub.Symbol = internalSymbol
+		sub.MarketType = effectiveMarketType(deps.MarketType)
 		sub.Payload = buildKlineSubscriptionPayload(exchangeSymbol, interval)
 		normalized = append(normalized, sub)
 	}
@@ -185,6 +215,11 @@ func refreshExchangeSymbolMapping(ctx context.Context, deps exchangeKlineResyncD
 		return nil
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"exchange":    deps.ExchangeName,
+		"market_type": effectiveMarketType(deps.MarketType),
+	}).Info("refreshing symbol mapping")
+
 	mapping, err := deps.SymbolMappingRepo.GetByExchange(ctx, string(deps.ExchangeName))
 	if err != nil {
 		return err
@@ -192,27 +227,52 @@ func refreshExchangeSymbolMapping(ctx context.Context, deps exchangeKlineResyncD
 
 	persistSymbolMapping(deps.SymbolMapping, mapping)
 
+	marketTypeMappings := mapping[string(deps.ExchangeName)]
+	indexes := marketTypeMappings[effectiveMarketType(deps.MarketType)]
+	logrus.WithFields(logrus.Fields{
+		"exchange":         deps.ExchangeName,
+		"market_type":      effectiveMarketType(deps.MarketType),
+		"internal_symbols": len(indexes.InternalToKline),
+		"kline_symbols":    len(indexes.KlineToInternal),
+		"order_symbols":    len(indexes.OrderToInternal),
+	}).Info("symbol mapping refreshed")
+
 	return nil
 }
 
 func loadExchangeLatestSubscriptions(ctx context.Context, deps exchangeKlineResyncDeps, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
 	if deps.KlineSubRepo == nil {
-		return normalizeExchangeSubscriptions(deps, fallback), nil
+		normalized := normalizeExchangeSubscriptions(deps, fallback)
+		logrus.WithFields(logrus.Fields{
+			"exchange":           deps.ExchangeName,
+			"market_type":        effectiveMarketType(deps.MarketType),
+			"source":             "fallback",
+			"subscription_count": len(normalized),
+		}).Info("kline subscriptions refreshed")
+		return normalized, nil
 	}
 
-	subs, err := deps.KlineSubRepo.GetByExchange(ctx, string(deps.ExchangeName))
+	subs, err := deps.KlineSubRepo.GetByExchangeAndMarketType(ctx, string(deps.ExchangeName), effectiveMarketType(deps.MarketType))
 	if err != nil {
 		return nil, err
 	}
 
-	return normalizeExchangeSubscriptions(deps, subs), nil
+	normalized := normalizeExchangeSubscriptions(deps, subs)
+	logrus.WithFields(logrus.Fields{
+		"exchange":           deps.ExchangeName,
+		"market_type":        effectiveMarketType(deps.MarketType),
+		"source":             "database",
+		"subscription_count": len(normalized),
+	}).Info("kline subscriptions refreshed")
+
+	return normalized, nil
 }
 
 func loadExchangeResyncState(ctx context.Context, deps exchangeKlineResyncDeps) (klineResyncState, error) {
 	state := klineResyncState{}
 
 	if deps.SymbolMappingRepo != nil {
-		timestamp, err := deps.SymbolMappingRepo.GetLatestUpdatedAtByExchange(ctx, string(deps.ExchangeName))
+		timestamp, err := deps.SymbolMappingRepo.GetLatestUpdatedAtByExchangeAndMarketType(ctx, string(deps.ExchangeName), effectiveMarketType(deps.MarketType))
 		if err != nil {
 			return klineResyncState{}, err
 		}
@@ -220,7 +280,7 @@ func loadExchangeResyncState(ctx context.Context, deps exchangeKlineResyncDeps) 
 	}
 
 	if deps.KlineSubRepo != nil {
-		timestamp, err := deps.KlineSubRepo.GetLatestUpdatedAtByExchange(ctx, string(deps.ExchangeName))
+		timestamp, err := deps.KlineSubRepo.GetLatestUpdatedAtByExchangeAndMarketType(ctx, string(deps.ExchangeName), effectiveMarketType(deps.MarketType))
 		if err != nil {
 			return klineResyncState{}, err
 		}

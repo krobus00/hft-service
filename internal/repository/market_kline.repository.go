@@ -22,6 +22,7 @@ func (r *MarketKlineRepository) Create(ctx context.Context, data *entity.MarketK
 		Insert(data.TableName()).
 		Columns(
 			"exchange",
+			"market_type",
 			"event_type",
 			"event_time",
 			"symbol",
@@ -43,6 +44,7 @@ func (r *MarketKlineRepository) Create(ctx context.Context, data *entity.MarketK
 		).
 		Values(
 			data.Exchange,
+			data.MarketType,
 			data.EventType,
 			data.EventTime,
 			data.Symbol,
@@ -62,7 +64,7 @@ func (r *MarketKlineRepository) Create(ctx context.Context, data *entity.MarketK
 			data.CreatedAt,
 			data.UpdatedAt,
 		).
-		Suffix(`ON CONFLICT (exchange, symbol, interval, open_time)
+		Suffix(`ON CONFLICT (exchange, market_type, symbol, interval, open_time)
 DO UPDATE SET
 	event_type = EXCLUDED.event_type,
 	event_time = EXCLUDED.event_time,

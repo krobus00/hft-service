@@ -37,6 +37,8 @@ type PlaceOrderRequest struct {
 	Source         string                 `protobuf:"bytes,12,opt,name=source,proto3" json:"source,omitempty"`
 	StrategyId     *string                `protobuf:"bytes,13,opt,name=strategy_id,json=strategyId,proto3,oneof" json:"strategy_id,omitempty"`
 	IsPaperTrading bool                   `protobuf:"varint,14,opt,name=is_paper_trading,json=isPaperTrading,proto3" json:"is_paper_trading,omitempty"`
+	MarketType     string                 `protobuf:"bytes,15,opt,name=market_type,json=marketType,proto3" json:"market_type,omitempty"`
+	PositionSide   string                 `protobuf:"bytes,16,opt,name=position_side,json=positionSide,proto3" json:"position_side,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -169,6 +171,20 @@ func (x *PlaceOrderRequest) GetIsPaperTrading() bool {
 	return false
 }
 
+func (x *PlaceOrderRequest) GetMarketType() string {
+	if x != nil {
+		return x.MarketType
+	}
+	return ""
+}
+
+func (x *PlaceOrderRequest) GetPositionSide() string {
+	if x != nil {
+		return x.PositionSide
+	}
+	return ""
+}
+
 type PlaceOrderResponse struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Id                string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -197,6 +213,8 @@ type PlaceOrderResponse struct {
 	CreatedAt         int64                  `protobuf:"varint,24,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt         int64                  `protobuf:"varint,25,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	IsPaperTrading    bool                   `protobuf:"varint,26,opt,name=is_paper_trading,json=isPaperTrading,proto3" json:"is_paper_trading,omitempty"`
+	MarketType        string                 `protobuf:"bytes,27,opt,name=market_type,json=marketType,proto3" json:"market_type,omitempty"`
+	PositionSide      string                 `protobuf:"bytes,28,opt,name=position_side,json=positionSide,proto3" json:"position_side,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -413,11 +431,25 @@ func (x *PlaceOrderResponse) GetIsPaperTrading() bool {
 	return false
 }
 
+func (x *PlaceOrderResponse) GetMarketType() string {
+	if x != nil {
+		return x.MarketType
+	}
+	return ""
+}
+
+func (x *PlaceOrderResponse) GetPositionSide() string {
+	if x != nil {
+		return x.PositionSide
+	}
+	return ""
+}
+
 var File_pb_order_engine_order_proto protoreflect.FileDescriptor
 
 const file_pb_order_engine_order_proto_rawDesc = "" +
 	"\n" +
-	"\x1bpb/order_engine/order.proto\x12\x0fpb.order_engine\"\xd4\x03\n" +
+	"\x1bpb/order_engine/order.proto\x12\x0fpb.order_engine\"\x9a\x04\n" +
 	"\x11PlaceOrderRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x17\n" +
@@ -436,10 +468,13 @@ const file_pb_order_engine_order_proto_rawDesc = "" +
 	"\x06source\x18\f \x01(\tR\x06source\x12$\n" +
 	"\vstrategy_id\x18\r \x01(\tH\x02R\n" +
 	"strategyId\x88\x01\x01\x12(\n" +
-	"\x10is_paper_trading\x18\x0e \x01(\bR\x0eisPaperTradingB\v\n" +
+	"\x10is_paper_trading\x18\x0e \x01(\bR\x0eisPaperTrading\x12\x1f\n" +
+	"\vmarket_type\x18\x0f \x01(\tR\n" +
+	"marketType\x12#\n" +
+	"\rposition_side\x18\x10 \x01(\tR\fpositionSideB\v\n" +
 	"\t_order_idB\r\n" +
 	"\v_expired_atB\x0e\n" +
-	"\f_strategy_id\"\x9d\b\n" +
+	"\f_strategy_id\"\xe3\b\n" +
 	"\x12PlaceOrderResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -472,7 +507,10 @@ const file_pb_order_engine_order_proto_rawDesc = "" +
 	"created_at\x18\x18 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\x19 \x01(\x03R\tupdatedAt\x12(\n" +
-	"\x10is_paper_trading\x18\x1a \x01(\bR\x0eisPaperTradingB\x12\n" +
+	"\x10is_paper_trading\x18\x1a \x01(\bR\x0eisPaperTrading\x12\x1f\n" +
+	"\vmarket_type\x18\x1b \x01(\tR\n" +
+	"marketType\x12#\n" +
+	"\rposition_side\x18\x1c \x01(\tR\fpositionSideB\x12\n" +
 	"\x10_client_order_idB\b\n" +
 	"\x06_priceB\x11\n" +
 	"\x0f_avg_fill_priceB\v\n" +

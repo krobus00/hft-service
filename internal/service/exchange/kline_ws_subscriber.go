@@ -60,6 +60,14 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 		if resyncedSubscriptions, state, err := cfg.Resync(ctx, nil, activeSubscriptions); err != nil {
 			logrus.WithError(err).Warnf("%s initial resync failed; starting with existing subscriptions", cfg.ExchangeName)
 		} else {
+			logrus.WithFields(logrus.Fields{
+				"exchange":                           cfg.ExchangeName,
+				"subscriptions_before_resync":        len(activeSubscriptions),
+				"subscriptions_after_resync":         len(resyncedSubscriptions),
+				"symbol_mapping_updated_at":          state.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+				"kline_subscription_updated_at":      state.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+			}).Info("initial exchange resync completed")
+
 			activeSubscriptions = resyncedSubscriptions
 			if cfg.NormalizeSubs != nil {
 				activeSubscriptions = cfg.NormalizeSubs(activeSubscriptions)
@@ -201,13 +209,31 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 					if currentState.Equal(lastResyncState) {
 						continue
 					}
+
+					logrus.WithFields(logrus.Fields{
+						"exchange":                              cfg.ExchangeName,
+						"symbol_mapping_updated_at_old":         lastResyncState.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"symbol_mapping_updated_at_latest":      currentState.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"kline_subscription_updated_at_old":     lastResyncState.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"kline_subscription_updated_at_latest":  currentState.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"active_subscriptions":                  len(activeSubscriptions),
+					}).Info("detected exchange resync changes for subscriptions or symbol mappings")
 				}
 
+				previousCount := len(activeSubscriptions)
 				resyncedSubscriptions, state, err := cfg.Resync(ctx, conn, activeSubscriptions)
 				if err != nil {
 					logrus.WithError(err).Warnf("%s resync failed", cfg.ExchangeName)
 					continue
 				}
+
+				logrus.WithFields(logrus.Fields{
+					"exchange":                           cfg.ExchangeName,
+					"subscriptions_before_resync":        previousCount,
+					"subscriptions_after_resync":         len(resyncedSubscriptions),
+					"symbol_mapping_updated_at":          state.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+					"kline_subscription_updated_at":      state.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+				}).Info("exchange resync completed")
 
 				activeSubscriptions = resyncedSubscriptions
 				if cfg.NormalizeSubs != nil {

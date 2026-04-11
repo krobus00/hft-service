@@ -47,6 +47,8 @@ INTERVAL = EXAMPLE_CONFIG.get("interval", "1m")
 
 USER_ID = EXAMPLE_CONFIG.get("user_id", "paper-1")
 EXCHANGE = EXAMPLE_CONFIG.get("exchange", "tokocrypto")
+MARKET_TYPE = EXAMPLE_CONFIG.get("market_type", "spot")
+POSITION_SIDE = EXAMPLE_CONFIG.get("position_side", "BOTH")
 SOURCE = EXAMPLE_CONFIG.get("source", "python-example")
 STRATEGY_ID = EXAMPLE_CONFIG.get("strategy_id", "python-example")
 IS_PAPER_TRADING = EXAMPLE_CONFIG.get("is_paper_trading", True)
@@ -316,6 +318,8 @@ def build_order_payload(side: str, price: float) -> dict:
             "user_id": USER_ID,
             "order_id": gen_id(),
             "exchange": EXCHANGE,
+            "market_type": MARKET_TYPE,
+            "position_side": POSITION_SIDE,
             "symbol": ORDER_SYMBOL,
             "type": ORDER_TYPE,
             "side": side,

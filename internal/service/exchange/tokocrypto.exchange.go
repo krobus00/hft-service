@@ -128,23 +128,32 @@ func (e *TokocryptoExchange) JetstreamEventSubscribe(ctx context.Context) error 
 		return err
 	}
 
+	consumerName := constant.GetKlineInsertQueueGroup(string(entity.ExchangeTokoCrypto))
+	err = util.EnsureConsumer(ctx, e.js, constant.KlineStreamName, &nats.ConsumerConfig{
+		Durable:       consumerName,
+		DeliverGroup:  consumerName,
+		FilterSubject: constant.GetKlineExchangeStreamSubject(string(entity.ExchangeTokoCrypto)),
+		AckPolicy:     nats.AckExplicitPolicy,
+		DeliverPolicy: nats.DeliverNewPolicy,
+		MaxDeliver:    int(config.Env.NatsJetstream.MaxRetries),
+	})
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
 	_, err = e.js.QueueSubscribe(
 		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeTokoCrypto)),
-		constant.GetKlineInsertQueueGroup(string(entity.ExchangeTokoCrypto)),
+		consumerName,
 		func(msg *nats.Msg) {
-			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
+			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], config.Env.NatsJetstream.MaxRetries, msg, e.handleKlineDataEvent)
 			if err != nil {
 				logrus.Errorf("error processing message: %v", err)
 				return
 			}
-
-			err = msg.Ack()
-			if err != nil {
-				logrus.Errorf("failed to acknowledge message: %v", err)
-				return
-			}
 		},
 		nats.ManualAck(),
+		nats.Durable(consumerName),
 		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
 	)
 	util.ContinueOrFatal(err)
@@ -168,22 +177,6 @@ func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats
 		logger.Info("skipping kline data event that is too old")
 		return nil
 	}
-
-	defer func() {
-		if err != nil {
-			req.RetryCount++
-			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
-				err = nil
-				return
-			}
-
-			err := util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), req.Data.Symbol, req.Data.Interval), req)
-			if err != nil {
-				logger.Error(err)
-				return
-			}
-		}
-	}()
 
 	err = e.marketKlineRepo.Create(ctx, &req.Data)
 	if err != nil {
@@ -281,6 +274,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 	}
 	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -288,6 +282,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeTokoCrypto),
+		MarketType:       string(entity.MarketTypeSpot),
 		EventType:        payload.Data.Event,
 		EventTime:        eventAt,
 		Symbol:           symbol,
@@ -309,8 +304,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 	}
 
 	err = util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), data.Symbol, data.Interval), entity.MarketKlineEvent{
-		RetryCount: 0,
-		Data:       data,
+		Data: data,
 	})
 	if err != nil {
 		return err
@@ -322,6 +316,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -360,6 +355,7 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 func (e *TokocryptoExchange) BackfillMarketKlines(ctx context.Context, req entity.MarketKlineBackfillRequest) (int, error) {
 	return backfillMarketKlines(ctx, marketKlineBackfillDeps{
 		ExchangeName:  entity.ExchangeTokoCrypto,
+		MarketType:    entity.MarketTypeSpot,
 		BaseURL:       "https://www.tokocrypto.site",
 		KlinePath:     "/api/v3/klines",
 		HTTPClient:    e.httpClient,
@@ -377,6 +373,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -538,6 +535,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -694,6 +692,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 
 	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -706,6 +705,8 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		RequestID:         order.RequestID,
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
+		MarketType:        string(entity.MarketTypeSpot),
+		PositionSide:      string(entity.PositionSideBoth),
 		Symbol:            resolvedSymbol,
 		OrderID:           fmt.Sprintf("%d", resp.OrderID),
 		ClientOrderID:     clientOrderID,
@@ -769,6 +770,7 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 
 	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,

@@ -46,6 +46,8 @@ TREND_EMA_FAST = MACD_CONFIG.get("trend_ema_fast", 50)
 TREND_EMA_SLOW = MACD_CONFIG.get("trend_ema_slow", 200)
 
 EXCHANGE = MACD_CONFIG.get("exchange", "tokocrypto")
+MARKET_TYPE = MACD_CONFIG.get("market_type", "spot")
+POSITION_SIDE = MACD_CONFIG.get("position_side", "BOTH")
 USER_ID = MACD_CONFIG.get("user_id", "paper-1")
 SOURCE = MACD_CONFIG.get("source", "python-macd")
 STRATEGY_ID = MACD_CONFIG.get("strategy_id", "python-macd")
@@ -270,6 +272,8 @@ async def run():
                     "user_id": USER_ID,
                     "order_id": gen_order_id(),
                     "exchange": EXCHANGE,
+                    "market_type": MARKET_TYPE,
+                    "position_side": POSITION_SIDE,
                     "symbol": ORDER_SYMBOL,
                     "type": ORDER_TYPE,
                     "side": side,

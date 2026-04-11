@@ -33,3 +33,13 @@ This generates Go files for:
 - `pb/order_engine/order.proto`
 - `pb/order_engine/order_engine.proto`
 - `pb/market_data/market_data.proto`
+
+### Binance dual market env (spot + futures)
+
+Optional environment variables:
+- `BINANCE_SPOT_BASE_URL` (default `https://api.binance.com`)
+- `BINANCE_FUTURES_BASE_URL` (default `https://fapi.binance.com`)
+- `BINANCE_WS_URL` (spot websocket, default `wss://stream.binance.com:9443/stream`)
+- `BINANCE_FUTURES_WS_URL` (futures websocket, default `wss://fstream.binance.com/stream`)
+
+`market_type` defaults to `spot` when omitted in API payloads.

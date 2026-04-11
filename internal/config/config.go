@@ -29,15 +29,6 @@ type EnvConfig struct {
 	Database                map[string]DatabaseConfig `mapstructure:"database"`
 	Redis                   map[string]RedisConfig    `mapstructure:"redis"`
 	NatsJetstream           NatsJetstreamConfig       `mapstructure:"nats_jetstream"`
-	Strategy                StrategyConfig            `mapstructure:"strategy"`
-}
-
-type StrategyConfig struct {
-	LazyGrid LazyGridStrategyConfig `mapstructure:"lazy_grid"`
-}
-
-type LazyGridStrategyConfig struct {
-	ResetStateOnStart bool `mapstructure:"reset_state_on_start"`
 }
 
 type APIKeyConfig struct {
@@ -49,7 +40,7 @@ type APIKeyConfig struct {
 
 type NatsJetstreamConfig struct {
 	URL             string                   `mapstructure:"url"`
-	MaxRetries      int                      `mapstructure:"max_retries"`
+	MaxRetries      uint64                   `mapstructure:"max_retries"`
 	ReconnectFactor float64                  `mapstructure:"reconnect_factor"`
 	MinJitter       time.Duration            `mapstructure:"min_jitter"`
 	MaxJitter       time.Duration            `mapstructure:"max_jitter"`
