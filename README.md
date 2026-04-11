@@ -93,6 +93,17 @@ flowchart TB
 ### 1) Prerequisites
 - Go `1.25+`
 - Docker + Docker Compose
+- Node.js `20+` (for `web` Next.js app)
+
+## Repository Layout
+
+Core folders in this monorepo:
+- `cmd/` Go CLI entrypoints for each service mode.
+- `internal/` Business logic, repositories, handlers, and infrastructure.
+- `migration/` SQL migration files for `market_data` and `order_engine`.
+- `pb/` Generated protobuf files and proto definitions.
+- `strategy/` Python-based strategy implementations.
+- `web/` Next.js web application.
 
 ### 2) Configure app
 Copy config template:
@@ -185,6 +196,29 @@ go run . order-engine-worker
 
 ```bash
 go run . strategy
+```
+
+## Web App (Next.js)
+
+The web app lives in `web/` and is managed independently from the Go modules.
+
+Install dependencies:
+```bash
+cd web
+npm install
+```
+
+Run in development mode:
+```bash
+cd web
+npm run dev
+```
+
+Build for production:
+```bash
+cd web
+npm run build
+npm run start
 ```
 
 ## Test Order API

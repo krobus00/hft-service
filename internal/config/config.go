@@ -24,11 +24,19 @@ type EnvConfig struct {
 	Log                     LogConfig                 `mapstructure:"log"`
 	GracefulShutdownTimeout time.Duration             `mapstructure:"graceful_shutdown_timeout"`
 	APIKeys                 []APIKeyConfig            `mapstructure:"api_keys"`
+	DashboardAuth           DashboardAuthConfig       `mapstructure:"dashboard_auth"`
 	Port                    map[string]string         `mapstructure:"port"`
 	Exchanges               map[string]ExchangeConfig `mapstructure:"exchanges"`
 	Database                map[string]DatabaseConfig `mapstructure:"database"`
 	Redis                   map[string]RedisConfig    `mapstructure:"redis"`
 	NatsJetstream           NatsJetstreamConfig       `mapstructure:"nats_jetstream"`
+}
+
+type DashboardAuthConfig struct {
+	Issuer          string        `mapstructure:"issuer"`
+	TokenSecret     string        `mapstructure:"token_secret"`
+	AccessTokenTTL  time.Duration `mapstructure:"access_token_ttl"`
+	RefreshTokenTTL time.Duration `mapstructure:"refresh_token_ttl"`
 }
 
 type APIKeyConfig struct {

@@ -12,10 +12,16 @@ api_keys:
     key: REPLACE_WITH_SECURE_API_KEY_B
     active: false
     expired_at: 2099-12-31T23:59:59Z
+dashboard_auth:
+  issuer: hft-dashboard
+  token_secret: REPLACE_WITH_DASHBOARD_SECRET
+  access_token_ttl: 15m
+  refresh_token_ttl: 168h
 port:
   market_data_gateway_grpc: 9802
   order_engine_gateway_grpc: 9800
   order_engine_gateway_http: 9801
+  dashboard_gateway_http: 9803
 exchanges:
   binance:
     api_key: "api key"
@@ -46,6 +52,16 @@ database:
     max_conn_lifetime: 1h
   order_engine:
     dsn: "postgres://root:root@postgresql:5432/order_engine?sslmode=disable"
+    ping_interval: 5s
+    reconnect_factor: 2.0
+    min_jitter: 100ms
+    max_jitter: 1s
+    max_retry: 5
+    max_idle_conns: 10
+    max_active_conns: 100
+    max_conn_lifetime: 1h
+  dashboard:
+    dsn: "postgres://root:root@postgresql:5432/dashboard?sslmode=disable"
     ping_interval: 5s
     reconnect_factor: 2.0
     min_jitter: 100ms
