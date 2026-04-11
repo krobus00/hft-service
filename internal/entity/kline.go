@@ -13,15 +13,14 @@ type KlineData struct {
 
 type MarketKlineBackfillRequest struct {
 	MarketType MarketType
-	Symbol    string
-	Interval  string
-	StartTime time.Time
-	EndTime   time.Time
+	Symbol     string
+	Interval   string
+	StartTime  time.Time
+	EndTime    time.Time
 }
 
 type MarketKlineEvent struct {
-	RetryCount int         `json:"retry"`
-	Data       MarketKline `json:"data"`
+	Data MarketKline `json:"data"`
 }
 
 type MarketKline struct {

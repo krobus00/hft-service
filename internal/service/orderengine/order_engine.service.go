@@ -81,19 +81,25 @@ func (e *OrderEngineService) JetstreamEventSubscribe(ctx context.Context) error 
 		return err
 	}
 
+	err = util.EnsureConsumer(ctx, e.js, constant.OrderEngineStreamName, &nats.ConsumerConfig{
+		Durable:       constant.OrderEngineQueueGroup,
+		DeliverGroup:  constant.OrderEngineQueueName,
+		FilterSubject: constant.OrderEngineStreamSubjectPlaceOrder,
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxDeliver:    int(config.Env.NatsJetstream.MaxRetries),
+	})
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
 	_, err = e.js.QueueSubscribe(
 		constant.OrderEngineStreamSubjectPlaceOrder,
 		constant.OrderEngineQueueName,
 		func(msg *nats.Msg) {
-			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["place_order"], msg, e.handlePlaceOrderEvent)
+			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["place_order"], config.Env.NatsJetstream.MaxRetries, msg, e.handlePlaceOrderEvent)
 			if err != nil {
 				logrus.Errorf("error processing message: %v", err)
-				return
-			}
-
-			err = msg.Ack()
-			if err != nil {
-				logrus.Errorf("failed to acknowledge message: %v", err)
 				return
 			}
 		},
@@ -117,25 +123,7 @@ func (e *OrderEngineService) handlePlaceOrderEvent(ctx context.Context, msg *nat
 		return err
 	}
 
-	defer func() {
-		if err != nil {
-			logger.Error(err)
-			req.RetryCount++
-			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
-				err = nil
-				return
-			}
-
-			err := util.PublishEvent(e.js, constant.OrderEngineStreamSubjectPlaceOrder, req)
-			if err != nil {
-				logger.Error(err)
-				return
-			}
-		}
-	}()
-
 	if req.Data.ExpiredAt != nil && *req.Data.ExpiredAt < time.Now().UTC().Unix() {
-		req.RetryCount = config.Env.NatsJetstream.MaxRetries // set retry count to max to prevent further retry
 		if req.Data.OrderID != nil {
 			return fmt.Errorf("order has expired: %s, order ID: %s", req.Data.Exchange, *req.Data.OrderID)
 		}
@@ -145,7 +133,6 @@ func (e *OrderEngineService) handlePlaceOrderEvent(ctx context.Context, msg *nat
 	_, err = e.PlaceOrder(ctx, req.Data)
 	if err != nil {
 		if err == ErrExchangeNotFound || err == ErrCreateOrderHistoryFailed || err == ErrDuplicateOrder {
-			req.RetryCount = config.Env.NatsJetstream.MaxRetries // set retry count to max to prevent further retry
 			return nil
 		}
 		logger.Error(err)
@@ -212,8 +199,7 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 	}
 
 	event := entity.OrderRequestEvent{
-		RetryCount: 0,
-		Data:       order,
+		Data: order,
 	}
 
 	err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, event)

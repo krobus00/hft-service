@@ -55,8 +55,7 @@ type OrderRequest struct {
 }
 
 type OrderRequestEvent struct {
-	RetryCount int          `json:"retry"`
-	Data       OrderRequest `json:"data"`
+	Data OrderRequest `json:"data"`
 }
 
 type OrderHistory struct {

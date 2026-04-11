@@ -150,23 +150,32 @@ func (e *BinanceExchange) JetstreamEventSubscribe(ctx context.Context) error {
 		return err
 	}
 
+	consumerName := constant.GetKlineInsertQueueGroup(string(entity.ExchangeBinance))
+	err = util.EnsureConsumer(ctx, e.js, constant.KlineStreamName, &nats.ConsumerConfig{
+		Durable:       consumerName,
+		DeliverGroup:  consumerName,
+		FilterSubject: constant.GetKlineExchangeStreamSubject(string(entity.ExchangeBinance)),
+		AckPolicy:     nats.AckExplicitPolicy,
+		DeliverPolicy: nats.DeliverNewPolicy,
+		MaxDeliver:    int(config.Env.NatsJetstream.MaxRetries),
+	})
+	if err != nil {
+		logrus.Error(err)
+		return err
+	}
+
 	_, err = e.js.QueueSubscribe(
 		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeBinance)),
-		constant.GetKlineInsertQueueGroup(string(entity.ExchangeBinance)),
+		consumerName,
 		func(msg *nats.Msg) {
-			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], msg, e.handleKlineDataEvent)
+			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], config.Env.NatsJetstream.MaxRetries, msg, e.handleKlineDataEvent)
 			if err != nil {
 				logrus.Errorf("error processing message: %v", err)
 				return
 			}
-
-			err = msg.Ack()
-			if err != nil {
-				logrus.Errorf("failed to acknowledge message: %v", err)
-				return
-			}
 		},
 		nats.ManualAck(),
+		nats.Durable(consumerName),
 		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
 	)
 	util.ContinueOrFatal(err)
@@ -190,22 +199,6 @@ func (e *BinanceExchange) handleKlineDataEvent(ctx context.Context, msg *nats.Ms
 		logger.Info("skipping kline data event that is too old")
 		return nil
 	}
-
-	defer func() {
-		if err != nil {
-			req.RetryCount++
-			if req.RetryCount >= config.Env.NatsJetstream.MaxRetries {
-				err = nil
-				return
-			}
-
-			err := util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeBinance), req.Data.Symbol, req.Data.Interval), req)
-			if err != nil {
-				logger.Error(err)
-				return
-			}
-		}
-	}()
 
 	err = e.marketKlineRepo.Create(ctx, &req.Data)
 	if err != nil {
@@ -337,8 +330,7 @@ func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, messa
 	}
 
 	err = util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeBinance), data.Symbol, data.Interval), entity.MarketKlineEvent{
-		RetryCount: 0,
-		Data:       data,
+		Data: data,
 	})
 	if err != nil {
 		return err
