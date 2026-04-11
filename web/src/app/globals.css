@@ -151,6 +151,7 @@ body {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
   min-height: 100vh;
+  width: 100vw;
 }
 
 .dashboard-sidebar {
@@ -231,10 +232,13 @@ body {
 
 .dashboard-main {
   padding: 24px 30px;
+  width: 100%;
+  min-width: 0;
 }
 
 .dashboard-main-inner {
-  width: min(1180px, 100%);
+  width: 100%;
+  max-width: none;
 }
 
 .dashboard-header {
@@ -260,6 +264,7 @@ body {
 .dashboard-content {
   display: grid;
   gap: 16px;
+  width: 100%;
 }
 
 .user-chip {
