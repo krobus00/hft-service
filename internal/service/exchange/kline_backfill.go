@@ -21,6 +21,7 @@ const marketKlineBackfillBatchLimit = 1000
 
 type marketKlineBackfillDeps struct {
 	ExchangeName  entity.ExchangeName
+	MarketType    entity.MarketType
 	BaseURL       string
 	KlinePath     string
 	HTTPClient    *http.Client
@@ -73,7 +74,7 @@ func backfillMarketKlines(ctx context.Context, deps marketKlineBackfillDeps, mar
 		lastOpenTime := int64(0)
 		now := time.Now().UTC()
 		for _, row := range rows {
-			kline, err := buildMarketKlineFromRow(deps.ExchangeName, normalizedSymbol, normalizedInterval, row, now)
+			kline, err := buildMarketKlineFromRow(deps.ExchangeName, deps.MarketType, normalizedSymbol, normalizedInterval, row, now)
 			if err != nil {
 				return insertedCount, err
 			}
@@ -115,7 +116,12 @@ func resolveExchangeKlineSymbol(deps marketKlineBackfillDeps, internalSymbol str
 		return internalSymbol
 	}
 
-	indexes, ok := mapping[string(deps.ExchangeName)]
+	marketTypeMapping, ok := mapping[string(deps.ExchangeName)]
+	if !ok {
+		return internalSymbol
+	}
+
+	indexes, ok := marketTypeMapping[effectiveMarketType(deps.MarketType)]
 	if !ok {
 		return internalSymbol
 	}
@@ -166,7 +172,7 @@ func fetchKlineRows(ctx context.Context, deps marketKlineBackfillDeps, symbol, i
 	return rows, nil
 }
 
-func buildMarketKlineFromRow(exchange entity.ExchangeName, symbol, interval string, row []any, now time.Time) (entity.MarketKline, error) {
+func buildMarketKlineFromRow(exchange entity.ExchangeName, marketType entity.MarketType, symbol, interval string, row []any, now time.Time) (entity.MarketKline, error) {
 	if len(row) < 11 {
 		return entity.MarketKline{}, fmt.Errorf("%s kline row has invalid length: %d", exchange, len(row))
 	}
@@ -221,6 +227,7 @@ func buildMarketKlineFromRow(exchange entity.ExchangeName, symbol, interval stri
 
 	return entity.MarketKline{
 		Exchange:         string(exchange),
+		MarketType:       effectiveMarketType(marketType),
 		EventType:        "kline",
 		EventTime:        closeAt,
 		Symbol:           symbol,

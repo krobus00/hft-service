@@ -29,9 +29,29 @@ func (r *KlineSubscriptionRepository) GetByExchange(ctx context.Context, exchang
 	return subscriptions, err
 }
 
+func (r *KlineSubscriptionRepository) GetByExchangeAndMarketType(ctx context.Context, exchange, marketType string) ([]entity.KlineSubscription, error) {
+	var subscriptions []entity.KlineSubscription
+	err := r.db.SelectContext(ctx, &subscriptions, "SELECT * FROM kline_subscriptions WHERE exchange = $1 AND market_type = $2 order by created_at desc", exchange, marketType)
+	return subscriptions, err
+}
+
 func (r *KlineSubscriptionRepository) GetLatestUpdatedAtByExchange(ctx context.Context, exchange string) (time.Time, error) {
 	var updatedAt sql.NullTime
 	err := r.db.GetContext(ctx, &updatedAt, "SELECT MAX(updated_at) FROM kline_subscriptions WHERE exchange = $1", exchange)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if !updatedAt.Valid {
+		return time.Time{}, nil
+	}
+
+	return updatedAt.Time, nil
+}
+
+func (r *KlineSubscriptionRepository) GetLatestUpdatedAtByExchangeAndMarketType(ctx context.Context, exchange, marketType string) (time.Time, error) {
+	var updatedAt sql.NullTime
+	err := r.db.GetContext(ctx, &updatedAt, "SELECT MAX(updated_at) FROM kline_subscriptions WHERE exchange = $1 AND market_type = $2", exchange, marketType)
 	if err != nil {
 		return time.Time{}, err
 	}

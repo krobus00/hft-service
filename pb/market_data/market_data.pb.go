@@ -28,6 +28,7 @@ type BackfillMarketKlinesRequest struct {
 	Interval      string                 `protobuf:"bytes,3,opt,name=interval,proto3" json:"interval,omitempty"`
 	StartTime     int64                  `protobuf:"varint,4,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
 	EndTime       int64                  `protobuf:"varint,5,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
+	MarketType    string                 `protobuf:"bytes,6,opt,name=market_type,json=marketType,proto3" json:"market_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -97,6 +98,13 @@ func (x *BackfillMarketKlinesRequest) GetEndTime() int64 {
 	return 0
 }
 
+func (x *BackfillMarketKlinesRequest) GetMarketType() string {
+	if x != nil {
+		return x.MarketType
+	}
+	return ""
+}
+
 type BackfillMarketKlinesResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	InsertedCount int64                  `protobuf:"varint,1,opt,name=inserted_count,json=insertedCount,proto3" json:"inserted_count,omitempty"`
@@ -145,14 +153,16 @@ var File_pb_market_data_market_data_proto protoreflect.FileDescriptor
 
 const file_pb_market_data_market_data_proto_rawDesc = "" +
 	"\n" +
-	" pb/market_data/market_data.proto\x12\x0epb.market_data\"\xa7\x01\n" +
+	" pb/market_data/market_data.proto\x12\x0epb.market_data\"\xc8\x01\n" +
 	"\x1bBackfillMarketKlinesRequest\x12\x1a\n" +
 	"\bexchange\x18\x01 \x01(\tR\bexchange\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x1a\n" +
 	"\binterval\x18\x03 \x01(\tR\binterval\x12\x1d\n" +
 	"\n" +
 	"start_time\x18\x04 \x01(\x03R\tstartTime\x12\x19\n" +
-	"\bend_time\x18\x05 \x01(\x03R\aendTime\"E\n" +
+	"\bend_time\x18\x05 \x01(\x03R\aendTime\x12\x1f\n" +
+	"\vmarket_type\x18\x06 \x01(\tR\n" +
+	"marketType\"E\n" +
 	"\x1cBackfillMarketKlinesResponse\x12%\n" +
 	"\x0einserted_count\x18\x01 \x01(\x03R\rinsertedCount2\x86\x01\n" +
 	"\x11MarketDataService\x12q\n" +

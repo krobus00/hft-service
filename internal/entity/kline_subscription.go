@@ -5,6 +5,7 @@ import "time"
 type KlineSubscription struct {
 	ID        string    `db:"id" json:"id"`
 	Exchange  string    `db:"exchange" json:"exchange"`
+	MarketType string   `db:"market_type" json:"market_type"`
 	Symbol    string    `db:"symbol" json:"symbol"`
 	Interval  string    `db:"interval" json:"interval"`
 	Payload   string    `db:"payload" json:"payload"`

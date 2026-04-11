@@ -23,6 +23,7 @@ type OrderRequest struct {
 	UserID         string          `json:"user_id"`
 	OrderID        *string         `json:"order_id"`
 	Exchange       string          `json:"exchange"`
+	MarketType     string          `json:"market_type"`
 	Symbol         string          `json:"symbol"`
 	Type           OrderType       `json:"type"`
 	Side           OrderSide       `json:"side"`
@@ -45,6 +46,7 @@ type OrderHistory struct {
 	RequestID         string           `db:"request_id" json:"request_id"`
 	UserID            string           `db:"user_id" json:"user_id"`
 	Exchange          string           `db:"exchange" json:"exchange"`
+	MarketType        string           `db:"market_type" json:"market_type"`
 	Symbol            string           `db:"symbol" json:"symbol"`
 	OrderID           string           `db:"order_id" json:"order_id"`
 	ClientOrderID     sql.NullString   `db:"client_order_id" json:"client_order_id"`

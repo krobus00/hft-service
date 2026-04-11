@@ -12,6 +12,7 @@ type KlineData struct {
 }
 
 type MarketKlineBackfillRequest struct {
+	MarketType MarketType
 	Symbol    string
 	Interval  string
 	StartTime time.Time
@@ -25,6 +26,7 @@ type MarketKlineEvent struct {
 
 type MarketKline struct {
 	Exchange         string
+	MarketType       string
 	EventType        string
 	EventTime        time.Time
 	Symbol           string

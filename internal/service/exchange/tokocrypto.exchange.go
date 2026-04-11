@@ -281,6 +281,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 	}
 	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -288,6 +289,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeTokoCrypto),
+		MarketType:       string(entity.MarketTypeSpot),
 		EventType:        payload.Data.Event,
 		EventTime:        eventAt,
 		Symbol:           symbol,
@@ -322,6 +324,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -360,6 +363,7 @@ func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptio
 func (e *TokocryptoExchange) BackfillMarketKlines(ctx context.Context, req entity.MarketKlineBackfillRequest) (int, error) {
 	return backfillMarketKlines(ctx, marketKlineBackfillDeps{
 		ExchangeName:  entity.ExchangeTokoCrypto,
+		MarketType:    entity.MarketTypeSpot,
 		BaseURL:       "https://www.tokocrypto.site",
 		KlinePath:     "/api/v3/klines",
 		HTTPClient:    e.httpClient,
@@ -377,6 +381,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -538,6 +543,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -694,6 +700,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 
 	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
@@ -706,6 +713,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		RequestID:         order.RequestID,
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
+		MarketType:        string(entity.MarketTypeSpot),
 		Symbol:            resolvedSymbol,
 		OrderID:           fmt.Sprintf("%d", resp.OrderID),
 		ClientOrderID:     clientOrderID,
@@ -769,6 +777,7 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 
 	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
+		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,

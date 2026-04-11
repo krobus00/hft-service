@@ -160,6 +160,8 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, ctx.Err()
 	}
 
+	order.MarketType = string(entity.NormalizeMarketType(order.MarketType))
+
 	exchange, ok := s.exchanges[entity.ExchangeName(order.Exchange)]
 	if !ok {
 		logrus.Errorf("exchange not found: %s", order.Exchange)
@@ -260,6 +262,7 @@ func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
 		RequestID:         order.RequestID,
 		UserID:            order.UserID,
 		Exchange:          order.Exchange,
+		MarketType:        order.MarketType,
 		Symbol:            order.Symbol,
 		OrderID:           fmt.Sprintf("paper-%s", order.RequestID),
 		ClientOrderID:     clientOrderID,

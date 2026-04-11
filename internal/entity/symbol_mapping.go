@@ -5,6 +5,7 @@ import "time"
 type SymbolMapping struct {
 	ID          string    `db:"id" json:"id"`
 	Exchange    string    `db:"exchange" json:"exchange"`
+	MarketType  string    `db:"market_type" json:"market_type"`
 	Symbol      string    `db:"symbol" json:"symbol"`
 	KlineSymbol string    `db:"kline_symbol" json:"kline_symbol"`
 	OrderSymbol string    `db:"order_symbol" json:"order_symbol"`
@@ -19,5 +20,5 @@ type ExchangeSymbols struct {
 	OrderToInternal map[string]string
 }
 
-// [exchange] = mapping indexes where keys are normalized symbols.
-type ExchangeSymbolMapping map[string]ExchangeSymbols
+// [exchange][market_type] = mapping indexes where keys are normalized symbols.
+type ExchangeSymbolMapping map[string]map[string]ExchangeSymbols

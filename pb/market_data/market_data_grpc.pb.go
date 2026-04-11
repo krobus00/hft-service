@@ -25,7 +25,10 @@ const (
 // MarketDataServiceClient is the client API for MarketDataService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// MarketDataService serves market data operations.
 type MarketDataServiceClient interface {
+	// BackfillMarketKlines pulls historical klines and persists them to market_klines.
 	BackfillMarketKlines(ctx context.Context, in *BackfillMarketKlinesRequest, opts ...grpc.CallOption) (*BackfillMarketKlinesResponse, error)
 }
 
@@ -50,7 +53,10 @@ func (c *marketDataServiceClient) BackfillMarketKlines(ctx context.Context, in *
 // MarketDataServiceServer is the server API for MarketDataService service.
 // All implementations must embed UnimplementedMarketDataServiceServer
 // for forward compatibility.
+//
+// MarketDataService serves market data operations.
 type MarketDataServiceServer interface {
+	// BackfillMarketKlines pulls historical klines and persists them to market_klines.
 	BackfillMarketKlines(context.Context, *BackfillMarketKlinesRequest) (*BackfillMarketKlinesResponse, error)
 	mustEmbedUnimplementedMarketDataServiceServer()
 }

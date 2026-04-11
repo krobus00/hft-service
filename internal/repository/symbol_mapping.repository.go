@@ -46,8 +46,14 @@ func buildExchangeSymbolMapping(mappings []entity.SymbolMapping) entity.Exchange
 		if exchange == "" {
 			continue
 		}
+		marketType := string(entity.NormalizeMarketType(mapping.MarketType))
 
-		indexes, ok := exchangeSymbolMapping[exchange]
+		marketTypeMapping, ok := exchangeSymbolMapping[exchange]
+		if !ok {
+			marketTypeMapping = make(map[string]entity.ExchangeSymbols)
+		}
+
+		indexes, ok := marketTypeMapping[marketType]
 		if !ok {
 			indexes = entity.ExchangeSymbols{
 				InternalToKline: make(map[string]string),
@@ -73,7 +79,8 @@ func buildExchangeSymbolMapping(mappings []entity.SymbolMapping) entity.Exchange
 			}
 		}
 
-		exchangeSymbolMapping[exchange] = indexes
+		marketTypeMapping[marketType] = indexes
+		exchangeSymbolMapping[exchange] = marketTypeMapping
 	}
 
 	return exchangeSymbolMapping
@@ -82,6 +89,20 @@ func buildExchangeSymbolMapping(mappings []entity.SymbolMapping) entity.Exchange
 func (r *SymbolMappingRepository) GetLatestUpdatedAtByExchange(ctx context.Context, exchange string) (time.Time, error) {
 	var updatedAt sql.NullTime
 	err := r.db.GetContext(ctx, &updatedAt, "SELECT MAX(updated_at) FROM symbol_mappings WHERE exchange = $1", exchange)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if !updatedAt.Valid {
+		return time.Time{}, nil
+	}
+
+	return updatedAt.Time, nil
+}
+
+func (r *SymbolMappingRepository) GetLatestUpdatedAtByExchangeAndMarketType(ctx context.Context, exchange, marketType string) (time.Time, error) {
+	var updatedAt sql.NullTime
+	err := r.db.GetContext(ctx, &updatedAt, "SELECT MAX(updated_at) FROM symbol_mappings WHERE exchange = $1 AND market_type = $2", exchange, marketType)
 	if err != nil {
 		return time.Time{}, err
 	}
