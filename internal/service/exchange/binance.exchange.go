@@ -51,8 +51,10 @@ type BinanceExchange struct {
 }
 
 type binanceSymbolPrecision struct {
-	BasePrecision  int32
-	QuotePrecision int32
+	BasePrecision    int32
+	QuotePrecision   int32
+	PriceTickSize    decimal.Decimal
+	QuantityStepSize decimal.Decimal
 }
 
 func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConfig, symbolMappingRepo *repository.SymbolMappingRepository, klineSubRepo *repository.KlineSubscriptionRepository, js nats.JetStreamContext, marketKlineRepo *repository.MarketKlineRepository) *BinanceExchange {
@@ -467,13 +469,21 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 	if precision, ok, err := e.getSymbolPrecision(ctx, marketType, orderSymbol); err != nil {
 		logrus.WithError(err).WithField("symbol", orderSymbol).Warn("failed to fetch binance symbol precision")
 	} else if ok {
-		normalizedQuantity = order.Quantity.Truncate(precision.BasePrecision)
+		if precision.QuantityStepSize.GreaterThan(decimal.Zero) {
+			normalizedQuantity = quantizeDownByStep(order.Quantity, precision.QuantityStepSize)
+		} else {
+			normalizedQuantity = order.Quantity.Truncate(precision.BasePrecision)
+		}
 		if !normalizedQuantity.GreaterThan(decimal.Zero) {
 			return nil, fmt.Errorf("binance order quantity becomes zero after normalization: quantity=%s basePrecision=%d", order.Quantity.String(), precision.BasePrecision)
 		}
 
 		if order.Type == entity.OrderTypeLimit {
-			normalizedPrice = order.Price.Truncate(precision.QuotePrecision)
+			if precision.PriceTickSize.GreaterThan(decimal.Zero) {
+				normalizedPrice = quantizeDownByStep(order.Price, precision.PriceTickSize)
+			} else {
+				normalizedPrice = order.Price.Truncate(precision.QuotePrecision)
+			}
 			if !normalizedPrice.GreaterThan(decimal.Zero) {
 				return nil, fmt.Errorf("binance order price becomes zero after normalization: price=%s quotePrecision=%d", order.Price.String(), precision.QuotePrecision)
 			}
@@ -486,6 +496,12 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		"side=" + sideCode,
 		"type=" + typeCode,
 		"quantity=" + normalizedQuantity.String(),
+	}
+
+	futuresPositionSide := ""
+	if marketType == entity.MarketTypeFutures {
+		futuresPositionSide = e.futuresPositionSide(order.Side)
+		pairs = append(pairs, "positionSide="+futuresPositionSide)
 	}
 
 	if order.OrderID != nil && strings.TrimSpace(*order.OrderID) != "" {
@@ -548,7 +564,18 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 			return nil, fmt.Errorf("binance order rejected: status=%d body=%s", resp.StatusCode, string(body))
 		}
 
-		logrus.Infof("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
+		logrus.WithFields(logrus.Fields{
+			"status":        resp.StatusCode,
+			"code":          apiErr.Code,
+			"message":       apiErr.Msg,
+			"market_type":   marketType,
+			"symbol":        orderSymbol,
+			"side":          sideCode,
+			"type":          typeCode,
+			"quantity":      normalizedQuantity.String(),
+			"price":         normalizedPrice.String(),
+			"position_side": futuresPositionSide,
+		}).Info("binance order rejected")
 		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
 	}
 
@@ -934,6 +961,14 @@ func binanceHMACSHA256Hex(secret, payload string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+func quantizeDownByStep(value decimal.Decimal, step decimal.Decimal) decimal.Decimal {
+	if !step.GreaterThan(decimal.Zero) {
+		return value
+	}
+
+	return value.Div(step).Floor().Mul(step)
+}
+
 func (e *BinanceExchange) getSymbolPrecision(ctx context.Context, marketType entity.MarketType, symbol string) (binanceSymbolPrecision, bool, error) {
 	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
 	if normalizedSymbol == "" {
@@ -985,11 +1020,16 @@ func (e *BinanceExchange) refreshSymbolPrecision(ctx context.Context, marketType
 
 	var symbolsResp struct {
 		Symbols []struct {
-			Symbol         string `json:"symbol"`
-			BasePrecision  int32  `json:"basePrecision"`
-			QuotePrecision int32  `json:"quotePrecision"`
-			PricePrecision int32  `json:"pricePrecision"`
-			QuantityPrecision int32 `json:"quantityPrecision"`
+			Symbol            string `json:"symbol"`
+			BasePrecision     int32  `json:"basePrecision"`
+			QuotePrecision    int32  `json:"quotePrecision"`
+			PricePrecision    int32  `json:"pricePrecision"`
+			QuantityPrecision int32  `json:"quantityPrecision"`
+			Filters           []struct {
+				FilterType string `json:"filterType"`
+				TickSize   string `json:"tickSize"`
+				StepSize   string `json:"stepSize"`
+			} `json:"filters"`
 		} `json:"symbols"`
 	}
 
@@ -1013,6 +1053,24 @@ func (e *BinanceExchange) refreshSymbolPrecision(ctx context.Context, marketType
 			basePrecision = item.QuantityPrecision
 			quotePrecision = item.PricePrecision
 		}
+
+		priceTickSize := decimal.Zero
+		quantityStepSize := decimal.Zero
+		for _, filter := range item.Filters {
+			switch strings.ToUpper(strings.TrimSpace(filter.FilterType)) {
+			case "PRICE_FILTER":
+				if tick, err := decimal.NewFromString(strings.TrimSpace(filter.TickSize)); err == nil && tick.GreaterThan(decimal.Zero) {
+					priceTickSize = tick
+				}
+			case "LOT_SIZE", "MARKET_LOT_SIZE":
+				if step, err := decimal.NewFromString(strings.TrimSpace(filter.StepSize)); err == nil && step.GreaterThan(decimal.Zero) {
+					if quantityStepSize.Equal(decimal.Zero) || step.GreaterThan(quantityStepSize) {
+						quantityStepSize = step
+					}
+				}
+			}
+		}
+
 		cacheKey := e.symbolPrecisionCacheKey(marketType, itemSymbol)
 
 		e.symbolPrecisionMu.Lock()
@@ -1020,8 +1078,10 @@ func (e *BinanceExchange) refreshSymbolPrecision(ctx context.Context, marketType
 			e.symbolPrecision = make(map[string]binanceSymbolPrecision)
 		}
 		e.symbolPrecision[cacheKey] = binanceSymbolPrecision{
-			BasePrecision:  basePrecision,
-			QuotePrecision: quotePrecision,
+			BasePrecision:    basePrecision,
+			QuotePrecision:   quotePrecision,
+			PriceTickSize:    priceTickSize,
+			QuantityStepSize: quantityStepSize,
 		}
 		e.symbolPrecisionMu.Unlock()
 	}
@@ -1144,6 +1204,24 @@ func (e *BinanceExchange) defaultWSURLByMarketType(marketType entity.MarketType)
 
 func (e *BinanceExchange) symbolPrecisionCacheKey(marketType entity.MarketType, symbol string) string {
 	return string(entity.NormalizeMarketType(string(marketType))) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
+}
+
+func (e *BinanceExchange) futuresPositionSide(orderSide entity.OrderSide) string {
+	override := strings.ToUpper(strings.TrimSpace(os.Getenv("BINANCE_FUTURES_POSITION_SIDE")))
+	switch override {
+	case "BOTH", "LONG", "SHORT":
+		return override
+	}
+
+	mode := strings.ToUpper(strings.TrimSpace(os.Getenv("BINANCE_FUTURES_POSITION_MODE")))
+	if mode == "HEDGE" || mode == "HEDGE_MODE" || mode == "DUAL" {
+		if orderSide == entity.OrderSideSell {
+			return "SHORT"
+		}
+		return "LONG"
+	}
+
+	return "BOTH"
 }
 
 func parseBinancePlaceOrderResponse(body []byte, futures bool) (binanceOrderResponseSnapshot, error) {
