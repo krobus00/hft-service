@@ -176,3 +176,5 @@ krobot01:
 
   historical_limit: 800
   cooldown_bars: 1
+  take_profit_pct: 0.25
+  stop_loss_pct: 0.15

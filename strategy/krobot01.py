@@ -70,6 +70,8 @@ MACD_SLOW = int(KROBOT01_CONFIG.get("macd_slow", 26))
 MACD_SIGNAL = int(KROBOT01_CONFIG.get("macd_signal", 9))
 COOLDOWN_BARS = int(KROBOT01_CONFIG.get("cooldown_bars", 1))
 HISTORICAL_LIMIT = int(KROBOT01_CONFIG.get("historical_limit", 800))
+TAKE_PROFIT_PCT = float(KROBOT01_CONFIG.get("take_profit_pct", KROBOT01_CONFIG.get("tp_pct", 0.0)))
+STOP_LOSS_PCT = float(KROBOT01_CONFIG.get("stop_loss_pct", KROBOT01_CONFIG.get("sl_pct", 0.0)))
 
 
 def pct_to_frac(pct: float) -> float:
@@ -188,7 +190,7 @@ class MACD:
 
 
 class Krobot01Strategy:
-    __slots__ = ("ema", "vwap", "macd", "last_close_time_ms", "cooldown", "position_side")
+    __slots__ = ("ema", "vwap", "macd", "last_close_time_ms", "cooldown", "position_side", "entry_price")
 
     def __init__(self):
         self.ema = EMA(EMA_PERIOD)
@@ -197,6 +199,7 @@ class Krobot01Strategy:
         self.last_close_time_ms = 0
         self.cooldown = 0
         self.position_side: Optional[str] = None
+        self.entry_price: Optional[float] = None
 
     def on_closed_candle(self, c: Candle):
         if c.close_time_ms <= self.last_close_time_ms:
@@ -213,6 +216,30 @@ class Krobot01Strategy:
         if self.ema.count < EMA_PERIOD or vwap_px is None or self.macd.count < max(50, MACD_SLOW + MACD_SIGNAL):
             return None
 
+        if self.position_side == "LONG" and self.entry_price is not None:
+            if STOP_LOSS_PCT > 0 and c.close <= self.entry_price * (1.0 - pct_to_frac(STOP_LOSS_PCT)):
+                self.position_side = None
+                self.entry_price = None
+                self.cooldown = COOLDOWN_BARS
+                return "SELL", c.close, "STOP_LOSS_LONG", ema, vwap_px
+            if TAKE_PROFIT_PCT > 0 and c.close >= self.entry_price * (1.0 + pct_to_frac(TAKE_PROFIT_PCT)):
+                self.position_side = None
+                self.entry_price = None
+                self.cooldown = COOLDOWN_BARS
+                return "SELL", c.close, "TAKE_PROFIT_LONG", ema, vwap_px
+
+        if self.position_side == "SHORT" and self.entry_price is not None:
+            if STOP_LOSS_PCT > 0 and c.close >= self.entry_price * (1.0 + pct_to_frac(STOP_LOSS_PCT)):
+                self.position_side = None
+                self.entry_price = None
+                self.cooldown = COOLDOWN_BARS
+                return "BUY", c.close, "STOP_LOSS_SHORT", ema, vwap_px
+            if TAKE_PROFIT_PCT > 0 and c.close <= self.entry_price * (1.0 - pct_to_frac(TAKE_PROFIT_PCT)):
+                self.position_side = None
+                self.entry_price = None
+                self.cooldown = COOLDOWN_BARS
+                return "BUY", c.close, "TAKE_PROFIT_SHORT", ema, vwap_px
+
         if self.cooldown > 0:
             return None
 
@@ -227,6 +254,7 @@ class Krobot01Strategy:
             if self.position_side == "LONG":
                 return None
             self.position_side = "LONG"
+            self.entry_price = c.close
             self.cooldown = COOLDOWN_BARS
             return "BUY", c.close, "ENTER_LONG", ema, vwap_px
 
@@ -234,6 +262,7 @@ class Krobot01Strategy:
             if self.position_side == "SHORT":
                 return None
             self.position_side = "SHORT"
+            self.entry_price = c.close
             self.cooldown = COOLDOWN_BARS
             return "SELL", c.close, "ENTER_SHORT", ema, vwap_px
 
@@ -306,6 +335,10 @@ async def warmup_from_postgres(strategy: Krobot01Strategy):
 async def run():
     if ORDER_QTY <= 0:
         raise ValueError("order_qty must be > 0")
+    if TAKE_PROFIT_PCT < 0:
+        raise ValueError("take_profit_pct must be >= 0")
+    if STOP_LOSS_PCT < 0:
+        raise ValueError("stop_loss_pct must be >= 0")
 
     strategy = Krobot01Strategy()
 
