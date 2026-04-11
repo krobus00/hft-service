@@ -41,7 +41,7 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		Side:           entity.OrderSide(req.GetSide()),
 		Price:          price,
 		Quantity:       quantity,
-		RequestedAt:    req.GetExpiredAt(),
+		RequestedAt:    req.GetRequestedAt(),
 		ExpiredAt:      null.NewInt(req.GetExpiredAt(), req.GetExpiredAt() != 0).Ptr(),
 		Source:         req.GetSource(),
 		StrategyID:     null.NewString(req.GetStrategyId(), req.GetStrategyId() != "").Ptr(),
