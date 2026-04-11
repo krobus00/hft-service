@@ -508,58 +508,100 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 	futuresPositionSide := ""
 	if marketType == entity.MarketTypeFutures {
 		futuresPositionSide = e.futuresPositionSide(order)
-		basePairs = append(basePairs, "positionSide="+futuresPositionSide)
+		order.PositionSide = futuresPositionSide
 	}
 
-	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	pairs := make([]string, 0, len(basePairs)+2)
-	pairs = append(pairs, basePairs...)
-	pairs = append(pairs,
-		"timestamp="+timestamp,
-		"recvWindow="+strconv.FormatInt(e.recvWindow, 10),
-	)
+	submitOrder := func(positionSide string) (int, []byte, error) {
+		pairs := make([]string, 0, len(basePairs)+3)
+		pairs = append(pairs, basePairs...)
+		if marketType == entity.MarketTypeFutures && strings.TrimSpace(positionSide) != "" {
+			pairs = append(pairs, "positionSide="+positionSide)
+		}
 
-	payload := strings.Join(pairs, "&")
-	signature := binanceHMACSHA256Hex(e.apiSecret, payload)
-	bodyPayload := payload + "&signature=" + signature
+		timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		pairs = append(pairs,
+			"timestamp="+timestamp,
+			"recvWindow="+strconv.FormatInt(e.recvWindow, 10),
+		)
 
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("BINANCE_DEBUG_SIGN")), "true") {
-		logrus.WithFields(logrus.Fields{
-			"payload":   payload,
-			"signature": signature,
-		}).Info("binance signed payload")
+		payload := strings.Join(pairs, "&")
+		signature := binanceHMACSHA256Hex(e.apiSecret, payload)
+		bodyPayload := payload + "&signature=" + signature
+
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("BINANCE_DEBUG_SIGN")), "true") {
+			logrus.WithFields(logrus.Fields{
+				"payload":   payload,
+				"signature": signature,
+			}).Info("binance signed payload")
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURLByMarketType(marketType)+e.orderPathByMarketType(marketType), strings.NewReader(bodyPayload))
+		if err != nil {
+			return 0, nil, err
+		}
+
+		req.Header.Set("X-MBX-APIKEY", e.apiKey)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := e.httpClient.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return 0, nil, readErr
+		}
+
+		return resp.StatusCode, body, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURLByMarketType(marketType)+e.orderPathByMarketType(marketType), strings.NewReader(bodyPayload))
+	statusCode, body, err := submitOrder(futuresPositionSide)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("X-MBX-APIKEY", e.apiKey)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := e.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	body, readErr := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
-
-	if resp.StatusCode >= http.StatusBadRequest {
+	if statusCode >= http.StatusBadRequest {
 		var apiErr struct {
 			Code int    `json:"code"`
 			Msg  string `json:"msg"`
 		}
 		if err := json.Unmarshal(body, &apiErr); err != nil {
-			return nil, fmt.Errorf("binance order rejected: status=%d body=%s", resp.StatusCode, string(body))
+			return nil, fmt.Errorf("binance order rejected: status=%d body=%s", statusCode, string(body))
+		}
+
+		if marketType == entity.MarketTypeFutures && apiErr.Code == -4061 {
+			if alternatePositionSide, ok := alternateFuturesPositionSide(futuresPositionSide, order.Side); ok && alternatePositionSide != futuresPositionSide {
+				logrus.WithFields(logrus.Fields{
+					"market_type":             marketType,
+					"symbol":                  orderSymbol,
+					"side":                    sideCode,
+					"position_side":           futuresPositionSide,
+					"alternate_position_side": alternatePositionSide,
+					"code":                    apiErr.Code,
+					"message":                 apiErr.Msg,
+				}).Warn("binance order position mode mismatch, retrying with alternate position side")
+
+				futuresPositionSide = alternatePositionSide
+				order.PositionSide = futuresPositionSide
+				statusCode, body, err = submitOrder(futuresPositionSide)
+				if err != nil {
+					return nil, err
+				}
+
+				if statusCode < http.StatusBadRequest {
+					goto parseSuccess
+				}
+
+				if err := json.Unmarshal(body, &apiErr); err != nil {
+					return nil, fmt.Errorf("binance order rejected: status=%d body=%s", statusCode, string(body))
+				}
+			}
 		}
 
 		logrus.WithFields(logrus.Fields{
-			"status":        resp.StatusCode,
+			"status":        statusCode,
 			"code":          apiErr.Code,
 			"message":       apiErr.Msg,
 			"market_type":   marketType,
@@ -571,12 +613,13 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 			"position_side": futuresPositionSide,
 		}).Info("binance order rejected")
 
-		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
+		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", statusCode, apiErr.Code, apiErr.Msg)
 	}
 
+	parseSuccess:
 	placeOrderResp, err := parseBinancePlaceOrderResponse(body, marketType == entity.MarketTypeFutures)
 	if err != nil {
-		return nil, fmt.Errorf("binance order parse failed: status=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("binance order parse failed: status=%d body=%s", statusCode, string(body))
 	}
 
 	orderHistory, err := e.mapPlaceOrderResponseToOrderHistory(order, placeOrderResp)
@@ -1204,6 +1247,12 @@ func (e *BinanceExchange) symbolPrecisionCacheKey(marketType entity.MarketType, 
 }
 
 func (e *BinanceExchange) futuresPositionSide(order entity.OrderRequest) string {
+	mode := normalizeBinanceFuturesPositionMode(os.Getenv("BINANCE_FUTURES_POSITION_MODE"))
+
+	if mode == "ONE_WAY" {
+		return "BOTH"
+	}
+
 	explicit := entity.NormalizePositionSide(order.PositionSide)
 	if explicit == entity.PositionSideLong || explicit == entity.PositionSideShort {
 		return string(explicit)
@@ -1212,11 +1261,16 @@ func (e *BinanceExchange) futuresPositionSide(order entity.OrderRequest) string 
 	override := strings.ToUpper(strings.TrimSpace(os.Getenv("BINANCE_FUTURES_POSITION_SIDE")))
 	switch override {
 	case "BOTH", "LONG", "SHORT":
+		if mode == "HEDGE" && override == "BOTH" {
+			break
+		}
+		if mode == "ONE_WAY" && (override == "LONG" || override == "SHORT") {
+			break
+		}
 		return override
 	}
 
-	mode := strings.ToUpper(strings.TrimSpace(os.Getenv("BINANCE_FUTURES_POSITION_MODE")))
-	if mode == "HEDGE" || mode == "HEDGE_MODE" || mode == "DUAL" {
+	if mode == "HEDGE" {
 		if order.Side == entity.OrderSideSell {
 			return "SHORT"
 		}
@@ -1224,6 +1278,35 @@ func (e *BinanceExchange) futuresPositionSide(order entity.OrderRequest) string 
 	}
 
 	return "BOTH"
+}
+
+func normalizeBinanceFuturesPositionMode(raw string) string {
+	mode := strings.ToUpper(strings.TrimSpace(raw))
+	switch mode {
+	case "HEDGE", "HEDGE_MODE", "DUAL", "DUAL_SIDE", "DUALSIDE":
+		return "HEDGE"
+	case "ONE_WAY", "ONEWAY", "SINGLE":
+		return "ONE_WAY"
+	default:
+		return "AUTO"
+	}
+}
+
+func alternateFuturesPositionSide(current string, side entity.OrderSide) (string, bool) {
+	switch strings.ToUpper(strings.TrimSpace(current)) {
+	case "BOTH":
+		if side == entity.OrderSideSell {
+			return "SHORT", true
+		}
+		return "LONG", true
+	case "LONG", "SHORT":
+		return "BOTH", true
+	default:
+		if side == entity.OrderSideSell {
+			return "SHORT", true
+		}
+		return "LONG", true
+	}
 }
 
 func parseBinancePlaceOrderResponse(body []byte, futures bool) (binanceOrderResponseSnapshot, error) {
