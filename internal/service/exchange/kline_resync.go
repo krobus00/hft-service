@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/repository"
+	"github.com/sirupsen/logrus"
 )
 
 type klineResyncState struct {
@@ -214,6 +215,11 @@ func refreshExchangeSymbolMapping(ctx context.Context, deps exchangeKlineResyncD
 		return nil
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"exchange":    deps.ExchangeName,
+		"market_type": effectiveMarketType(deps.MarketType),
+	}).Info("refreshing symbol mapping")
+
 	mapping, err := deps.SymbolMappingRepo.GetByExchange(ctx, string(deps.ExchangeName))
 	if err != nil {
 		return err
@@ -221,12 +227,29 @@ func refreshExchangeSymbolMapping(ctx context.Context, deps exchangeKlineResyncD
 
 	persistSymbolMapping(deps.SymbolMapping, mapping)
 
+	marketTypeMappings := mapping[string(deps.ExchangeName)]
+	indexes := marketTypeMappings[effectiveMarketType(deps.MarketType)]
+	logrus.WithFields(logrus.Fields{
+		"exchange":         deps.ExchangeName,
+		"market_type":      effectiveMarketType(deps.MarketType),
+		"internal_symbols": len(indexes.InternalToKline),
+		"kline_symbols":    len(indexes.KlineToInternal),
+		"order_symbols":    len(indexes.OrderToInternal),
+	}).Info("symbol mapping refreshed")
+
 	return nil
 }
 
 func loadExchangeLatestSubscriptions(ctx context.Context, deps exchangeKlineResyncDeps, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
 	if deps.KlineSubRepo == nil {
-		return normalizeExchangeSubscriptions(deps, fallback), nil
+		normalized := normalizeExchangeSubscriptions(deps, fallback)
+		logrus.WithFields(logrus.Fields{
+			"exchange":           deps.ExchangeName,
+			"market_type":        effectiveMarketType(deps.MarketType),
+			"source":             "fallback",
+			"subscription_count": len(normalized),
+		}).Info("kline subscriptions refreshed")
+		return normalized, nil
 	}
 
 	subs, err := deps.KlineSubRepo.GetByExchangeAndMarketType(ctx, string(deps.ExchangeName), effectiveMarketType(deps.MarketType))
@@ -234,7 +257,15 @@ func loadExchangeLatestSubscriptions(ctx context.Context, deps exchangeKlineResy
 		return nil, err
 	}
 
-	return normalizeExchangeSubscriptions(deps, subs), nil
+	normalized := normalizeExchangeSubscriptions(deps, subs)
+	logrus.WithFields(logrus.Fields{
+		"exchange":           deps.ExchangeName,
+		"market_type":        effectiveMarketType(deps.MarketType),
+		"source":             "database",
+		"subscription_count": len(normalized),
+	}).Info("kline subscriptions refreshed")
+
+	return normalized, nil
 }
 
 func loadExchangeResyncState(ctx context.Context, deps exchangeKlineResyncDeps) (klineResyncState, error) {
