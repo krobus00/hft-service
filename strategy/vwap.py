@@ -1,348 +1,196 @@
 import asyncio
-import time
-import uuid
-from collections import deque
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
-import orjson
 import uvloop
-import yaml
-from nats.aio.client import Client as NATS
+
+from core.common import load_full_config, pct_to_frac
+from core.framework import StrategyBase, StrategyRunner
+from core.indicators import RollingVWAP
+from core.models import Candle, RuntimeConfig, StrategyConfig
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.yml"
-
-
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        raise FileNotFoundError(
-            f"Config file not found: {CONFIG_PATH}. Copy strategy/config.yml.example to strategy/config.yml"
-        )
-    with CONFIG_PATH.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file) or {}
-
-
-CONFIG = load_config()
+CONFIG = load_full_config()
 GLOBAL_CONFIG = CONFIG.get("global", {})
 VWAP_CONFIG = CONFIG.get("vwap", {})
 
-NATS_URL = GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222")
-NATS_ALLOW_RECONNECT = GLOBAL_CONFIG.get("nats_allow_reconnect", True)
-NATS_MAX_RECONNECT_ATTEMPTS = GLOBAL_CONFIG.get("nats_max_reconnect_attempts", -1)
-NATS_RECONNECT_TIME_WAIT_SEC = GLOBAL_CONFIG.get("nats_reconnect_time_wait_sec", 2)
-NATS_CONNECT_TIMEOUT_SEC = GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5)
-NATS_PING_INTERVAL_SEC = GLOBAL_CONFIG.get("nats_ping_interval_sec", 30)
-NATS_MAX_OUTSTANDING_PINGS = GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3)
 
-KLINE_SUBJECT = VWAP_CONFIG.get("kline_subject", "KLINE.TOKOCRYPTO.>")
-ORDER_SUBJECT = VWAP_CONFIG.get("order_subject", "order_engine.place_order")
-QUEUE_NAME = VWAP_CONFIG.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_VWAP")
-
-SYMBOL = VWAP_CONFIG.get("symbol", "SOLUSDT")
-INTERVAL = VWAP_CONFIG.get("interval", "1m")
-
-USER_ID = VWAP_CONFIG.get("user_id", "paper-1")
-EXCHANGE = VWAP_CONFIG.get("exchange", "tokocrypto")
-MARKET_TYPE = VWAP_CONFIG.get("market_type", "spot")
-POSITION_SIDE = VWAP_CONFIG.get("position_side", "BOTH")
-SOURCE = VWAP_CONFIG.get("source", "python-vwap")
-STRATEGY_ID = VWAP_CONFIG.get("strategy_id", "python-vwap-mean-revert-hf-v1")
-IS_PAPER_TRADING = VWAP_CONFIG.get("is_paper_trading", True)
-
-ORDER_TYPE = VWAP_CONFIG.get("order_type", "LIMIT")
-ORDER_QTY = VWAP_CONFIG.get("order_qty", 10)
-ORDER_SYMBOL = VWAP_CONFIG.get("order_symbol", "SOLUSDT")
-LIMIT_SLIPPAGE_PCT = VWAP_CONFIG.get("limit_slippage_pct", VWAP_CONFIG.get("limit_slippage_bps", 2) / 100.0)
-
-VWAP_WINDOW = VWAP_CONFIG.get("vwap_window", 30)
-ENTRY_THRESHOLD_PCT = VWAP_CONFIG.get("entry_threshold_pct", VWAP_CONFIG.get("entry_threshold_bps", 5) / 100.0)
-TP_PCT = VWAP_CONFIG.get("tp_pct", VWAP_CONFIG.get("tp_bps", 2) / 100.0)
-SL_PCT = VWAP_CONFIG.get("sl_pct", VWAP_CONFIG.get("sl_bps", 8) / 100.0)
-MAX_HOLD_BARS = VWAP_CONFIG.get("max_hold_bars", 8)
-COOLDOWN_BARS = VWAP_CONFIG.get("cooldown_bars", 1)
-
-
-def pct_to_frac(pct: float) -> float:
-    return pct / 100.0
-
-
-def fmt_num(x: float) -> str:
-    return f"{x:.8f}".rstrip("0").rstrip(".")
-
-
-def parse_iso_to_ms(s: str) -> int:
-    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    return int(dt.timestamp() * 1000)
-
-
-@dataclass
-class Candle:
-    close_time_ms: int
-    close: float
-    quote_volume: float
-
-
-class RollingVWAP:
-    __slots__ = ("window", "buf", "sum_pv", "sum_v")
-
-    def __init__(self, window: int):
-        self.window = max(2, int(window))
-        self.buf = deque()
-        self.sum_pv = 0.0
-        self.sum_v = 0.0
-
-    def update(self, price: float, volume: float) -> Optional[float]:
-        v = max(0.0, float(volume))
-        pv = price * v
-        self.buf.append((pv, v))
-        self.sum_pv += pv
-        self.sum_v += v
-
-        if len(self.buf) > self.window:
-            old_pv, old_v = self.buf.popleft()
-            self.sum_pv -= old_pv
-            self.sum_v -= old_v
-
-        if self.sum_v <= 0:
-            return None
-        return self.sum_pv / self.sum_v
-
-
-class VWAPMeanReversionHF:
+class VWAPMeanReversionStrategy(StrategyBase):
     __slots__ = (
         "vwap",
-        "last_close_time_ms",
         "last_vwap",
         "pos",
         "entry_price",
         "bars_in_pos",
         "cooldown",
+        "entry_threshold_pct",
+        "tp_pct",
+        "sl_pct",
+        "max_hold_bars",
+        "cooldown_bars",
     )
 
-    def __init__(self):
-        self.vwap = RollingVWAP(VWAP_WINDOW)
-        self.last_close_time_ms = 0
+    def __init__(self, strategy_config: StrategyConfig, section: dict):
+        super().__init__(strategy_config)
+
+        self.vwap = RollingVWAP(int(section.get("vwap_window", 30)))
         self.last_vwap: Optional[float] = None
 
-        self.pos = "FLAT"  # FLAT | LONG | SHORT
+        self.pos = "FLAT"
         self.entry_price: Optional[float] = None
         self.bars_in_pos = 0
         self.cooldown = 0
 
+        self.entry_threshold_pct = float(section.get("entry_threshold_pct", section.get("entry_threshold_bps", 5) / 100.0))
+        self.tp_pct = float(section.get("tp_pct", section.get("tp_bps", 2) / 100.0))
+        self.sl_pct = float(section.get("sl_pct", section.get("sl_bps", 8) / 100.0))
+        self.max_hold_bars = int(section.get("max_hold_bars", 8))
+        self.cooldown_bars = int(section.get("cooldown_bars", 1))
+
     def _entry_band(self, vwap_px: float):
-        band = vwap_px * pct_to_frac(ENTRY_THRESHOLD_PCT)
+        band = vwap_px * pct_to_frac(self.entry_threshold_pct)
         return vwap_px - band, vwap_px + band
 
-    def on_closed_candle(self, c: Candle):
-        # print("c:",c)
-        if c.close_time_ms <= self.last_close_time_ms:
+    def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
+        if not self.allow_new_candle(candle):
             return None
-        self.last_close_time_ms = c.close_time_ms
 
         if self.cooldown > 0:
             self.cooldown -= 1
 
-        vwap_px = self.vwap.update(c.close, c.quote_volume)
+        vwap_px = self.vwap.update(candle.close, candle.quote_volume)
         if vwap_px is None:
             return None
+
         self.last_vwap = vwap_px
-
         lower, upper = self._entry_band(vwap_px)
-        # print(f"close={c.close:.4f} vwap={vwap_px:.4f} band=({lower:.4f},{upper:.4f})")
 
-        if self.pos == "LONG":
+        if is_warmup:
+            return None
+
+        metadata = {
+            "vwap": round(vwap_px, 8),
+            "lower": round(lower, 8),
+            "upper": round(upper, 8),
+        }
+
+        if self.pos == "LONG" and self.entry_price is not None:
             self.bars_in_pos += 1
-            take_px = self.entry_price * (1.0 + pct_to_frac(TP_PCT))
-            stop_px = self.entry_price * (1.0 - pct_to_frac(SL_PCT))
-            exit_signal = c.close >= take_px or c.close <= stop_px or c.close >= vwap_px or self.bars_in_pos >= MAX_HOLD_BARS
-            if exit_signal:
-                if c.close >= take_px:
-                    reason = "TP_LONG"
-                elif c.close <= stop_px:
-                    reason = "SL_LONG"
-                elif c.close >= vwap_px:
-                    reason = "MEAN_REVERT_LONG"
-                else:
-                    reason = "TIME_EXIT_LONG"
+            take_px = self.entry_price * (1.0 + pct_to_frac(self.tp_pct))
+            stop_px = self.entry_price * (1.0 - pct_to_frac(self.sl_pct))
+
+            if candle.close >= take_px:
+                reason = "TP_LONG"
+            elif candle.close <= stop_px:
+                reason = "SL_LONG"
+            elif candle.close >= vwap_px:
+                reason = "MEAN_REVERT_LONG"
+            elif self.bars_in_pos >= self.max_hold_bars:
+                reason = "TIME_EXIT_LONG"
+            else:
+                reason = ""
+
+            if reason:
                 self.pos = "FLAT"
                 self.entry_price = None
                 self.bars_in_pos = 0
-                self.cooldown = COOLDOWN_BARS
-                return "SELL", c.close, reason, vwap_px, lower, upper
+                self.cooldown = self.cooldown_bars
+                return self.sell(candle.close, reason, metadata)
 
-        elif self.pos == "SHORT":
+        if self.pos == "SHORT" and self.entry_price is not None:
             self.bars_in_pos += 1
-            take_px = self.entry_price * (1.0 - pct_to_frac(TP_PCT))
-            stop_px = self.entry_price * (1.0 + pct_to_frac(SL_PCT))
-            exit_signal = c.close <= take_px or c.close >= stop_px or c.close <= vwap_px or self.bars_in_pos >= MAX_HOLD_BARS
-            if exit_signal:
-                if c.close <= take_px:
-                    reason = "TP_SHORT"
-                elif c.close >= stop_px:
-                    reason = "SL_SHORT"
-                elif c.close <= vwap_px:
-                    reason = "MEAN_REVERT_SHORT"
-                else:
-                    reason = "TIME_EXIT_SHORT"
+            take_px = self.entry_price * (1.0 - pct_to_frac(self.tp_pct))
+            stop_px = self.entry_price * (1.0 + pct_to_frac(self.sl_pct))
+
+            if candle.close <= take_px:
+                reason = "TP_SHORT"
+            elif candle.close >= stop_px:
+                reason = "SL_SHORT"
+            elif candle.close <= vwap_px:
+                reason = "MEAN_REVERT_SHORT"
+            elif self.bars_in_pos >= self.max_hold_bars:
+                reason = "TIME_EXIT_SHORT"
+            else:
+                reason = ""
+
+            if reason:
                 self.pos = "FLAT"
                 self.entry_price = None
                 self.bars_in_pos = 0
-                self.cooldown = COOLDOWN_BARS
-                return "BUY", c.close, reason, vwap_px, lower, upper
+                self.cooldown = self.cooldown_bars
+                return self.buy(candle.close, reason, metadata)
 
         if self.pos == "FLAT" and self.cooldown == 0:
-            if c.close > upper:
+            if candle.close > upper:
                 self.pos = "SHORT"
-                self.entry_price = c.close
+                self.entry_price = candle.close
                 self.bars_in_pos = 0
-                return "SELL", c.close, "ENTER_SHORT", vwap_px, lower, upper
-            if c.close < lower:
+                return self.sell(candle.close, "ENTER_SHORT", metadata)
+
+            if candle.close < lower:
                 self.pos = "LONG"
-                self.entry_price = c.close
+                self.entry_price = candle.close
                 self.bars_in_pos = 0
-                return "BUY", c.close, "ENTER_LONG", vwap_px, lower, upper
+                return self.buy(candle.close, "ENTER_LONG", metadata)
 
         return None
 
 
-def gen_id() -> str:
-    return uuid.uuid4().hex
+def build_runtime_config(section: dict) -> RuntimeConfig:
+    return RuntimeConfig(
+        db_dsn=GLOBAL_CONFIG.get("db_dsn", "postgres://root:root@localhost:5432/market_data?sslmode=disable"),
+        nats_url=GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222"),
+        nats_allow_reconnect=GLOBAL_CONFIG.get("nats_allow_reconnect", True),
+        nats_max_reconnect_attempts=GLOBAL_CONFIG.get("nats_max_reconnect_attempts", -1),
+        nats_reconnect_time_wait_sec=GLOBAL_CONFIG.get("nats_reconnect_time_wait_sec", 2),
+        nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
+        nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
+        nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
+        kline_subject=section.get("kline_subject", "KLINE.TOKOCRYPTO.>"),
+        order_subject=section.get("order_subject", "order_engine.place_order"),
+        queue_name=section.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_VWAP"),
+        user_id=section.get("user_id", "paper-1"),
+        exchange=section.get("exchange", "tokocrypto"),
+        market_type=section.get("market_type", "spot"),
+        position_side=section.get("position_side", "BOTH"),
+        source=section.get("source", "python-vwap"),
+        strategy_id=section.get("strategy_id", "python-vwap-mean-revert-hf-v1"),
+        is_paper_trading=section.get("is_paper_trading", True),
+        order_type=section.get("order_type", "LIMIT"),
+        order_qty=float(section.get("order_qty", 10)),
+        order_symbol=section.get("order_symbol", section.get("symbol", "SOLUSDT")),
+        limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
+    )
 
 
-def now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def build_order_payload(side: str, price: float) -> dict:
-    px = price
-    if ORDER_TYPE == "LIMIT":
-        if side == "BUY":
-            px = price * (1.0 + pct_to_frac(LIMIT_SLIPPAGE_PCT))
-        else:
-            px = price * (1.0 - pct_to_frac(LIMIT_SLIPPAGE_PCT))
-
-    return {
-        "retry": 0,
-        "data": {
-            "request_id": gen_id(),
-            "user_id": USER_ID,
-            "order_id": gen_id(),
-            "exchange": EXCHANGE,
-            "market_type": MARKET_TYPE,
-            "position_side": POSITION_SIDE,
-            "symbol": ORDER_SYMBOL,
-            "type": ORDER_TYPE,
-            "side": side,
-            "price": fmt_num(px),
-            "quantity": fmt_num(float(ORDER_QTY)),
-            "requested_at": now_ms(),
-            "expired_at": None,
-            "source": SOURCE,
-            "strategy_id": STRATEGY_ID,
-            "is_paper_trading": IS_PAPER_TRADING,
-        },
-    }
+def build_strategy_config(section: dict) -> StrategyConfig:
+    return StrategyConfig(
+        name="VWAP-HF",
+        symbol=section.get("symbol", "SOLUSDT"),
+        interval=section.get("interval", "1m"),
+        warmup_limit=int(section.get("historical_limit", 500)),
+    )
 
 
 async def run():
-    if ORDER_QTY <= 0:
+    runtime = build_runtime_config(VWAP_CONFIG)
+
+    if runtime.order_qty <= 0:
         raise ValueError("order_qty must be > 0")
 
-    strategy = VWAPMeanReversionHF()
+    strategy = VWAPMeanReversionStrategy(build_strategy_config(VWAP_CONFIG), VWAP_CONFIG)
 
-    nc = NATS()
+    if strategy.entry_threshold_pct < 0:
+        raise ValueError("entry_threshold_pct must be >= 0")
 
-    async def on_disconnected():
-        print("NATS disconnected, reconnecting...", flush=True)
+    if strategy.tp_pct < 0:
+        raise ValueError("tp_pct must be >= 0")
 
-    async def on_reconnected():
-        print(f"NATS reconnected, server={nc.connected_url}", flush=True)
+    if strategy.sl_pct < 0:
+        raise ValueError("sl_pct must be >= 0")
 
-    async def on_error(exc):
-        print(f"NATS async error: {exc}", flush=True)
-
-    async def on_closed():
-        print("NATS connection closed", flush=True)
-
-    await nc.connect(
-        NATS_URL,
-        allow_reconnect=NATS_ALLOW_RECONNECT,
-        max_reconnect_attempts=NATS_MAX_RECONNECT_ATTEMPTS,
-        reconnect_time_wait=NATS_RECONNECT_TIME_WAIT_SEC,
-        connect_timeout=NATS_CONNECT_TIMEOUT_SEC,
-        ping_interval=NATS_PING_INTERVAL_SEC,
-        max_outstanding_pings=NATS_MAX_OUTSTANDING_PINGS,
-        disconnected_cb=on_disconnected,
-        reconnected_cb=on_reconnected,
-        error_cb=on_error,
-        closed_cb=on_closed,
-    )
-    js = nc.jetstream()
-
-    async def handler(msg):
-        try:
-            payload = orjson.loads(msg.data)
-            data = payload.get("data", {})
-            # print(data)
-
-            if not data.get("IsClosed"):
-                await msg.ack()
-                return
-
-            if data.get("Symbol") != SYMBOL:
-                # print(f"Received candle for symbol {data.get('Symbol')}, expected {SYMBOL}. Ignoring.", flush=True)
-                await msg.ack()
-                return
-
-            if data.get("Interval") != INTERVAL:
-                await msg.ack()
-                return
-
-            candle = Candle(
-                close_time_ms=parse_iso_to_ms(data["CloseTime"]),
-                close=float(data["ClosePrice"]),
-                quote_volume=float(data.get("QuoteVolume", "0") or "0"),
-            )
-
-            signal = strategy.on_closed_candle(candle)
-            # if strategy.last_vwap is not None:
-            #     print(
-            #         f"[VWAP-HF] close={candle.close:.4f} vwap={strategy.last_vwap:.4f} symbol={SYMBOL} interval={INTERVAL}",
-            #         flush=True,
-            #     )
-            if signal:
-                side, px, reason, vwap_px, lower, upper = signal
-                out = build_order_payload(side, px)
-                await js.publish(ORDER_SUBJECT, orjson.dumps(out))
-                print(
-                    f"[VWAP-HF] {reason} side={side} symbol={ORDER_SYMBOL} close={px:.4f} "
-                    f"vwap={vwap_px:.4f} band=({lower:.4f},{upper:.4f})",
-                    flush=True,
-                )
-
-            await msg.ack()
-        except Exception as exc:
-            # Keep message unacked so transient failures can be retried.
-            print(f"handler error: {exc}", flush=True)
-            return
-
-    await js.subscribe(
-        KLINE_SUBJECT,
-        manual_ack=True,
-        queue=QUEUE_NAME,
-        cb=handler,
-    )
-
-    print("VWAP mean-reversion HF strategy running...", flush=True)
-    while True:
-        if nc.is_closed:
-            raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
-        await asyncio.sleep(1)
+    runner = StrategyRunner(strategy=strategy, runtime=runtime)
+    await runner.run()
 
 
 if __name__ == "__main__":

@@ -36,6 +36,8 @@ anchored_vwap:
   position_side: BOTH
   symbol_in: SOLUSDT
   symbol_out: SOLUSDT
+  interval: 1m
+  historical_limit: 500
 
   user_id: paper-1
   source: python-avwap
@@ -122,6 +124,7 @@ example:
 vwap:
   symbol: SOLUSDT
   interval: 1m
+  historical_limit: 500
 
   exchange: tokocrypto
   market_type: spot

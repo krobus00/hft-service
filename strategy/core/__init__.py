@@ -1,5 +1,5 @@
 from .framework import StrategyBase, StrategyRunner
-from .indicators import EMA, MACD, RollingVWAP
+from .indicators import ATR, EMA, MACD, AnchoredVWAP, RollingVWAP
 from .models import Candle, RuntimeConfig, Signal, StrategyConfig
 
 _MODULE_PREFIX = f"{__name__}."

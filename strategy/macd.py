@@ -1,172 +1,77 @@
 import asyncio
+from typing import Optional
+
 import uvloop
-import asyncpg
-import orjson
-import uuid
-import time
-from pathlib import Path
-import yaml
-from nats.aio.client import Client as NATS
+
+from core.common import load_full_config
+from core.framework import StrategyBase, StrategyRunner
+from core.indicators import EMA, MACD
+from core.models import Candle, RuntimeConfig, StrategyConfig
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.yml"
-
-
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        raise FileNotFoundError(
-            f"Config file not found: {CONFIG_PATH}. Copy strategy/config.yml.example to strategy/config.yml"
-        )
-    with CONFIG_PATH.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file) or {}
-
-
-CONFIG = load_config()
+CONFIG = load_full_config()
 GLOBAL_CONFIG = CONFIG.get("global", {})
 MACD_CONFIG = CONFIG.get("macd", {})
 
-DB_DSN = GLOBAL_CONFIG.get("db_dsn", "postgres://root:root@localhost:5432/market_data?sslmode=disable")
-NATS_URL = GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222")
 
-SYMBOL = MACD_CONFIG.get("symbol", "SOLUSDT")
-INTERVAL = MACD_CONFIG.get("interval", "1m")
-
-HISTORICAL_LIMIT = MACD_CONFIG.get("historical_limit", 200)
-
-# =========================
-# NOISE FILTER CONFIG
-# =========================
-HIST_BAND = MACD_CONFIG.get("hist_band", 0.05)
-CONFIRM_BARS = MACD_CONFIG.get("confirm_bars", 2)
-COOLDOWN_BARS = MACD_CONFIG.get("cooldown_bars", 3)
-
-TREND_EMA_FAST = MACD_CONFIG.get("trend_ema_fast", 50)
-TREND_EMA_SLOW = MACD_CONFIG.get("trend_ema_slow", 200)
-
-EXCHANGE = MACD_CONFIG.get("exchange", "tokocrypto")
-MARKET_TYPE = MACD_CONFIG.get("market_type", "spot")
-POSITION_SIDE = MACD_CONFIG.get("position_side", "BOTH")
-USER_ID = MACD_CONFIG.get("user_id", "paper-1")
-SOURCE = MACD_CONFIG.get("source", "python-macd")
-STRATEGY_ID = MACD_CONFIG.get("strategy_id", "python-macd")
-IS_PAPER_TRADING = MACD_CONFIG.get("is_paper_trading", True)
-ORDER_SUBJECT = MACD_CONFIG.get("order_subject", "order_engine.place_order")
-KLINE_SUBJECT = MACD_CONFIG.get("kline_subject", "KLINE.TOKOCRYPTO.>")
-QUEUE_NAME = MACD_CONFIG.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_MACD")
-ORDER_TYPE = MACD_CONFIG.get("order_type", "LIMIT")
-ORDER_QTY = MACD_CONFIG.get("order_qty", 10)
-ORDER_SYMBOL = MACD_CONFIG.get("order_symbol", "SOLUSDT")
-
-
-def gen_request_id() -> str:
-    return uuid.uuid4().hex
-
-
-def gen_order_id() -> str:
-    return f"paper-{uuid.uuid4().hex}"
-
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-# =========================
-# INDICATORS (HFT SAFE)
-# =========================
-class FastEMA:
-    __slots__ = ("alpha", "value", "initialized")
-
-    def __init__(self, period: int):
-        self.alpha = 2.0 / (period + 1)
-        self.value = 0.0
-        self.initialized = False
-
-    def update(self, price: float):
-        if not self.initialized:
-            self.value = price
-            self.initialized = True
-        else:
-            self.value = self.alpha * price + (1 - self.alpha) * self.value
-        return self.value
-
-
-class FastMACD:
-    __slots__ = ("ema_fast", "ema_slow", "ema_signal", "ready_count")
-
-    def __init__(self):
-        self.ema_fast = FastEMA(12)
-        self.ema_slow = FastEMA(26)
-        self.ema_signal = FastEMA(9)
-        self.ready_count = 0
-
-    def update(self, price: float):
-        fast = self.ema_fast.update(price)
-        slow = self.ema_slow.update(price)
-
-        macd = fast - slow
-        signal = self.ema_signal.update(macd)
-        histogram = macd - signal
-
-        self.ready_count += 1
-        if self.ready_count < 50:
-            return None
-
-        return macd, signal, histogram
-
-
-# =========================
-# ENGINE + NOISE FILTER
-# =========================
-class HFTEngine:
+class MACDStrategy(StrategyBase):
     __slots__ = (
         "macd",
-        "prev_hist",
+        "trend_fast",
+        "trend_slow",
+        "macd_ready_min",
+        "hist_band",
+        "confirm_bars",
+        "cooldown_bars",
         "buy_ok_count",
         "sell_ok_count",
         "cooldown",
-        "trend_fast",
-        "trend_slow",
     )
 
-    def __init__(self):
-        self.macd = FastMACD()
-        self.prev_hist = None
+    def __init__(self, strategy_config: StrategyConfig, section: dict):
+        super().__init__(strategy_config)
+
+        self.macd = MACD(
+            int(section.get("macd_fast", 12)),
+            int(section.get("macd_slow", 26)),
+            int(section.get("macd_signal", 9)),
+        )
+        self.trend_fast = EMA(int(section.get("trend_ema_fast", 50)))
+        self.trend_slow = EMA(int(section.get("trend_ema_slow", 200)))
+        macd_slow = int(section.get("macd_slow", 26))
+        macd_signal = int(section.get("macd_signal", 9))
+        self.macd_ready_min = max(50, macd_slow + macd_signal)
+
+        self.hist_band = float(section.get("hist_band", 0.05))
+        self.confirm_bars = int(section.get("confirm_bars", 2))
+        self.cooldown_bars = int(section.get("cooldown_bars", 3))
 
         self.buy_ok_count = 0
         self.sell_ok_count = 0
         self.cooldown = 0
 
-        self.trend_fast = FastEMA(TREND_EMA_FAST)
-        self.trend_slow = FastEMA(TREND_EMA_SLOW)
-
-    def process_price(self, price: float):
-        tf = self.trend_fast.update(price)
-        ts = self.trend_slow.update(price)
+    def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
+        if not self.allow_new_candle(candle):
+            return None
 
         if self.cooldown > 0:
             self.cooldown -= 1
 
-        result = self.macd.update(price)
-        if result is None:
+        trend_fast = self.trend_fast.update(candle.close)
+        trend_slow = self.trend_slow.update(candle.close)
+
+        macd_line, signal_line, crossed_up, crossed_down = self.macd.update(candle.close)
+        hist = macd_line - signal_line
+
+        if self.macd.count < self.macd_ready_min:
             return None
 
-        macd, signal, hist = result
+        trend_up = trend_fast > trend_slow
+        trend_down = trend_fast < trend_slow
 
-        if self.prev_hist is None:
-            self.prev_hist = hist
-            return None
-
-        crossed_up = self.prev_hist <= 0 and hist > 0
-        crossed_down = self.prev_hist >= 0 and hist < 0
-        self.prev_hist = hist
-
-        buy_candidate = hist >= HIST_BAND
-        sell_candidate = hist <= -HIST_BAND
-
-        trend_up = tf > ts
-        trend_down = tf < ts
+        buy_candidate = hist >= self.hist_band
+        sell_candidate = hist <= -self.hist_band
 
         if buy_candidate and trend_up:
             self.buy_ok_count += 1
@@ -183,126 +88,75 @@ class HFTEngine:
         if crossed_down:
             self.buy_ok_count = 0
 
-        if self.cooldown == 0 and crossed_up and self.buy_ok_count >= CONFIRM_BARS:
-            self.cooldown = COOLDOWN_BARS
-            self.buy_ok_count = 0
-            return "BUY", price
+        if is_warmup:
+            return None
 
-        if self.cooldown == 0 and crossed_down and self.sell_ok_count >= CONFIRM_BARS:
-            self.cooldown = COOLDOWN_BARS
+        metadata = {
+            "macd": round(macd_line, 8),
+            "signal": round(signal_line, 8),
+            "hist": round(hist, 8),
+            "trend_fast": round(trend_fast, 8),
+            "trend_slow": round(trend_slow, 8),
+        }
+
+        if self.cooldown == 0 and crossed_up and self.buy_ok_count >= self.confirm_bars:
+            self.cooldown = self.cooldown_bars
+            self.buy_ok_count = 0
+            return self.buy(candle.close, "ENTER_LONG", metadata)
+
+        if self.cooldown == 0 and crossed_down and self.sell_ok_count >= self.confirm_bars:
+            self.cooldown = self.cooldown_bars
             self.sell_ok_count = 0
-            return "SELL", price
+            return self.sell(candle.close, "ENTER_SHORT", metadata)
 
         return None
 
 
-# =========================
-# LOAD HISTORICAL DATA
-# =========================
-async def warmup_from_postgres(engine: HFTEngine):
-    conn = await asyncpg.connect(DB_DSN)
-
-    rows = await conn.fetch(
-        """
-        SELECT close_price as close
-        FROM market_klines
-        WHERE symbol = $1
-          AND interval = $2
-          AND is_closed IS TRUE
-        ORDER BY close_time DESC
-        LIMIT $3
-        """,
-        SYMBOL,
-        INTERVAL,
-        HISTORICAL_LIMIT,
+def build_runtime_config(section: dict) -> RuntimeConfig:
+    return RuntimeConfig(
+        db_dsn=GLOBAL_CONFIG.get("db_dsn", "postgres://root:root@localhost:5432/market_data?sslmode=disable"),
+        nats_url=GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222"),
+        nats_allow_reconnect=GLOBAL_CONFIG.get("nats_allow_reconnect", True),
+        nats_max_reconnect_attempts=GLOBAL_CONFIG.get("nats_max_reconnect_attempts", -1),
+        nats_reconnect_time_wait_sec=GLOBAL_CONFIG.get("nats_reconnect_time_wait_sec", 2),
+        nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
+        nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
+        nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
+        kline_subject=section.get("kline_subject", "KLINE.TOKOCRYPTO.>"),
+        order_subject=section.get("order_subject", "order_engine.place_order"),
+        queue_name=section.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_MACD"),
+        user_id=section.get("user_id", "paper-1"),
+        exchange=section.get("exchange", "tokocrypto"),
+        market_type=section.get("market_type", "spot"),
+        position_side=section.get("position_side", "BOTH"),
+        source=section.get("source", "python-macd"),
+        strategy_id=section.get("strategy_id", "python-macd"),
+        is_paper_trading=section.get("is_paper_trading", True),
+        order_type=section.get("order_type", "LIMIT"),
+        order_qty=float(section.get("order_qty", 10)),
+        order_symbol=section.get("order_symbol", section.get("symbol", "SOLUSDT")),
+        limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
     )
 
-    await conn.close()
 
-    rows = list(reversed(rows))
-    for row in rows:
-        engine.process_price(float(row["close"]))
+def build_strategy_config(section: dict) -> StrategyConfig:
+    return StrategyConfig(
+        name="MACD",
+        symbol=section.get("symbol", "SOLUSDT"),
+        interval=section.get("interval", "1m"),
+        warmup_limit=int(section.get("historical_limit", 200)),
+    )
 
-    print(f"Warmup completed with {len(rows)} candles")
 
-
-# =========================
-# LIVE STREAM
-# =========================
 async def run():
-    engine = HFTEngine()
-    await warmup_from_postgres(engine)
+    runtime = build_runtime_config(MACD_CONFIG)
 
-    nc = NATS()
-    await nc.connect(NATS_URL)
-    js = nc.jetstream()
+    if runtime.order_qty <= 0:
+        raise ValueError("order_qty must be > 0")
 
-    async def handler(msg):
-        payload = orjson.loads(msg.data)
-        d = payload["data"]
-
-        # New convention (your kline payload is PascalCase)
-        # - IsClosed: bool
-        # - Symbol: str
-        # - ClosePrice: str
-        if not d.get("IsClosed"):
-            await msg.ack()
-            return
-
-        if d.get("Symbol") != SYMBOL:
-            print("skipping different symbol, symbol=", d.get("Symbol"), flush=True)
-            await msg.ack()
-            return
-
-        if d.get("Interval") != INTERVAL:
-            print("skipping non-1m interval, interval=", d.get("Interval"), flush=True)
-            await msg.ack()
-            return
-        price = float(d["ClosePrice"])
-        signal = engine.process_price(price)
-
-        if signal:
-            side, px = signal
-
-            # Keep order payload in snake_case to match your "new convention" used in strategies
-            out = {
-                "retry": 0,
-                "data": {
-                    "request_id": gen_request_id(),
-                    "user_id": USER_ID,
-                    "order_id": gen_order_id(),
-                    "exchange": EXCHANGE,
-                    "market_type": MARKET_TYPE,
-                    "position_side": POSITION_SIDE,
-                    "symbol": ORDER_SYMBOL,
-                    "type": ORDER_TYPE,
-                    "side": side,
-                    "price": str(px),
-                    "quantity": str(ORDER_QTY),
-                    "requested_at": now_ms(),
-                    "expired_at": None,
-                    "source": SOURCE,
-                    "strategy_id": STRATEGY_ID,
-                    "is_paper_trading": IS_PAPER_TRADING,
-                },
-            }
-
-            print("order payload:", out)
-
-            await js.publish(ORDER_SUBJECT, orjson.dumps(out))
-
-        await msg.ack()
-
-    await js.subscribe(
-        KLINE_SUBJECT,
-        manual_ack=True,
-        queue=QUEUE_NAME,
-        cb=handler,
-    )
-
-    print("Live analyzer running...", flush=True)
-    while True:
-        await asyncio.sleep(1)
+    strategy = MACDStrategy(build_strategy_config(MACD_CONFIG), MACD_CONFIG)
+    runner = StrategyRunner(strategy=strategy, runtime=runtime)
+    await runner.run()
 
 
 if __name__ == "__main__":

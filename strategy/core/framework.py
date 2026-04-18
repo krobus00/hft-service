@@ -29,6 +29,12 @@ class StrategyBase(ABC):
     def sell(self, price: float, reason: str, metadata: Optional[Dict[str, Any]] = None) -> Signal:
         return Signal(side="SELL", price=price, reason=reason, metadata=metadata or {})
 
+    def snapshot_state(self):
+        return None
+
+    def restore_state(self, snapshot) -> None:
+        return None
+
     @abstractmethod
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False) -> Optional[Signal]:
         raise NotImplementedError
@@ -178,10 +184,15 @@ class StrategyRunner:
                     trade_count=int(data.get("TradeCount", 0) or 0),
                 )
 
+                snapshot = self.strategy.snapshot_state()
                 signal = self.strategy.on_closed_candle(candle, is_warmup=False)
                 if signal is not None:
-                    out = self.build_order_payload(signal.side, signal.price)
-                    await js.publish(self.runtime.order_subject, orjson.dumps(out))
+                    try:
+                        out = self.build_order_payload(signal.side, signal.price)
+                        await js.publish(self.runtime.order_subject, orjson.dumps(out))
+                    except Exception:
+                        self.strategy.restore_state(snapshot)
+                        raise
                     metadata = " ".join(f"{k}={v}" for k, v in signal.metadata.items())
                     print(
                         f"[{self.strategy.config.name}] {signal.reason} side={signal.side} symbol={self.runtime.order_symbol} close={signal.price:.6f} {metadata}".strip(),
