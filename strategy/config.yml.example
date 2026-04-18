@@ -178,3 +178,28 @@ krobot01:
   cooldown_bars: 1
   take_profit_pct: 0.25
   stop_loss_pct: 0.15
+
+template:
+  name: TEMPLATE
+  symbol: SOLUSDT
+  interval: 1m
+  historical_limit: 500
+
+  exchange: tokocrypto
+  market_type: spot
+  position_side: BOTH
+  user_id: paper-1
+  source: python-template
+  strategy_id: python-template
+  is_paper_trading: true
+
+  kline_subject: KLINE.TOKOCRYPTO.>
+  order_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_TEMPLATE
+
+  order_type: LIMIT
+  order_qty: 10
+  order_symbol: SOLUSDT
+  limit_slippage_pct: 0.02
+
+  cooldown_bars: 1
