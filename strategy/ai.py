@@ -142,10 +142,25 @@ class AIHybridStrategy(StrategyBase):
     @staticmethod
     def _extract_text(message) -> str:
         texts = []
-        for block in message.content:
-            if block.type == "text":
-                texts.append(block.text)
+        for block in message.content or []:
+            block_type = getattr(block, "type", None)
+            block_text = getattr(block, "text", None)
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                block_text = block.get("text")
+            if block_type == "text" and block_text:
+                texts.append(str(block_text))
         return "\n".join(texts).strip()
+
+    @staticmethod
+    def _extract_block_types(message) -> str:
+        block_types = []
+        for block in message.content or []:
+            block_type = getattr(block, "type", None)
+            if isinstance(block, dict):
+                block_type = block.get("type")
+            block_types.append(str(block_type or "unknown"))
+        return ",".join(block_types) if block_types else "none"
 
     @staticmethod
     def _extract_json(raw_text: str) -> Dict[str, Any]:
@@ -170,8 +185,9 @@ class AIHybridStrategy(StrategyBase):
 
         system_prompt = (
             "You are an advanced quantitative crypto trading assistant. "
-            "Respond in strict JSON with keys: action, confidence, reason. "
-            "action must be BUY, SELL, or HOLD. confidence must be 0..1."
+            "action must be BUY, SELL, or HOLD. confidence must be between 0 and 1."
+            "Return ONLY valid JSON. No markdown, no explanation. "
+            'Example: {"action":"SELL","confidence":0.72,"reason":"trend down"}'
         )
 
         user_payload = {
@@ -203,29 +219,31 @@ class AIHybridStrategy(StrategyBase):
         try:
             message = self.ai_client.messages.create(
                 model=self.model_name,
-                max_tokens=300,
+                max_tokens=1200,
                 system=system_prompt,
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": user_payload_text,
-                            }
-                        ],
+                        "content": user_payload_text,
                     }
                 ],
             )
 
             raw_text = self._extract_text(message)
+            stop_reason = getattr(message, "stop_reason", None)
+            block_types = self._extract_block_types(message)
             print(
                 (
                     f"[AI_RESPONSE_RAW] symbol={self.config.symbol} interval={self.config.interval} "
-                    f"model={self.model_name} response={self._truncate_for_log(raw_text)}"
+                    f"model={self.model_name} stop_reason={stop_reason} block_types={block_types} "
+                    f"response={self._truncate_for_log(raw_text)}"
                 ),
                 flush=True,
             )
+            if not raw_text:
+                raise RuntimeError(
+                    f"No text block in response (stop_reason={stop_reason}, block_types={block_types})"
+                )
             parsed = self._extract_json(raw_text)
 
             action = str(parsed.get("action", "HOLD")).upper()
@@ -278,17 +296,12 @@ class AIHybridStrategy(StrategyBase):
         try:
             message = self.ai_client.messages.create(
                 model=self.model_name,
-                max_tokens=32,
+                max_tokens=64,
                 system=system_prompt,
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": test_payload_text,
-                            }
-                        ],
+                        "content": test_payload_text,
                     }
                 ],
             )
