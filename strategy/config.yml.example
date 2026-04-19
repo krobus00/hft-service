@@ -1,6 +1,8 @@
 global:
   nats_url: nats://localhost:4222
   db_dsn: postgres://root:root@localhost:5432/market_data?sslmode=disable
+  anthropic_base_url: https://api.minimax.io/anthropic
+  anthropic_api_key: YOUR_API_KEY
 
 macd:
   symbol: SOLUSDT
@@ -206,3 +208,49 @@ template:
   limit_slippage_pct: 0.02
 
   cooldown_bars: 1
+
+ai:
+  name: AI-M2.7
+  symbol: ETH_USDT.P
+  interval: 1m
+  historical_limit: 800
+
+  exchange: binance
+  market_type: futures
+  position_side: ONE_WAY
+  user_id: minimax-01
+  source: python-ai-minimax-m2-7
+  strategy_id: python-ai-minimax-m2-7-hybrid
+  is_paper_trading: false
+
+  kline_subject: KLINE.BINANCE.>
+  order_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_BINANCE_AI
+
+  order_type: MARKET
+  order_qty: 10
+  order_symbol: ETH_USDT.P
+  limit_slippage_pct: 0.02
+
+  # AI settings
+  use_ai: true
+  ai_model: MiniMax-M2.7
+  ai_interval_bars: 3
+  entry_confidence: 0.62
+  override_confidence: 0.75
+
+  # Indicator settings
+  ema_fast: 50
+  ema_slow: 200
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  vwap_window: 120
+  atr_n: 14
+
+  # Risk controls
+  take_profit_pct: 0.40
+  stop_loss_pct: 0.25
+  trailing_stop_pct: 0.20
+  max_hold_bars: 24
+  cooldown_bars: 2
