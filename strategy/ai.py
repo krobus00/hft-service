@@ -86,7 +86,11 @@ class AIHybridStrategy(StrategyBase):
 
         self.macd_ready_min = max(50, macd_slow + macd_signal)
 
-        api_key = section.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY")
+        api_key = (
+            section.get("anthropic_api_key")
+            or GLOBAL_CONFIG.get("anthropic_api_key")
+            or os.getenv("ANTHROPIC_API_KEY")
+        )
         self.base_url = (
             section.get("anthropic_base_url")
             or GLOBAL_CONFIG.get("anthropic_base_url")
