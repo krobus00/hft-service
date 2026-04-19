@@ -154,6 +154,12 @@ class AIHybridStrategy(StrategyBase):
             text = text[start : end + 1]
         return json.loads(text)
 
+    @staticmethod
+    def _truncate_for_log(value: str, max_len: int = 1200) -> str:
+        if len(value) <= max_len:
+            return value
+        return f"{value[:max_len]}...<truncated:{len(value) - max_len}>"
+
     def _ai_signal(self, payload: Dict[str, Any], local_action: str, local_confidence: float) -> Tuple[str, float, str]:
         if self.ai_client is None:
             return local_action, local_confidence, "AI_DISABLED"
@@ -179,6 +185,17 @@ class AIHybridStrategy(StrategyBase):
             },
         }
 
+        user_payload_text = json.dumps(user_payload, separators=(",", ":"))
+        print(
+            (
+                f"[AI_REQUEST] symbol={self.config.symbol} interval={self.config.interval} "
+                f"model={self.model_name} local={local_action}:{local_confidence:.4f} "
+                f"system_prompt={self._truncate_for_log(system_prompt)} "
+                f"payload={self._truncate_for_log(user_payload_text)}"
+            ),
+            flush=True,
+        )
+
         try:
             message = self.ai_client.messages.create(
                 model=self.model_name,
@@ -190,7 +207,7 @@ class AIHybridStrategy(StrategyBase):
                         "content": [
                             {
                                 "type": "text",
-                                "text": json.dumps(user_payload),
+                                "text": user_payload_text,
                             }
                         ],
                     }
@@ -198,6 +215,13 @@ class AIHybridStrategy(StrategyBase):
             )
 
             raw_text = self._extract_text(message)
+            print(
+                (
+                    f"[AI_RESPONSE_RAW] symbol={self.config.symbol} interval={self.config.interval} "
+                    f"model={self.model_name} response={self._truncate_for_log(raw_text)}"
+                ),
+                flush=True,
+            )
             parsed = self._extract_json(raw_text)
 
             action = str(parsed.get("action", "HOLD")).upper()
@@ -208,8 +232,23 @@ class AIHybridStrategy(StrategyBase):
             confidence = max(0.0, min(1.0, confidence))
 
             reason = str(parsed.get("reason", "AI_DECISION"))[:160]
+            print(
+                (
+                    f"[AI_RESPONSE_PARSED] symbol={self.config.symbol} interval={self.config.interval} "
+                    f"model={self.model_name} action={action} confidence={confidence:.4f} "
+                    f"reason={reason}"
+                ),
+                flush=True,
+            )
             return action, confidence, reason
         except Exception as exc:
+            print(
+                (
+                    f"[AI_ERROR] symbol={self.config.symbol} interval={self.config.interval} "
+                    f"model={self.model_name} error={type(exc).__name__}:{exc}"
+                ),
+                flush=True,
+            )
             return local_action, local_confidence, f"AI_FALLBACK:{type(exc).__name__}"
 
     def _position_risk_exit(self, candle: Candle, metadata: Dict[str, Any]):
