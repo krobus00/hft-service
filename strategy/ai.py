@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import json
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -45,6 +46,14 @@ class AIHybridStrategy(StrategyBase):
         "max_hold_bars",
         "cooldown_bars",
         "macd_ready_min",
+        "prev_close",
+        "prev_macd_hist",
+        "prev_ema_spread_pct",
+        "prev_vwap_gap_pct",
+        "prev_atr_pct",
+        "recent_returns_pct",
+        "recent_macd_hist",
+        "recent_atr_pct",
     )
 
     def __init__(self, strategy_config: StrategyConfig, section: dict):
@@ -85,6 +94,15 @@ class AIHybridStrategy(StrategyBase):
         self.cooldown_bars = int(section.get("cooldown_bars", 2))
 
         self.macd_ready_min = max(50, macd_slow + macd_signal)
+
+        self.prev_close: Optional[float] = None
+        self.prev_macd_hist: Optional[float] = None
+        self.prev_ema_spread_pct: Optional[float] = None
+        self.prev_vwap_gap_pct: Optional[float] = None
+        self.prev_atr_pct: Optional[float] = None
+        self.recent_returns_pct = deque(maxlen=5)
+        self.recent_macd_hist = deque(maxlen=5)
+        self.recent_atr_pct = deque(maxlen=5)
 
         api_key = (
             section.get("anthropic_api_key")
@@ -178,6 +196,17 @@ class AIHybridStrategy(StrategyBase):
         if len(value) <= max_len:
             return value
         return f"{value[:max_len]}...<truncated:{len(value) - max_len}>"
+
+    @staticmethod
+    def _window_stats(values: deque) -> Dict[str, float]:
+        if not values:
+            return {"mean": 0.0, "min": 0.0, "max": 0.0}
+        arr = list(values)
+        return {
+            "mean": sum(arr) / len(arr),
+            "min": min(arr),
+            "max": max(arr),
+        }
 
     def _ai_signal(self, payload: Dict[str, Any], local_action: str, local_confidence: float) -> Tuple[str, float, str]:
         if self.ai_client is None:
@@ -402,7 +431,20 @@ class AIHybridStrategy(StrategyBase):
         if self.macd.count < self.macd_ready_min or vwap_px is None or atr is None:
             return None
 
+        ema_spread_pct = (ema_fast - ema_slow) / ema_slow * 100.0 if ema_slow != 0 else 0.0
+        vwap_gap_pct = (candle.close - vwap_px) / vwap_px * 100.0 if vwap_px != 0 else 0.0
+        atr_pct = atr / candle.close * 100.0 if candle.close != 0 else 0.0
+        ret_1_pct = ((candle.close - self.prev_close) / self.prev_close * 100.0) if self.prev_close else 0.0
+
         if is_warmup:
+            self.prev_close = candle.close
+            self.prev_macd_hist = macd_hist
+            self.prev_ema_spread_pct = ema_spread_pct
+            self.prev_vwap_gap_pct = vwap_gap_pct
+            self.prev_atr_pct = atr_pct
+            self.recent_returns_pct.append(ret_1_pct)
+            self.recent_macd_hist.append(macd_hist)
+            self.recent_atr_pct.append(atr_pct)
             return None
 
         local_action, local_confidence = self._local_signal(candle, ema_fast, ema_slow, vwap_px, macd_hist, atr)
@@ -416,9 +458,31 @@ class AIHybridStrategy(StrategyBase):
             "signal": round(signal_line, 8),
             "macd_hist": round(macd_hist, 8),
             "atr": round(atr, 8),
+            "ema_spread_pct": round(ema_spread_pct, 6),
+            "vwap_gap_pct": round(vwap_gap_pct, 6),
+            "atr_pct": round(atr_pct, 6),
+            "ret_1_pct": round(ret_1_pct, 6),
             "quote_volume": round(candle.quote_volume, 8),
             "taker_quote_volume": round(candle.taker_quote_volume, 8),
             "trade_count": int(candle.trade_count),
+            "lag": {
+                "close_prev": round(self.prev_close or candle.close, 8),
+                "macd_hist_prev": round(self.prev_macd_hist or 0.0, 8),
+                "ema_spread_pct_prev": round(self.prev_ema_spread_pct or 0.0, 6),
+                "vwap_gap_pct_prev": round(self.prev_vwap_gap_pct or 0.0, 6),
+                "atr_pct_prev": round(self.prev_atr_pct or 0.0, 6),
+            },
+            "delta": {
+                "macd_hist_delta": round(macd_hist - (self.prev_macd_hist or macd_hist), 8),
+                "ema_spread_pct_delta": round(ema_spread_pct - (self.prev_ema_spread_pct or ema_spread_pct), 6),
+                "vwap_gap_pct_delta": round(vwap_gap_pct - (self.prev_vwap_gap_pct or vwap_gap_pct), 6),
+                "atr_pct_delta": round(atr_pct - (self.prev_atr_pct or atr_pct), 6),
+            },
+            "window": {
+                "returns_5": {k: round(v, 6) for k, v in self._window_stats(self.recent_returns_pct).items()},
+                "macd_hist_5": {k: round(v, 8) for k, v in self._window_stats(self.recent_macd_hist).items()},
+                "atr_pct_5": {k: round(v, 6) for k, v in self._window_stats(self.recent_atr_pct).items()},
+            },
         }
 
         ai_action, ai_confidence, ai_reason = self._ai_signal(features, local_action, local_confidence)
@@ -464,6 +528,14 @@ class AIHybridStrategy(StrategyBase):
                 self.lowest_since_entry = candle.close
                 self.bars_in_pos = 0
                 self.cooldown = self.cooldown_bars
+                self.prev_close = candle.close
+                self.prev_macd_hist = macd_hist
+                self.prev_ema_spread_pct = ema_spread_pct
+                self.prev_vwap_gap_pct = vwap_gap_pct
+                self.prev_atr_pct = atr_pct
+                self.recent_returns_pct.append(ret_1_pct)
+                self.recent_macd_hist.append(macd_hist)
+                self.recent_atr_pct.append(atr_pct)
                 return self.buy(candle.close, "ENTER_LONG_AI", metadata)
 
             if final_action == "SELL":
@@ -473,7 +545,24 @@ class AIHybridStrategy(StrategyBase):
                 self.lowest_since_entry = candle.close
                 self.bars_in_pos = 0
                 self.cooldown = self.cooldown_bars
+                self.prev_close = candle.close
+                self.prev_macd_hist = macd_hist
+                self.prev_ema_spread_pct = ema_spread_pct
+                self.prev_vwap_gap_pct = vwap_gap_pct
+                self.prev_atr_pct = atr_pct
+                self.recent_returns_pct.append(ret_1_pct)
+                self.recent_macd_hist.append(macd_hist)
+                self.recent_atr_pct.append(atr_pct)
                 return self.sell(candle.close, "ENTER_SHORT_AI", metadata)
+
+            self.prev_close = candle.close
+            self.prev_macd_hist = macd_hist
+            self.prev_ema_spread_pct = ema_spread_pct
+            self.prev_vwap_gap_pct = vwap_gap_pct
+            self.prev_atr_pct = atr_pct
+            self.recent_returns_pct.append(ret_1_pct)
+            self.recent_macd_hist.append(macd_hist)
+            self.recent_atr_pct.append(atr_pct)
 
         return None
 
