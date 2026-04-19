@@ -162,7 +162,7 @@ class AIHybridStrategy(StrategyBase):
 
     def _ai_signal(self, payload: Dict[str, Any], local_action: str, local_confidence: float) -> Tuple[str, float, str]:
         if self.ai_client is None:
-            return local_action, local_confidence, "AI_DISABLED"
+            raise RuntimeError("AI client is not initialized. Set anthropic_api_key or ANTHROPIC_API_KEY.")
 
         system_prompt = (
             "You are an advanced quantitative crypto trading assistant. "
@@ -249,7 +249,65 @@ class AIHybridStrategy(StrategyBase):
                 ),
                 flush=True,
             )
-            return local_action, local_confidence, f"AI_FALLBACK:{type(exc).__name__}"
+            raise RuntimeError(f"LLM request failed: {type(exc).__name__}:{exc}") from exc
+
+    def _test_llm_on_init(self) -> None:
+        if self.ai_client is None:
+            raise RuntimeError("AI client is not initialized. Set anthropic_api_key or ANTHROPIC_API_KEY.")
+
+        system_prompt = "You are a health check endpoint. Reply with plain text: OK"
+        test_payload = {
+            "symbol": self.config.symbol,
+            "interval": self.config.interval,
+            "check": "init_healthcheck",
+        }
+        test_payload_text = json.dumps(test_payload, separators=(",", ":"))
+
+        print(
+            (
+                f"[AI_INIT_TEST_REQUEST] symbol={self.config.symbol} interval={self.config.interval} "
+                f"model={self.model_name} payload={self._truncate_for_log(test_payload_text)}"
+            ),
+            flush=True,
+        )
+
+        try:
+            message = self.ai_client.messages.create(
+                model=self.model_name,
+                max_tokens=32,
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": test_payload_text,
+                            }
+                        ],
+                    }
+                ],
+            )
+            raw_text = self._extract_text(message)
+            if not raw_text:
+                raise RuntimeError("empty response from LLM init test")
+
+            print(
+                (
+                    f"[AI_INIT_TEST_RESPONSE] symbol={self.config.symbol} interval={self.config.interval} "
+                    f"model={self.model_name} response={self._truncate_for_log(raw_text)}"
+                ),
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                (
+                    f"[AI_INIT_TEST_ERROR] symbol={self.config.symbol} interval={self.config.interval} "
+                    f"model={self.model_name} error={type(exc).__name__}:{exc}"
+                ),
+                flush=True,
+            )
+            raise RuntimeError(f"LLM init test failed: {type(exc).__name__}:{exc}") from exc
 
     def _position_risk_exit(self, candle: Candle, metadata: Dict[str, Any]):
         if self.position_side == "LONG" and self.entry_price is not None:
@@ -346,27 +404,17 @@ class AIHybridStrategy(StrategyBase):
             "trade_count": int(candle.trade_count),
         }
 
-        should_query_ai = self.bar_count % self.ai_interval_bars == 0 or local_action != "HOLD"
-        if should_query_ai:
-            ai_action, ai_confidence, ai_reason = self._ai_signal(features, local_action, local_confidence)
-        else:
-            ai_action, ai_confidence, ai_reason = local_action, local_confidence, "LOCAL_ONLY"
+        ai_action, ai_confidence, ai_reason = self._ai_signal(features, local_action, local_confidence)
 
-        final_action = local_action
-        final_confidence = local_confidence
-
-        if ai_confidence >= self.override_confidence:
-            final_action = ai_action
-            final_confidence = ai_confidence
-        elif ai_action == local_action:
-            final_confidence = max(local_confidence, ai_confidence)
+        final_action = ai_action
+        final_confidence = ai_confidence
 
         print(
             (
                 f"[AI_DECISION] symbol={self.config.symbol} interval={self.config.interval} "
                 f"close={candle.close:.6f} local={local_action}:{local_confidence:.4f} "
                 f"ai={ai_action}:{ai_confidence:.4f} final={final_action}:{final_confidence:.4f} "
-                f"queried={should_query_ai} reason={ai_reason}"
+                f"queried=True reason={ai_reason}"
             ),
             flush=True,
         )
@@ -456,6 +504,9 @@ async def run():
         raise ValueError("order_qty must be > 0")
 
     strategy = AIHybridStrategy(build_strategy_config(AI_CONFIG), AI_CONFIG)
+    if strategy.ai_client is None:
+        raise ValueError("LLM is required. Set anthropic_api_key or ANTHROPIC_API_KEY.")
+    strategy._test_llm_on_init()
 
     if strategy.take_profit_pct < 0:
         raise ValueError("take_profit_pct must be >= 0")
