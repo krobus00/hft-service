@@ -53,3 +53,4 @@ class RuntimeConfig:
     order_qty: float
     order_symbol: str
     limit_slippage_pct: float
+    enable_intrabar_risk_exit: bool = False

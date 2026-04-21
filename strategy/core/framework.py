@@ -35,6 +35,9 @@ class StrategyBase(ABC):
     def restore_state(self, snapshot) -> None:
         return None
 
+    def on_price_update(self, candle: Candle) -> Optional[Signal]:
+        return None
+
     @abstractmethod
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False) -> Optional[Signal]:
         raise NotImplementedError
@@ -162,10 +165,6 @@ class StrategyRunner:
                 payload = orjson.loads(msg.data)
                 data = payload.get("data", {})
 
-                if not data.get("IsClosed"):
-                    await msg.ack()
-                    return
-
                 if data.get("Symbol") != self.strategy.config.symbol:
                     await msg.ack()
                     return
@@ -185,7 +184,13 @@ class StrategyRunner:
                 )
 
                 snapshot = self.strategy.snapshot_state()
-                signal = self.strategy.on_closed_candle(candle, is_warmup=False)
+                if data.get("IsClosed"):
+                    signal = self.strategy.on_closed_candle(candle, is_warmup=False)
+                elif self.runtime.enable_intrabar_risk_exit:
+                    signal = self.strategy.on_price_update(candle)
+                else:
+                    signal = None
+
                 if signal is not None:
                     try:
                         out = self.build_order_payload(signal.side, signal.price)

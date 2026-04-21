@@ -59,6 +59,7 @@ class AIHybridStrategy(StrategyBase):
         "recent_returns_pct",
         "recent_macd_hist",
         "recent_atr_pct",
+        "intrabar_risk_guard",
     )
 
     def __init__(self, strategy_config: StrategyConfig, section: dict):
@@ -113,6 +114,7 @@ class AIHybridStrategy(StrategyBase):
         self.recent_returns_pct = deque(maxlen=5)
         self.recent_macd_hist = deque(maxlen=5)
         self.recent_atr_pct = deque(maxlen=5)
+        self.intrabar_risk_guard = False
 
         api_key = (
             section.get("anthropic_api_key")
@@ -219,6 +221,8 @@ class AIHybridStrategy(StrategyBase):
         }
 
     def _ai_signal(self, payload: Dict[str, Any], local_action: str, local_confidence: float) -> Tuple[str, float, str]:
+        if self.intrabar_risk_guard:
+            raise RuntimeError("LLM call is blocked during intrabar risk checks")
         if self.ai_client is None:
             raise RuntimeError("AI client is not initialized. Set anthropic_api_key or ANTHROPIC_API_KEY.")
 
@@ -476,42 +480,66 @@ class AIHybridStrategy(StrategyBase):
             )
             raise RuntimeError(f"LLM init test failed: {type(exc).__name__}:{exc}") from exc
 
-    def _position_risk_exit(self, candle: Candle, metadata: Dict[str, Any]):
+    def _position_risk_exit(self, candle: Candle, metadata: Dict[str, Any], advance_bar: bool = True):
         if self.position_side == "LONG" and self.entry_price is not None:
-            self.bars_in_pos += 1
-            self.highest_since_entry = max(self.highest_since_entry or candle.close, candle.close)
+            if advance_bar:
+                self.bars_in_pos += 1
+
+            high_px = candle.high if candle.high is not None else candle.close
+            low_px = candle.low if candle.low is not None else candle.close
+            self.highest_since_entry = max(self.highest_since_entry or high_px, high_px)
 
             tp_px = self.entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
             sl_px = self.entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
-            trail_px = (self.highest_since_entry or candle.close) * (1.0 - pct_to_frac(self.trailing_stop_pct))
+            trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
 
-            if candle.close >= tp_px:
+            if high_px >= tp_px:
                 return self._close_long(candle.close, "TP_LONG", metadata)
-            if candle.close <= sl_px:
+            if low_px <= sl_px:
                 return self._close_long(candle.close, "SL_LONG", metadata)
-            if candle.close <= trail_px:
+            if low_px <= trail_px:
                 return self._close_long(candle.close, "TRAIL_LONG", metadata)
-            if self.bars_in_pos >= self.max_hold_bars:
+            if advance_bar and self.bars_in_pos >= self.max_hold_bars:
                 return self._close_long(candle.close, "TIME_LONG", metadata)
 
         if self.position_side == "SHORT" and self.entry_price is not None:
-            self.bars_in_pos += 1
-            self.lowest_since_entry = min(self.lowest_since_entry or candle.close, candle.close)
+            if advance_bar:
+                self.bars_in_pos += 1
+
+            high_px = candle.high if candle.high is not None else candle.close
+            low_px = candle.low if candle.low is not None else candle.close
+            self.lowest_since_entry = min(self.lowest_since_entry or low_px, low_px)
 
             tp_px = self.entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
             sl_px = self.entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
-            trail_px = (self.lowest_since_entry or candle.close) * (1.0 + pct_to_frac(self.trailing_stop_pct))
+            trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
 
-            if candle.close <= tp_px:
+            if low_px <= tp_px:
                 return self._close_short(candle.close, "TP_SHORT", metadata)
-            if candle.close >= sl_px:
+            if high_px >= sl_px:
                 return self._close_short(candle.close, "SL_SHORT", metadata)
-            if candle.close >= trail_px:
+            if high_px >= trail_px:
                 return self._close_short(candle.close, "TRAIL_SHORT", metadata)
-            if self.bars_in_pos >= self.max_hold_bars:
+            if advance_bar and self.bars_in_pos >= self.max_hold_bars:
                 return self._close_short(candle.close, "TIME_SHORT", metadata)
 
         return None
+
+    def on_price_update(self, candle: Candle):
+        if self.position_side is None:
+            return None
+
+        self.intrabar_risk_guard = True
+        try:
+            metadata = {
+                "intrabar": True,
+                "close": round(candle.close, 8),
+                "high": round(candle.high if candle.high is not None else candle.close, 8),
+                "low": round(candle.low if candle.low is not None else candle.close, 8),
+            }
+            return self._position_risk_exit(candle, metadata, advance_bar=False)
+        finally:
+            self.intrabar_risk_guard = False
 
     def _close_long(self, price: float, reason: str, metadata: Dict[str, Any]):
         self.position_side = None
@@ -661,6 +689,7 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         order_qty=float(section.get("order_qty", 10)),
         order_symbol=section.get("order_symbol", section.get("symbol", "SOLUSDT")),
         limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
+        enable_intrabar_risk_exit=bool(section.get("enable_intrabar_risk_exit", True)),
     )
 
 
