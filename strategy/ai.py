@@ -45,7 +45,12 @@ class AIHybridStrategy(StrategyBase):
         "trailing_stop_pct",
         "max_hold_bars",
         "cooldown_bars",
+        "max_positions",
         "macd_ready_min",
+        "rsi_period",
+        "rsi_avg_gain",
+        "rsi_avg_loss",
+        "rsi_count",
         "prev_close",
         "prev_macd_hist",
         "prev_ema_spread_pct",
@@ -92,8 +97,13 @@ class AIHybridStrategy(StrategyBase):
         self.trailing_stop_pct = float(section.get("trailing_stop_pct", 0.20))
         self.max_hold_bars = int(section.get("max_hold_bars", 24))
         self.cooldown_bars = int(section.get("cooldown_bars", 2))
+        self.max_positions = int(section.get("max_positions", 1))
 
         self.macd_ready_min = max(50, macd_slow + macd_signal)
+        self.rsi_period = max(2, int(section.get("rsi_period", 14)))
+        self.rsi_avg_gain = 0.0
+        self.rsi_avg_loss = 0.0
+        self.rsi_count = 0
 
         self.prev_close: Optional[float] = None
         self.prev_macd_hist: Optional[float] = None
@@ -213,28 +223,20 @@ class AIHybridStrategy(StrategyBase):
             raise RuntimeError("AI client is not initialized. Set anthropic_api_key or ANTHROPIC_API_KEY.")
 
         system_prompt = (
-            "You are an advanced quantitative crypto trading assistant. "
-            "action must be BUY, SELL, or HOLD. confidence must be between 0 and 1."
-            "Return ONLY valid JSON. No markdown, no explanation. "
-            'Example: {"action":"SELL","confidence":0.72,"reason":"trend down"}'
+            "You are an advanced quantitative crypto trading assistant.\n\n"
+            "Make a trading decision based ONLY on the provided data.\n\n"
+            "Rules:\n"
+            "- Respect risk_rules strictly\n"
+            "- Do NOT chase overextended moves\n"
+            "- Prefer HOLD over bad trades\n"
+            "- If already in position, decide whether to HOLD or EXIT using side action"
+            " (SELL exits BUY/LONG, BUY exits SELL/SHORT).\n\n"
+            "Respond in JSON:\n"
+            "{\"action\":\"BUY | SELL | HOLD\",\"confidence\":0..1,\"reason\":\"short explanation\"}\n"
+            "Return ONLY valid JSON."
         )
 
-        user_payload = {
-            "symbol": self.config.symbol,
-            "interval": self.config.interval,
-            "features": payload,
-            "local_signal": {
-                "action": local_action,
-                "confidence": round(local_confidence, 4),
-            },
-            "constraints": {
-                "prefer_trend_following": True,
-                "avoid_low_confidence_entries": True,
-                "risk_first": True,
-            },
-        }
-
-        user_payload_text = json.dumps(user_payload, separators=(",", ":"))
+        user_payload_text = json.dumps(payload, separators=(",", ":"))
         print(
             (
                 f"[AI_REQUEST] symbol={self.config.symbol} interval={self.config.interval} "
@@ -276,7 +278,7 @@ class AIHybridStrategy(StrategyBase):
             parsed = self._extract_json(raw_text)
 
             action = str(parsed.get("action", "HOLD")).upper()
-            if action not in {"BUY", "SELL", "HOLD"}:
+            if action not in {"BUY", "SELL", "HOLD", "EXIT"}:
                 action = "HOLD"
 
             confidence = float(parsed.get("confidence", local_confidence))
@@ -301,6 +303,125 @@ class AIHybridStrategy(StrategyBase):
                 flush=True,
             )
             raise RuntimeError(f"LLM request failed: {type(exc).__name__}:{exc}") from exc
+
+    @staticmethod
+    def _trend_label(ema_fast: float, ema_slow: float) -> str:
+        if ema_fast > ema_slow:
+            return "bullish"
+        if ema_fast < ema_slow:
+            return "bearish"
+        return "sideways"
+
+    @staticmethod
+    def _interval_to_minutes(interval: str) -> int:
+        raw = str(interval or "").strip().lower()
+        if not raw:
+            return 1
+        if raw.endswith("m") and raw[:-1].isdigit():
+            return max(1, int(raw[:-1]))
+        if raw.endswith("h") and raw[:-1].isdigit():
+            return max(1, int(raw[:-1]) * 60)
+        if raw.endswith("d") and raw[:-1].isdigit():
+            return max(1, int(raw[:-1]) * 1440)
+        return 1
+
+    def _update_rsi(self, close: float) -> Optional[float]:
+        if self.prev_close is None:
+            return None
+
+        delta = close - self.prev_close
+        gain = max(delta, 0.0)
+        loss = max(-delta, 0.0)
+
+        self.rsi_count += 1
+        if self.rsi_count <= self.rsi_period:
+            scale = float(self.rsi_count)
+            self.rsi_avg_gain = ((self.rsi_avg_gain * (scale - 1.0)) + gain) / scale
+            self.rsi_avg_loss = ((self.rsi_avg_loss * (scale - 1.0)) + loss) / scale
+            if self.rsi_count < self.rsi_period:
+                return None
+        else:
+            period = float(self.rsi_period)
+            self.rsi_avg_gain = ((self.rsi_avg_gain * (period - 1.0)) + gain) / period
+            self.rsi_avg_loss = ((self.rsi_avg_loss * (period - 1.0)) + loss) / period
+
+        if self.rsi_avg_loss == 0.0:
+            return 100.0
+        rs = self.rsi_avg_gain / self.rsi_avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    def _build_ai_payload(
+        self,
+        candle: Candle,
+        ema_fast: float,
+        ema_slow: float,
+        macd_hist: float,
+        atr: float,
+        rsi: Optional[float],
+    ) -> Dict[str, Any]:
+        distance_from_ema = ((candle.close - ema_slow) / ema_slow * 100.0) if ema_slow else 0.0
+
+        payload: Dict[str, Any] = {
+            "symbol": self.config.symbol,
+            "timeframe": self.config.interval,
+            "trend": {
+                "ema_fast": round(ema_fast, 8),
+                "ema_slow": round(ema_slow, 8),
+                "trend": self._trend_label(ema_fast, ema_slow),
+            },
+            "momentum": {
+                "rsi": round(rsi if rsi is not None else 50.0, 4),
+                "macd_hist": round(macd_hist, 8),
+            },
+            "volatility": {
+                "atr": round(atr, 8),
+            },
+            "price_action": {
+                "last_price": round(candle.close, 8),
+                "distance_from_ema": round(distance_from_ema, 6),
+            },
+            "risk_rules": {
+                "max_loss": -abs(round(self.stop_loss_pct, 6)),
+                "target_profit": abs(round(self.take_profit_pct, 6)),
+                "max_positions": max(1, self.max_positions),
+            },
+        }
+
+        if self.position_side in {"LONG", "SHORT"} and self.entry_price is not None and self.entry_price != 0:
+            if self.position_side == "LONG":
+                pnl_pct = (candle.close - self.entry_price) / self.entry_price * 100.0
+                side = "BUY"
+            else:
+                pnl_pct = (self.entry_price - candle.close) / self.entry_price * 100.0
+                side = "SELL"
+
+            hold_minutes = max(1, self.bars_in_pos * self._interval_to_minutes(self.config.interval))
+            payload["position"] = {
+                "side": side,
+                "entry": round(self.entry_price, 8),
+                "pnl": round(pnl_pct, 4),
+                "holding_time": f"{hold_minutes}m",
+            }
+
+        return payload
+
+    def _update_bar_state(
+        self,
+        candle: Candle,
+        macd_hist: float,
+        ema_spread_pct: float,
+        vwap_gap_pct: float,
+        atr_pct: float,
+        ret_1_pct: float,
+    ) -> None:
+        self.prev_close = candle.close
+        self.prev_macd_hist = macd_hist
+        self.prev_ema_spread_pct = ema_spread_pct
+        self.prev_vwap_gap_pct = vwap_gap_pct
+        self.prev_atr_pct = atr_pct
+        self.recent_returns_pct.append(ret_1_pct)
+        self.recent_macd_hist.append(macd_hist)
+        self.recent_atr_pct.append(atr_pct)
 
     def _test_llm_on_init(self) -> None:
         if self.ai_client is None:
@@ -435,57 +556,28 @@ class AIHybridStrategy(StrategyBase):
         vwap_gap_pct = (candle.close - vwap_px) / vwap_px * 100.0 if vwap_px != 0 else 0.0
         atr_pct = atr / candle.close * 100.0 if candle.close != 0 else 0.0
         ret_1_pct = ((candle.close - self.prev_close) / self.prev_close * 100.0) if self.prev_close else 0.0
+        rsi = self._update_rsi(candle.close)
 
         if is_warmup:
-            self.prev_close = candle.close
-            self.prev_macd_hist = macd_hist
-            self.prev_ema_spread_pct = ema_spread_pct
-            self.prev_vwap_gap_pct = vwap_gap_pct
-            self.prev_atr_pct = atr_pct
-            self.recent_returns_pct.append(ret_1_pct)
-            self.recent_macd_hist.append(macd_hist)
-            self.recent_atr_pct.append(atr_pct)
+            self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)
             return None
 
         local_action, local_confidence = self._local_signal(candle, ema_fast, ema_slow, vwap_px, macd_hist, atr)
+        ai_payload = self._build_ai_payload(candle, ema_fast, ema_slow, macd_hist, atr, rsi)
 
-        features = {
-            "close": round(candle.close, 8),
-            "ema_fast": round(ema_fast, 8),
-            "ema_slow": round(ema_slow, 8),
-            "vwap": round(vwap_px, 8),
-            "macd": round(macd_line, 8),
-            "signal": round(signal_line, 8),
-            "macd_hist": round(macd_hist, 8),
-            "atr": round(atr, 8),
-            "ema_spread_pct": round(ema_spread_pct, 6),
-            "vwap_gap_pct": round(vwap_gap_pct, 6),
-            "atr_pct": round(atr_pct, 6),
-            "ret_1_pct": round(ret_1_pct, 6),
-            "quote_volume": round(candle.quote_volume, 8),
-            "taker_quote_volume": round(candle.taker_quote_volume, 8),
-            "trade_count": int(candle.trade_count),
-            "lag": {
-                "close_prev": round(self.prev_close or candle.close, 8),
-                "macd_hist_prev": round(self.prev_macd_hist or 0.0, 8),
-                "ema_spread_pct_prev": round(self.prev_ema_spread_pct or 0.0, 6),
-                "vwap_gap_pct_prev": round(self.prev_vwap_gap_pct or 0.0, 6),
-                "atr_pct_prev": round(self.prev_atr_pct or 0.0, 6),
-            },
-            "delta": {
-                "macd_hist_delta": round(macd_hist - (self.prev_macd_hist or macd_hist), 8),
-                "ema_spread_pct_delta": round(ema_spread_pct - (self.prev_ema_spread_pct or ema_spread_pct), 6),
-                "vwap_gap_pct_delta": round(vwap_gap_pct - (self.prev_vwap_gap_pct or vwap_gap_pct), 6),
-                "atr_pct_delta": round(atr_pct - (self.prev_atr_pct or atr_pct), 6),
-            },
-            "window": {
-                "returns_5": {k: round(v, 6) for k, v in self._window_stats(self.recent_returns_pct).items()},
-                "macd_hist_5": {k: round(v, 8) for k, v in self._window_stats(self.recent_macd_hist).items()},
-                "atr_pct_5": {k: round(v, 6) for k, v in self._window_stats(self.recent_atr_pct).items()},
-            },
-        }
+        queried = self.use_ai and self.ai_client is not None and self.bar_count % self.ai_interval_bars == 0
+        if queried:
+            ai_action, ai_confidence, ai_reason = self._ai_signal(ai_payload, local_action, local_confidence)
+        else:
+            ai_action, ai_confidence, ai_reason = local_action, local_confidence, "LOCAL_FALLBACK"
 
-        ai_action, ai_confidence, ai_reason = self._ai_signal(features, local_action, local_confidence)
+        if ai_action == "EXIT":
+            if self.position_side == "LONG":
+                ai_action = "SELL"
+            elif self.position_side == "SHORT":
+                ai_action = "BUY"
+            else:
+                ai_action = "HOLD"
 
         final_action = ai_action
         final_confidence = ai_confidence
@@ -495,7 +587,7 @@ class AIHybridStrategy(StrategyBase):
                 f"[AI_DECISION] symbol={self.config.symbol} interval={self.config.interval} "
                 f"close={candle.close:.6f} local={local_action}:{local_confidence:.4f} "
                 f"ai={ai_action}:{ai_confidence:.4f} final={final_action}:{final_confidence:.4f} "
-                f"queried=True reason={ai_reason}"
+                f"queried={queried} reason={ai_reason}"
             ),
             flush=True,
         )
@@ -511,60 +603,38 @@ class AIHybridStrategy(StrategyBase):
             "vwap": round(vwap_px, 8),
             "macd_hist": round(macd_hist, 8),
             "atr": round(atr, 8),
+            "rsi": round(rsi if rsi is not None else 50.0, 4),
         }
 
+        signal = None
         risk_exit_signal = self._position_risk_exit(candle, metadata)
         if risk_exit_signal is not None:
-            return risk_exit_signal
+            signal = risk_exit_signal
+        elif self.cooldown == 0:
+            if self.position_side == "LONG" and final_action == "SELL" and final_confidence >= self.entry_confidence:
+                signal = self._close_long(candle.close, "EXIT_LONG_AI", metadata)
+            elif self.position_side == "SHORT" and final_action == "BUY" and final_confidence >= self.entry_confidence:
+                signal = self._close_short(candle.close, "EXIT_SHORT_AI", metadata)
+            elif self.position_side is None and final_confidence >= self.entry_confidence:
+                if final_action == "BUY":
+                    self.position_side = "LONG"
+                    self.entry_price = candle.close
+                    self.highest_since_entry = candle.close
+                    self.lowest_since_entry = candle.close
+                    self.bars_in_pos = 0
+                    self.cooldown = self.cooldown_bars
+                    signal = self.buy(candle.close, "ENTER_LONG_AI", metadata)
+                elif final_action == "SELL":
+                    self.position_side = "SHORT"
+                    self.entry_price = candle.close
+                    self.highest_since_entry = candle.close
+                    self.lowest_since_entry = candle.close
+                    self.bars_in_pos = 0
+                    self.cooldown = self.cooldown_bars
+                    signal = self.sell(candle.close, "ENTER_SHORT_AI", metadata)
 
-        if self.cooldown > 0:
-            return None
-
-        if self.position_side is None and final_confidence >= self.entry_confidence:
-            if final_action == "BUY":
-                self.position_side = "LONG"
-                self.entry_price = candle.close
-                self.highest_since_entry = candle.close
-                self.lowest_since_entry = candle.close
-                self.bars_in_pos = 0
-                self.cooldown = self.cooldown_bars
-                self.prev_close = candle.close
-                self.prev_macd_hist = macd_hist
-                self.prev_ema_spread_pct = ema_spread_pct
-                self.prev_vwap_gap_pct = vwap_gap_pct
-                self.prev_atr_pct = atr_pct
-                self.recent_returns_pct.append(ret_1_pct)
-                self.recent_macd_hist.append(macd_hist)
-                self.recent_atr_pct.append(atr_pct)
-                return self.buy(candle.close, "ENTER_LONG_AI", metadata)
-
-            if final_action == "SELL":
-                self.position_side = "SHORT"
-                self.entry_price = candle.close
-                self.highest_since_entry = candle.close
-                self.lowest_since_entry = candle.close
-                self.bars_in_pos = 0
-                self.cooldown = self.cooldown_bars
-                self.prev_close = candle.close
-                self.prev_macd_hist = macd_hist
-                self.prev_ema_spread_pct = ema_spread_pct
-                self.prev_vwap_gap_pct = vwap_gap_pct
-                self.prev_atr_pct = atr_pct
-                self.recent_returns_pct.append(ret_1_pct)
-                self.recent_macd_hist.append(macd_hist)
-                self.recent_atr_pct.append(atr_pct)
-                return self.sell(candle.close, "ENTER_SHORT_AI", metadata)
-
-            self.prev_close = candle.close
-            self.prev_macd_hist = macd_hist
-            self.prev_ema_spread_pct = ema_spread_pct
-            self.prev_vwap_gap_pct = vwap_gap_pct
-            self.prev_atr_pct = atr_pct
-            self.recent_returns_pct.append(ret_1_pct)
-            self.recent_macd_hist.append(macd_hist)
-            self.recent_atr_pct.append(atr_pct)
-
-        return None
+        self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)
+        return signal
 
 
 def build_runtime_config(section: dict) -> RuntimeConfig:
