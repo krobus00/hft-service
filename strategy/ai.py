@@ -59,6 +59,9 @@ class AIHybridStrategy(StrategyBase):
         "recent_returns_pct",
         "recent_macd_hist",
         "recent_atr_pct",
+        "last_ai_action",
+        "last_ai_confidence",
+        "last_ai_reason",
         "intrabar_risk_guard",
     )
 
@@ -114,6 +117,9 @@ class AIHybridStrategy(StrategyBase):
         self.recent_returns_pct = deque(maxlen=5)
         self.recent_macd_hist = deque(maxlen=5)
         self.recent_atr_pct = deque(maxlen=5)
+        self.last_ai_action = "HOLD"
+        self.last_ai_confidence = 0.0
+        self.last_ai_reason = "INIT"
         self.intrabar_risk_guard = False
 
         api_key = (
@@ -220,7 +226,7 @@ class AIHybridStrategy(StrategyBase):
             "max": max(arr),
         }
 
-    def _ai_signal(self, payload: Dict[str, Any], local_action: str, local_confidence: float) -> Tuple[str, float, str]:
+    def _ai_signal(self, payload: Dict[str, Any]) -> Tuple[str, float, str]:
         if self.intrabar_risk_guard:
             raise RuntimeError("LLM call is blocked during intrabar risk checks")
         if self.ai_client is None:
@@ -244,7 +250,7 @@ class AIHybridStrategy(StrategyBase):
         print(
             (
                 f"[AI_REQUEST] symbol={self.config.symbol} interval={self.config.interval} "
-                f"model={self.model_name} local={local_action}:{local_confidence:.4f} "
+                f"model={self.model_name} "
                 f"system_prompt={self._truncate_for_log(system_prompt)} "
                 f"payload={self._truncate_for_log(user_payload_text)}"
             ),
@@ -285,7 +291,7 @@ class AIHybridStrategy(StrategyBase):
             if action not in {"BUY", "SELL", "HOLD", "EXIT"}:
                 action = "HOLD"
 
-            confidence = float(parsed.get("confidence", local_confidence))
+            confidence = float(parsed.get("confidence", 0.0))
             confidence = max(0.0, min(1.0, confidence))
 
             reason = str(parsed.get("reason", "AI_DECISION"))[:160]
@@ -388,6 +394,23 @@ class AIHybridStrategy(StrategyBase):
                 "max_loss": -abs(round(self.stop_loss_pct, 6)),
                 "target_profit": abs(round(self.take_profit_pct, 6)),
                 "max_positions": max(1, self.max_positions),
+            },
+            "previous_trade_condition": {
+                "prev_close": round(self.prev_close, 8) if self.prev_close is not None else None,
+                "prev_macd_hist": round(self.prev_macd_hist, 8) if self.prev_macd_hist is not None else None,
+                "prev_ema_spread_pct": round(self.prev_ema_spread_pct, 6)
+                if self.prev_ema_spread_pct is not None
+                else None,
+                "prev_vwap_gap_pct": round(self.prev_vwap_gap_pct, 6) if self.prev_vwap_gap_pct is not None else None,
+                "prev_atr_pct": round(self.prev_atr_pct, 6) if self.prev_atr_pct is not None else None,
+                "recent_returns_pct": self._window_stats(self.recent_returns_pct),
+                "recent_macd_hist": self._window_stats(self.recent_macd_hist),
+                "recent_atr_pct": self._window_stats(self.recent_atr_pct),
+                "last_ai": {
+                    "action": self.last_ai_action,
+                    "confidence": round(self.last_ai_confidence, 4),
+                    "reason": self.last_ai_reason,
+                },
             },
         }
 
@@ -590,14 +613,10 @@ class AIHybridStrategy(StrategyBase):
             self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)
             return None
 
-        local_action, local_confidence = self._local_signal(candle, ema_fast, ema_slow, vwap_px, macd_hist, atr)
         ai_payload = self._build_ai_payload(candle, ema_fast, ema_slow, macd_hist, atr, rsi)
 
-        queried = self.use_ai and self.ai_client is not None and self.bar_count % self.ai_interval_bars == 0
-        if queried:
-            ai_action, ai_confidence, ai_reason = self._ai_signal(ai_payload, local_action, local_confidence)
-        else:
-            ai_action, ai_confidence, ai_reason = local_action, local_confidence, "LOCAL_FALLBACK"
+        ai_action, ai_confidence, ai_reason = self._ai_signal(ai_payload)
+        queried = True
 
         if ai_action == "EXIT":
             if self.position_side == "LONG":
@@ -609,23 +628,27 @@ class AIHybridStrategy(StrategyBase):
 
         final_action = ai_action
         final_confidence = ai_confidence
+        self.last_ai_action = ai_action
+        self.last_ai_confidence = ai_confidence
+        self.last_ai_reason = ai_reason
 
         print(
             (
                 f"[AI_DECISION] symbol={self.config.symbol} interval={self.config.interval} "
-                f"close={candle.close:.6f} local={local_action}:{local_confidence:.4f} "
-                f"ai={ai_action}:{ai_confidence:.4f} final={final_action}:{final_confidence:.4f} "
+                f"close={candle.close:.6f} ai={ai_action}:{ai_confidence:.4f} "
+                f"final={final_action}:{final_confidence:.4f} "
                 f"queried={queried} reason={ai_reason}"
             ),
             flush=True,
         )
 
         metadata = {
-            "local_action": local_action,
-            "local_confidence": round(local_confidence, 4),
+            "local_action": "DISABLED",
+            "local_confidence": 0.0,
             "ai_action": ai_action,
             "ai_confidence": round(ai_confidence, 4),
             "ai_reason": ai_reason,
+            "previous_trade_condition": ai_payload.get("previous_trade_condition", {}),
             "ema_fast": round(ema_fast, 8),
             "ema_slow": round(ema_slow, 8),
             "vwap": round(vwap_px, 8),
