@@ -196,16 +196,22 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 		return entity.OrderRequest{}, errors.New("invalid quantity")
 	}
 
+	marketType := entity.NormalizeMarketType(req.MarketType)
+	side := entity.NormalizeOrderSideByMarket(req.Side, marketType)
+	if side == "" {
+		return entity.OrderRequest{}, errors.New("invalid side for market_type")
+	}
+
 	return entity.OrderRequest{
 		RequestID:      req.RequestID,
 		UserID:         req.UserID,
 		OrderID:        null.NewString(req.OrderID, req.OrderID != "").Ptr(),
 		Exchange:       req.Exchange,
-		MarketType:     string(entity.NormalizeMarketType(req.MarketType)),
+		MarketType:     string(marketType),
 		PositionSide:   string(entity.NormalizePositionSide(req.PositionSide)),
 		Symbol:         req.Symbol,
 		Type:           entity.OrderType(strings.ToUpper(req.Type)),
-		Side:           entity.OrderSide(strings.ToUpper(req.Side)),
+		Side:           side,
 		Price:          price,
 		Quantity:       quantity,
 		RequestedAt:    req.RequestedAt,

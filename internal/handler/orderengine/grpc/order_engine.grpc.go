@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 
 	"github.com/guregu/null/v6"
 	"github.com/krobus00/hft-service/internal/entity"
@@ -39,16 +40,22 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
+	marketType := entity.NormalizeMarketType(req.GetMarketType())
+	normalizedSide := entity.NormalizeOrderSideByMarket(req.GetSide(), marketType)
+	if normalizedSide == "" {
+		return nil, errors.New("invalid side for market_type")
+	}
+
 	orderHistory, err := s.orderEngineService.PlaceOrder(ctx, entity.OrderRequest{
 		RequestID:      req.GetRequestId(),
 		UserID:         req.GetUserId(),
 		Exchange:       req.GetExchange(),
-		MarketType:     string(entity.NormalizeMarketType(req.GetMarketType())),
+		MarketType:     string(marketType),
 		PositionSide:   string(entity.NormalizePositionSide(req.GetPositionSide())),
 		OrderID:        null.NewString(req.GetOrderId(), req.GetOrderId() != "").Ptr(),
 		Symbol:         req.GetSymbol(),
 		Type:           entity.OrderType(req.GetType()),
-		Side:           entity.OrderSide(req.GetSide()),
+		Side:           normalizedSide,
 		Price:          price,
 		Quantity:       quantity,
 		RequestedAt:    req.GetRequestedAt(),

@@ -345,7 +345,6 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 	started := 0
 
 	for _, marketType := range typesToRun {
-		marketType := marketType
 		deps := exchangeKlineResyncDeps{
 			ExchangeName:      entity.ExchangeBinance,
 			MarketType:        marketType,
@@ -431,6 +430,10 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 
 	marketType := e.resolveMarketType(order.MarketType)
 	order.MarketType = string(marketType)
+	order.Side = entity.NormalizeOrderSideByMarket(string(order.Side), marketType)
+	if order.Side == "" {
+		return nil, fmt.Errorf("unsupported order side for market type %s", marketType)
+	}
 
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeBinance,
@@ -450,7 +453,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		return nil, err
 	}
 
-	sideCode, err := binanceOrderSideCode(order.Side)
+	sideCode, err := binanceOrderSideCode(order.Side, marketType)
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +575,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		}
 
 		if marketType == entity.MarketTypeFutures && apiErr.Code == -4061 {
-			if alternatePositionSide, ok := alternateFuturesPositionSide(futuresPositionSide, order.Side); ok && alternatePositionSide != futuresPositionSide {
+			if alternatePositionSide, ok := alternateFuturesPositionSide(futuresPositionSide, sideCode); ok && alternatePositionSide != futuresPositionSide {
 				logrus.WithFields(logrus.Fields{
 					"market_type":             marketType,
 					"symbol":                  orderSymbol,
@@ -767,6 +770,19 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 	historySide, err := binanceOrderSideFromCode(resp.Side)
 	if err != nil {
 		return entity.OrderHistory{}, err
+	}
+	if marketType == entity.MarketTypeFutures {
+		historySide = entity.NormalizeOrderSideByMarket(string(order.Side), marketType)
+		if historySide == "" {
+			switch strings.ToUpper(strings.TrimSpace(resp.Side)) {
+			case "BUY":
+				historySide = entity.OrderSideLong
+			case "SELL":
+				historySide = entity.OrderSideShort
+			default:
+				return entity.OrderHistory{}, fmt.Errorf("unsupported binance futures order side code: %s", resp.Side)
+			}
+		}
 	}
 
 	historyType, err := binanceOrderTypeFromCode(resp.Type)
@@ -965,14 +981,30 @@ func binanceOrderTypeCode(orderType entity.OrderType) (string, error) {
 	}
 }
 
-func binanceOrderSideCode(orderSide entity.OrderSide) (string, error) {
-	switch orderSide {
+func binanceOrderSideCode(orderSide entity.OrderSide, marketType entity.MarketType) (string, error) {
+	normalized := entity.NormalizeOrderSideByMarket(string(orderSide), marketType)
+	if normalized == "" {
+		return "", fmt.Errorf("unsupported order side for binance: %s", orderSide)
+	}
+
+	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures {
+		switch normalized {
+		case entity.OrderSideLong:
+			return "BUY", nil
+		case entity.OrderSideShort:
+			return "SELL", nil
+		default:
+			return "", fmt.Errorf("unsupported futures order side for binance: %s", orderSide)
+		}
+	}
+
+	switch normalized {
 	case entity.OrderSideBuy:
 		return "BUY", nil
 	case entity.OrderSideSell:
 		return "SELL", nil
 	default:
-		return "", fmt.Errorf("unsupported order side for binance: %s", orderSide)
+		return "", fmt.Errorf("unsupported spot order side for binance: %s", orderSide)
 	}
 }
 
@@ -1271,7 +1303,7 @@ func (e *BinanceExchange) futuresPositionSide(order entity.OrderRequest) string 
 	}
 
 	if mode == "HEDGE" {
-		if order.Side == entity.OrderSideSell {
+		if order.Side == entity.OrderSideShort {
 			return "SHORT"
 		}
 		return "LONG"
@@ -1292,17 +1324,17 @@ func normalizeBinanceFuturesPositionMode(raw string) string {
 	}
 }
 
-func alternateFuturesPositionSide(current string, side entity.OrderSide) (string, bool) {
+func alternateFuturesPositionSide(current string, sideCode string) (string, bool) {
 	switch strings.ToUpper(strings.TrimSpace(current)) {
 	case "BOTH":
-		if side == entity.OrderSideSell {
+		if strings.EqualFold(strings.TrimSpace(sideCode), "SELL") {
 			return "SHORT", true
 		}
 		return "LONG", true
 	case "LONG", "SHORT":
 		return "BOTH", true
 	default:
-		if side == entity.OrderSideSell {
+		if strings.EqualFold(strings.TrimSpace(sideCode), "SELL") {
 			return "SHORT", true
 		}
 		return "LONG", true

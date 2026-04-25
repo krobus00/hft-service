@@ -13,8 +13,10 @@ type OrderSide string
 type PositionSide string
 
 const (
-	OrderSideBuy  OrderSide = "BUY"
-	OrderSideSell OrderSide = "SELL"
+	OrderSideBuy   OrderSide = "BUY"
+	OrderSideSell  OrderSide = "SELL"
+	OrderSideLong  OrderSide = "LONG"
+	OrderSideShort OrderSide = "SHORT"
 
 	OrderTypeLimit  OrderType = "LIMIT"
 	OrderTypeMarket OrderType = "MARKET"
@@ -33,6 +35,45 @@ func NormalizePositionSide(raw string) PositionSide {
 	default:
 		return PositionSideBoth
 	}
+}
+
+func NormalizeOrderSide(raw string) OrderSide {
+	switch OrderSide(strings.ToUpper(strings.TrimSpace(raw))) {
+	case OrderSideBuy:
+		return OrderSideBuy
+	case OrderSideSell:
+		return OrderSideSell
+	case OrderSideLong:
+		return OrderSideLong
+	case OrderSideShort:
+		return OrderSideShort
+	default:
+		return ""
+	}
+}
+
+func NormalizeOrderSideByMarket(raw string, marketType MarketType) OrderSide {
+	normalized := NormalizeOrderSide(raw)
+	if normalized == "" {
+		return ""
+	}
+
+	if NormalizeMarketType(string(marketType)) == MarketTypeFutures {
+		switch normalized {
+		case OrderSideBuy, OrderSideLong:
+			return OrderSideLong
+		case OrderSideSell, OrderSideShort:
+			return OrderSideShort
+		default:
+			return ""
+		}
+	}
+
+	if normalized == OrderSideBuy || normalized == OrderSideSell {
+		return normalized
+	}
+
+	return ""
 }
 
 type OrderRequest struct {
