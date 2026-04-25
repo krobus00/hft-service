@@ -151,7 +151,9 @@ func normalizeExchangeSubscriptions(deps exchangeKlineResyncDeps, subs []entity.
 			normalized = append(normalized, sub)
 			continue
 		}
-		if string(entity.NormalizeMarketType(sub.MarketType)) != effectiveMarketType(deps.MarketType) {
+
+		subMarketType := normalizeSubscriptionMarketType(deps.ExchangeName, sub)
+		if string(subMarketType) != effectiveMarketType(deps.MarketType) {
 			continue
 		}
 
@@ -160,7 +162,7 @@ func normalizeExchangeSubscriptions(deps exchangeKlineResyncDeps, subs []entity.
 		interval := strings.TrimSpace(sub.Interval)
 
 		sub.Symbol = internalSymbol
-		sub.MarketType = effectiveMarketType(deps.MarketType)
+		sub.MarketType = string(subMarketType)
 		if sub.Payload == "" {
 			sub.Payload = buildKlineSubscriptionPayload(exchangeSymbol, interval)
 		}
@@ -254,7 +256,16 @@ func loadExchangeLatestSubscriptions(ctx context.Context, deps exchangeKlineResy
 		return normalized, nil
 	}
 
-	subs, err := deps.KlineSubRepo.GetByExchangeAndMarketType(ctx, string(deps.ExchangeName), effectiveMarketType(deps.MarketType))
+	var (
+		subs []entity.KlineSubscription
+		err  error
+	)
+	if deps.ExchangeName == entity.ExchangeBinance {
+		// Binance legacy rows may have default `spot` market_type while symbol suffix `.P` implies futures.
+		subs, err = deps.KlineSubRepo.GetByExchange(ctx, string(deps.ExchangeName))
+	} else {
+		subs, err = deps.KlineSubRepo.GetByExchangeAndMarketType(ctx, string(deps.ExchangeName), effectiveMarketType(deps.MarketType))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +279,20 @@ func loadExchangeLatestSubscriptions(ctx context.Context, deps exchangeKlineResy
 	}).Info("kline subscriptions refreshed")
 
 	return normalized, nil
+}
+
+func normalizeSubscriptionMarketType(exchange entity.ExchangeName, sub entity.KlineSubscription) entity.MarketType {
+	normalized := entity.NormalizeMarketType(sub.MarketType)
+	if exchange != entity.ExchangeBinance {
+		return normalized
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(sub.Symbol))
+	if strings.HasSuffix(symbol, ".P") {
+		return entity.MarketTypeFutures
+	}
+
+	return normalized
 }
 
 func loadExchangeResyncState(ctx context.Context, deps exchangeKlineResyncDeps) (klineResyncState, error) {

@@ -1342,6 +1342,7 @@ func (e *BinanceExchange) resolveBinanceKlineWSURL(marketType entity.MarketType,
 		}
 
 		exchangeSymbol := resolveExchangeKlineSymbolFromMapping(deps, sub.Symbol)
+		exchangeSymbol = normalizeBinanceKlineStreamSymbol(exchangeSymbol, marketType)
 		exchangeSymbol = strings.ToLower(strings.TrimSpace(exchangeSymbol))
 		interval := strings.TrimSpace(sub.Interval)
 		if exchangeSymbol == "" || interval == "" {
@@ -1367,6 +1368,23 @@ func (e *BinanceExchange) resolveBinanceKlineWSURL(marketType entity.MarketType,
 	parsed.RawQuery = query.Encode()
 
 	return parsed.String()
+}
+
+func normalizeBinanceKlineStreamSymbol(symbol string, marketType entity.MarketType) string {
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalized == "" {
+		return ""
+	}
+
+	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures && strings.HasSuffix(normalized, ".P") {
+		normalized = strings.TrimSuffix(normalized, ".P")
+	}
+
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	normalized = strings.ReplaceAll(normalized, ".", "")
+
+	return normalized
 }
 
 func (e *BinanceExchange) symbolPrecisionCacheKey(marketType entity.MarketType, symbol string) string {
