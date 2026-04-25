@@ -161,7 +161,9 @@ func normalizeExchangeSubscriptions(deps exchangeKlineResyncDeps, subs []entity.
 
 		sub.Symbol = internalSymbol
 		sub.MarketType = effectiveMarketType(deps.MarketType)
-		sub.Payload = buildKlineSubscriptionPayload(exchangeSymbol, interval)
+		if sub.Payload == "" {
+			sub.Payload = buildKlineSubscriptionPayload(exchangeSymbol, interval)
+		}
 		normalized = append(normalized, sub)
 	}
 
