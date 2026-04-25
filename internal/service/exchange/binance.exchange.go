@@ -216,8 +216,6 @@ func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) e
 func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, message []byte, marketType entity.MarketType) error {
 	market := entity.NormalizeMarketType(string(marketType))
 
-	fmt.Printf("Received Binance kline data for market type %s: %s\n", market, string(message))
-
 	var wsResponse struct {
 		Result any    `json:"result"`
 		ID     any    `json:"id"`
@@ -386,6 +384,7 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 	started := 0
 
 	for _, marketType := range typesToRun {
+		marketType := marketType
 		deps := exchangeKlineResyncDeps{
 			ExchangeName:      entity.ExchangeBinance,
 			MarketType:        marketType,
@@ -405,8 +404,15 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 				ExchangeName: entity.ExchangeBinance,
 				WSURLEnvKey:  e.wsURLEnvKeyByMarketType(marketType),
 				DefaultWSURL: e.defaultWSURLByMarketType(marketType),
+				ResolveWSURL: func(subscriptions []entity.KlineSubscription) string {
+					return e.resolveBinanceKlineWSURL(marketType, deps, subscriptions)
+				},
 				NormalizeSubs: func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription {
-					return normalizeExchangeSubscriptions(deps, subscriptions)
+					normalized := normalizeExchangeSubscriptions(deps, subscriptions)
+					for i := range normalized {
+						normalized[i].Payload = ""
+					}
+					return normalized
 				},
 				Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
 					return resyncSymbolMappingAndSubscriptions(
@@ -1309,10 +1315,58 @@ func (e *BinanceExchange) wsURLEnvKeyByMarketType(marketType entity.MarketType) 
 
 func (e *BinanceExchange) defaultWSURLByMarketType(marketType entity.MarketType) string {
 	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures {
-		return "wss://fstream.binance.com/ws"
+		return "wss://fstream.binance.com/stream"
 	}
 
 	return "wss://stream.binance.com:9443/stream"
+}
+
+func (e *BinanceExchange) resolveBinanceKlineWSURL(marketType entity.MarketType, deps exchangeKlineResyncDeps, subscriptions []entity.KlineSubscription) string {
+	wsURL := strings.TrimSpace(os.Getenv(e.wsURLEnvKeyByMarketType(marketType)))
+	if wsURL == "" {
+		wsURL = e.defaultWSURLByMarketType(marketType)
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(wsURL))
+	if err != nil {
+		return wsURL
+	}
+
+	streams := make([]string, 0, len(subscriptions))
+	for _, sub := range subscriptions {
+		if sub.Exchange != string(entity.ExchangeBinance) {
+			continue
+		}
+		if string(entity.NormalizeMarketType(sub.MarketType)) != string(entity.NormalizeMarketType(string(marketType))) {
+			continue
+		}
+
+		exchangeSymbol := resolveExchangeKlineSymbolFromMapping(deps, sub.Symbol)
+		exchangeSymbol = strings.ToLower(strings.TrimSpace(exchangeSymbol))
+		interval := strings.TrimSpace(sub.Interval)
+		if exchangeSymbol == "" || interval == "" {
+			continue
+		}
+
+		streams = append(streams, exchangeSymbol+"@kline_"+interval)
+	}
+
+	if len(streams) == 0 {
+		return wsURL
+	}
+
+	if strings.HasSuffix(parsed.Path, "/ws") {
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/ws") + "/stream"
+	}
+	if !strings.HasSuffix(parsed.Path, "/stream") {
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/stream"
+	}
+
+	query := parsed.Query()
+	query.Set("streams", strings.Join(streams, "/"))
+	parsed.RawQuery = query.Encode()
+
+	return parsed.String()
 }
 
 func (e *BinanceExchange) symbolPrecisionCacheKey(marketType entity.MarketType, symbol string) string {

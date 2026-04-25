@@ -18,6 +18,7 @@ type klineWSSubscriberConfig struct {
 	ExchangeName    entity.ExchangeName
 	WSURLEnvKey     string
 	DefaultWSURL    string
+	ResolveWSURL    func(subscriptions []entity.KlineSubscription) string
 	NormalizeSubs   func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription
 	Resync          func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error)
 	LoadResyncState func(ctx context.Context) (klineResyncState, error)
@@ -27,16 +28,6 @@ type klineWSSubscriberConfig struct {
 func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriberConfig, subscriptions []entity.KlineSubscription) error {
 	if cfg.HandleMessage == nil {
 		return fmt.Errorf("%s handle message function is required", cfg.ExchangeName)
-	}
-
-	wsURL := strings.TrimSpace(os.Getenv(cfg.WSURLEnvKey))
-	if wsURL == "" {
-		wsURL = cfg.DefaultWSURL
-	}
-
-	wsHost, err := url.Parse(wsURL)
-	if err != nil {
-		return fmt.Errorf("invalid %s ws url: %w", cfg.ExchangeName, err)
 	}
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -89,6 +80,21 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			return nil
 		}
 
+		wsURL := strings.TrimSpace(os.Getenv(cfg.WSURLEnvKey))
+		if wsURL == "" {
+			wsURL = cfg.DefaultWSURL
+		}
+		if cfg.ResolveWSURL != nil {
+			if resolved := strings.TrimSpace(cfg.ResolveWSURL(activeSubscriptions)); resolved != "" {
+				wsURL = resolved
+			}
+		}
+
+		wsHost, err := url.Parse(wsURL)
+		if err != nil {
+			return fmt.Errorf("invalid %s ws url: %w", cfg.ExchangeName, err)
+		}
+
 		logrus.Infof("connecting to %s", wsHost.String())
 		dialer := *websocket.DefaultDialer
 		dialer.HandshakeTimeout = wsDialTimeout
@@ -117,6 +123,9 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 
 		for _, v := range activeSubscriptions {
 			if v.Exchange != string(cfg.ExchangeName) {
+				continue
+			}
+			if strings.TrimSpace(v.Payload) == "" {
 				continue
 			}
 
