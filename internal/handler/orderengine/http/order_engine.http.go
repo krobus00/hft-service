@@ -39,6 +39,7 @@ type PlaceOrderRequest struct {
 	ExpiredAt      int64  `json:"expired_at"`
 	Source         string `json:"source"`
 	StrategyID     string `json:"strategy_id"`
+	TradeCondition string `json:"trade_condition"`
 	IsPaperTrading bool   `json:"is_paper_trading"`
 }
 
@@ -67,6 +68,7 @@ type PlaceOrderResponse struct {
 	AcknowledgedAt    *int64  `json:"acknowledged_at,omitempty"`
 	FilledAt          *int64  `json:"filled_at,omitempty"`
 	StrategyID        *string `json:"strategy_id,omitempty"`
+	TradeCondition    string  `json:"trade_condition"`
 	ErrorMessage      *string `json:"error_message,omitempty"`
 	CreatedAt         int64   `json:"created_at"`
 	UpdatedAt         int64   `json:"updated_at"`
@@ -218,6 +220,7 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 		ExpiredAt:      null.NewInt(req.ExpiredAt, req.ExpiredAt != 0).Ptr(),
 		Source:         req.Source,
 		StrategyID:     null.NewString(req.StrategyID, req.StrategyID != "").Ptr(),
+		TradeCondition: req.TradeCondition,
 		IsPaperTrading: req.IsPaperTrading,
 	}, nil
 }
@@ -320,6 +323,7 @@ func mapOrderHistoryToHTTPResponse(orderHistory *entity.OrderHistory) *PlaceOrde
 		AcknowledgedAt:    acknowledgedAt,
 		FilledAt:          filledAt,
 		StrategyID:        strategyID,
+		TradeCondition:    orderHistory.TradeCondition,
 		ErrorMessage:      errorMessage,
 		CreatedAt:         orderHistory.CreatedAt.UnixMilli(),
 		UpdatedAt:         orderHistory.UpdatedAt.UnixMilli(),

@@ -183,6 +183,7 @@ krobot01:
   cooldown_bars: 1
   take_profit_pct: 0.25
   stop_loss_pct: 0.15
+  trailing_stop_pct: 0.12
 
 template:
   name: TEMPLATE

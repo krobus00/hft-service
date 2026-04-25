@@ -517,13 +517,13 @@ class AIHybridStrategy(StrategyBase):
             trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
 
             if high_px >= tp_px:
-                return self._close_long(candle.close, "TP_LONG", metadata)
+                return self._close_long(candle.close, "TAKE_PROFIT_LONG", metadata)
             if low_px <= sl_px:
-                return self._close_long(candle.close, "SL_LONG", metadata)
+                return self._close_long(candle.close, "STOP_LOSS_LONG", metadata)
             if low_px <= trail_px:
-                return self._close_long(candle.close, "TRAIL_LONG", metadata)
+                return self._close_long(candle.close, "TRAILING_STOP_LONG", metadata)
             if advance_bar and self.bars_in_pos >= self.max_hold_bars:
-                return self._close_long(candle.close, "TIME_LONG", metadata)
+                return self._close_long(candle.close, "EXIT_LONG_TIMEOUT", metadata)
 
         if self.position_side == "SHORT" and self.entry_price is not None:
             if advance_bar:
@@ -538,13 +538,13 @@ class AIHybridStrategy(StrategyBase):
             trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
 
             if low_px <= tp_px:
-                return self._close_short(candle.close, "TP_SHORT", metadata)
+                return self._close_short(candle.close, "TAKE_PROFIT_SHORT", metadata)
             if high_px >= sl_px:
-                return self._close_short(candle.close, "SL_SHORT", metadata)
+                return self._close_short(candle.close, "STOP_LOSS_SHORT", metadata)
             if high_px >= trail_px:
-                return self._close_short(candle.close, "TRAIL_SHORT", metadata)
+                return self._close_short(candle.close, "TRAILING_STOP_SHORT", metadata)
             if advance_bar and self.bars_in_pos >= self.max_hold_bars:
-                return self._close_short(candle.close, "TIME_SHORT", metadata)
+                return self._close_short(candle.close, "EXIT_SHORT_TIMEOUT", metadata)
 
         return None
 
@@ -565,22 +565,42 @@ class AIHybridStrategy(StrategyBase):
             self.intrabar_risk_guard = False
 
     def _close_long(self, price: float, reason: str, metadata: Dict[str, Any]):
+        tagged_metadata = dict(metadata)
+        if "trade_condition" not in tagged_metadata:
+            if reason.startswith("TAKE_PROFIT"):
+                tagged_metadata["trade_condition"] = "TAKE_PROFIT"
+            elif reason.startswith("STOP_LOSS"):
+                tagged_metadata["trade_condition"] = "STOP_LOSS"
+            elif reason.startswith("TRAILING_STOP"):
+                tagged_metadata["trade_condition"] = "TRAILING_STOP"
+            else:
+                tagged_metadata["trade_condition"] = "EXIT"
         self.position_side = None
         self.entry_price = None
         self.highest_since_entry = None
         self.lowest_since_entry = None
         self.bars_in_pos = 0
         self.cooldown = self.cooldown_bars
-        return self.sell(price, reason, metadata)
+        return self.sell(price, reason, tagged_metadata)
 
     def _close_short(self, price: float, reason: str, metadata: Dict[str, Any]):
+        tagged_metadata = dict(metadata)
+        if "trade_condition" not in tagged_metadata:
+            if reason.startswith("TAKE_PROFIT"):
+                tagged_metadata["trade_condition"] = "TAKE_PROFIT"
+            elif reason.startswith("STOP_LOSS"):
+                tagged_metadata["trade_condition"] = "STOP_LOSS"
+            elif reason.startswith("TRAILING_STOP"):
+                tagged_metadata["trade_condition"] = "TRAILING_STOP"
+            else:
+                tagged_metadata["trade_condition"] = "EXIT"
         self.position_side = None
         self.entry_price = None
         self.highest_since_entry = None
         self.lowest_since_entry = None
         self.bars_in_pos = 0
         self.cooldown = self.cooldown_bars
-        return self.buy(price, reason, metadata)
+        return self.buy(price, reason, tagged_metadata)
 
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
         if not self.allow_new_candle(candle):
@@ -674,6 +694,7 @@ class AIHybridStrategy(StrategyBase):
                     self.lowest_since_entry = candle.close
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
+                    metadata["trade_condition"] = "ENTRY"
                     signal = self.buy(candle.close, "ENTER_LONG_AI", metadata)
                 elif final_action == "SELL":
                     self.position_side = "SHORT"
@@ -682,6 +703,7 @@ class AIHybridStrategy(StrategyBase):
                     self.lowest_since_entry = candle.close
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
+                    metadata["trade_condition"] = "ENTRY"
                     signal = self.sell(candle.close, "ENTER_SHORT_AI", metadata)
 
         self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)

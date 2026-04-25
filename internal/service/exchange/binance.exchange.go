@@ -904,6 +904,7 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 		AcknowledgedAt:    acknowledgedAt,
 		FilledAt:          sql.NullTime{},
 		StrategyID:        strategyID,
+		TradeCondition:    order.TradeCondition,
 		ErrorMessage:      sql.NullString{},
 		CreatedAt:         now,
 		UpdatedAt:         now,

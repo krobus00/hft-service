@@ -170,6 +170,8 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 		order.PositionSide = string(entity.PositionSideBoth)
 	}
 
+	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
+
 	exchange, ok := s.exchanges[entity.ExchangeName(order.Exchange)]
 	if !ok {
 		logrus.Errorf("exchange not found: %s", order.Exchange)
@@ -242,6 +244,8 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 		order.PositionSide = string(entity.PositionSideBoth)
 	}
 
+	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
+
 	event := entity.OrderRequestEvent{
 		Data: order,
 	}
@@ -312,6 +316,7 @@ func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
 		AcknowledgedAt:    acknowledgedAt,
 		FilledAt:          filledAt,
 		StrategyID:        strategyID,
+		TradeCondition:    order.TradeCondition,
 		ErrorMessage:      sql.NullString{},
 		CreatedAt:         now,
 		UpdatedAt:         now,

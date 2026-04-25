@@ -23,11 +23,14 @@ class Krobot01Strategy(StrategyBase):
         "cooldown",
         "position_side",
         "entry_price",
+        "highest_since_entry",
+        "lowest_since_entry",
         "ema_period",
         "macd_ready_min",
         "cooldown_bars",
         "take_profit_pct",
         "stop_loss_pct",
+        "trailing_stop_pct",
     )
 
     def __init__(self, strategy_config: StrategyConfig, section: dict):
@@ -46,12 +49,22 @@ class Krobot01Strategy(StrategyBase):
         self.cooldown = 0
         self.position_side: Optional[str] = None
         self.entry_price: Optional[float] = None
+        self.highest_since_entry: Optional[float] = None
+        self.lowest_since_entry: Optional[float] = None
 
         self.ema_period = ema_period
         self.macd_ready_min = max(50, macd_slow + macd_signal)
         self.cooldown_bars = int(section.get("cooldown_bars", 1))
         self.take_profit_pct = float(section.get("take_profit_pct", section.get("tp_pct", 0.0)))
         self.stop_loss_pct = float(section.get("stop_loss_pct", section.get("sl_pct", 0.0)))
+        self.trailing_stop_pct = float(section.get("trailing_stop_pct", section.get("ts_pct", 0.0)))
+
+    def _reset_position(self) -> None:
+        self.position_side = None
+        self.entry_price = None
+        self.highest_since_entry = None
+        self.lowest_since_entry = None
+        self.cooldown = self.cooldown_bars
 
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
         if not self.allow_new_candle(candle):
@@ -75,31 +88,72 @@ class Krobot01Strategy(StrategyBase):
             "vwap": round(vwap_px, 8),
         }
 
+        high_px = candle.high if candle.high is not None else candle.close
+        low_px = candle.low if candle.low is not None else candle.close
+
         if self.position_side == "LONG" and self.entry_price is not None:
-            if self.stop_loss_pct > 0 and candle.close <= self.entry_price * (1.0 - pct_to_frac(self.stop_loss_pct)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = self.cooldown_bars
+            self.highest_since_entry = max(self.highest_since_entry or high_px, high_px)
+
+            sl_px = self.entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
+            tp_px = self.entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
+            trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
+
+            metadata.update(
+                {
+                    "entry_price": round(self.entry_price, 8),
+                    "high_since_entry": round(self.highest_since_entry or high_px, 8),
+                    "tp_px": round(tp_px, 8),
+                    "sl_px": round(sl_px, 8),
+                    "trail_px": round(trail_px, 8),
+                }
+            )
+
+            if self.stop_loss_pct > 0 and low_px <= sl_px:
+                metadata["trade_condition"] = "STOP_LOSS"
+                self._reset_position()
                 return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
 
-            if self.take_profit_pct > 0 and candle.close >= self.entry_price * (1.0 + pct_to_frac(self.take_profit_pct)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = self.cooldown_bars
+            if self.take_profit_pct > 0 and high_px >= tp_px:
+                metadata["trade_condition"] = "TAKE_PROFIT"
+                self._reset_position()
                 return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
 
+            if self.trailing_stop_pct > 0 and low_px <= trail_px:
+                metadata["trade_condition"] = "TRAILING_STOP"
+                self._reset_position()
+                return self.sell(candle.close, "TRAILING_STOP_LONG", metadata)
+
         if self.position_side == "SHORT" and self.entry_price is not None:
-            if self.stop_loss_pct > 0 and candle.close >= self.entry_price * (1.0 + pct_to_frac(self.stop_loss_pct)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = self.cooldown_bars
+            self.lowest_since_entry = min(self.lowest_since_entry or low_px, low_px)
+
+            sl_px = self.entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
+            tp_px = self.entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
+            trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
+
+            metadata.update(
+                {
+                    "entry_price": round(self.entry_price, 8),
+                    "low_since_entry": round(self.lowest_since_entry or low_px, 8),
+                    "tp_px": round(tp_px, 8),
+                    "sl_px": round(sl_px, 8),
+                    "trail_px": round(trail_px, 8),
+                }
+            )
+
+            if self.stop_loss_pct > 0 and high_px >= sl_px:
+                metadata["trade_condition"] = "STOP_LOSS"
+                self._reset_position()
                 return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
 
-            if self.take_profit_pct > 0 and candle.close <= self.entry_price * (1.0 - pct_to_frac(self.take_profit_pct)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = self.cooldown_bars
+            if self.take_profit_pct > 0 and low_px <= tp_px:
+                metadata["trade_condition"] = "TAKE_PROFIT"
+                self._reset_position()
                 return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
+
+            if self.trailing_stop_pct > 0 and high_px >= trail_px:
+                metadata["trade_condition"] = "TRAILING_STOP"
+                self._reset_position()
+                return self.buy(candle.close, "TRAILING_STOP_SHORT", metadata)
 
         if self.cooldown > 0:
             return None
@@ -117,7 +171,10 @@ class Krobot01Strategy(StrategyBase):
                 return None
             self.position_side = "LONG"
             self.entry_price = candle.close
+            self.highest_since_entry = high_px
+            self.lowest_since_entry = low_px
             self.cooldown = self.cooldown_bars
+            metadata["trade_condition"] = "ENTRY"
             return self.buy(candle.close, "ENTER_LONG", metadata)
 
         if short_cond:
@@ -125,7 +182,10 @@ class Krobot01Strategy(StrategyBase):
                 return None
             self.position_side = "SHORT"
             self.entry_price = candle.close
+            self.highest_since_entry = high_px
+            self.lowest_since_entry = low_px
             self.cooldown = self.cooldown_bars
+            metadata["trade_condition"] = "ENTRY"
             return self.sell(candle.close, "ENTER_SHORT", metadata)
 
         return None
@@ -180,6 +240,9 @@ async def run():
 
     if strategy.stop_loss_pct < 0:
         raise ValueError("stop_loss_pct must be >= 0")
+
+    if strategy.trailing_stop_pct < 0:
+        raise ValueError("trailing_stop_pct must be >= 0")
 
     runner = StrategyRunner(strategy=strategy, runtime=runtime)
     await runner.run()

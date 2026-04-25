@@ -11,6 +11,7 @@ import (
 type OrderType string
 type OrderSide string
 type PositionSide string
+type TradeCondition string
 
 const (
 	OrderSideBuy   OrderSide = "BUY"
@@ -24,6 +25,14 @@ const (
 	PositionSideBoth  PositionSide = "BOTH"
 	PositionSideLong  PositionSide = "LONG"
 	PositionSideShort PositionSide = "SHORT"
+
+	TradeConditionEntry        TradeCondition = "ENTRY"
+	TradeConditionExit         TradeCondition = "EXIT"
+	TradeConditionTakeProfit   TradeCondition = "TAKE_PROFIT"
+	TradeConditionStopLoss     TradeCondition = "STOP_LOSS"
+	TradeConditionTrailingStop TradeCondition = "TRAILING_STOP"
+	TradeConditionSignal       TradeCondition = "SIGNAL"
+	TradeConditionUnknown      TradeCondition = "UNKNOWN"
 )
 
 func NormalizePositionSide(raw string) PositionSide {
@@ -76,6 +85,25 @@ func NormalizeOrderSideByMarket(raw string, marketType MarketType) OrderSide {
 	return ""
 }
 
+func NormalizeTradeCondition(raw string) TradeCondition {
+	switch TradeCondition(strings.ToUpper(strings.TrimSpace(raw))) {
+	case TradeConditionEntry:
+		return TradeConditionEntry
+	case TradeConditionExit:
+		return TradeConditionExit
+	case TradeConditionTakeProfit:
+		return TradeConditionTakeProfit
+	case TradeConditionStopLoss:
+		return TradeConditionStopLoss
+	case TradeConditionTrailingStop:
+		return TradeConditionTrailingStop
+	case TradeConditionSignal:
+		return TradeConditionSignal
+	default:
+		return TradeConditionUnknown
+	}
+}
+
 type OrderRequest struct {
 	RequestID      string          `json:"request_id"`
 	UserID         string          `json:"user_id"`
@@ -92,6 +120,7 @@ type OrderRequest struct {
 	ExpiredAt      *int64          `json:"expired_at,omitempty"`
 	Source         string          `json:"source"`
 	StrategyID     *string         `json:"strategy_id,omitempty"`
+	TradeCondition string          `json:"trade_condition"`
 	IsPaperTrading bool            `json:"is_paper_trading"`
 }
 
@@ -124,6 +153,7 @@ type OrderHistory struct {
 	AcknowledgedAt    sql.NullTime     `db:"acknowledged_at" json:"acknowledged_at"`
 	FilledAt          sql.NullTime     `db:"filled_at" json:"filled_at"`
 	StrategyID        sql.NullString   `db:"strategy_id" json:"strategy_id"`
+	TradeCondition    string           `db:"trade_condition" json:"trade_condition"`
 	ErrorMessage      sql.NullString   `db:"error_message" json:"error_message"`
 	CreatedAt         time.Time        `db:"created_at" json:"created_at"`
 	UpdatedAt         time.Time        `db:"updated_at" json:"updated_at"`

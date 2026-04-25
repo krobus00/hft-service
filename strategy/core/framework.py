@@ -50,13 +50,39 @@ class StrategyRunner:
         self.strategy = strategy
         self.runtime = runtime
 
-    def build_order_payload(self, side: str, price: float) -> dict:
+    @staticmethod
+    def infer_trade_condition(reason: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        if metadata:
+            raw = str(metadata.get("trade_condition", "")).strip().upper()
+            if raw:
+                return raw
+
+        normalized = str(reason or "").strip().upper()
+        if not normalized:
+            return "UNKNOWN"
+
+        if "TRAIL" in normalized:
+            return "TRAILING_STOP"
+        if "STOP_LOSS" in normalized or normalized.startswith("SL") or "_SL_" in normalized or normalized.endswith("_SL"):
+            return "STOP_LOSS"
+        if "TAKE_PROFIT" in normalized or normalized.startswith("TP") or "_TP_" in normalized or normalized.endswith("_TP"):
+            return "TAKE_PROFIT"
+        if normalized.startswith("ENTER") or normalized.startswith("OPEN"):
+            return "ENTRY"
+        if normalized.startswith("EXIT") or normalized.startswith("CLOSE") or normalized.startswith("TIME"):
+            return "EXIT"
+
+        return "SIGNAL"
+
+    def build_order_payload(self, side: str, price: float, reason: str, metadata: Optional[Dict[str, Any]] = None) -> dict:
         px = float(price)
         if self.runtime.order_type == "LIMIT":
             if side == "BUY":
                 px = price * (1.0 + pct_to_frac(self.runtime.limit_slippage_pct))
             else:
                 px = price * (1.0 - pct_to_frac(self.runtime.limit_slippage_pct))
+
+        trade_condition = self.infer_trade_condition(reason, metadata)
 
         return {
             "retry": 0,
@@ -76,6 +102,7 @@ class StrategyRunner:
                 "expired_at": None,
                 "source": self.runtime.source,
                 "strategy_id": self.runtime.strategy_id,
+                "trade_condition": trade_condition,
                 "is_paper_trading": self.runtime.is_paper_trading,
             },
         }
@@ -193,14 +220,15 @@ class StrategyRunner:
 
                 if signal is not None:
                     try:
-                        out = self.build_order_payload(signal.side, signal.price)
+                        out = self.build_order_payload(signal.side, signal.price, signal.reason, signal.metadata)
                         await js.publish(self.runtime.order_subject, orjson.dumps(out))
                     except Exception:
                         self.strategy.restore_state(snapshot)
                         raise
                     metadata = " ".join(f"{k}={v}" for k, v in signal.metadata.items())
+                    trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
                     print(
-                        f"[{self.strategy.config.name}] {signal.reason} side={signal.side} symbol={self.runtime.order_symbol} close={signal.price:.6f} {metadata}".strip(),
+                        f"[{self.strategy.config.name}] {signal.reason} trade_condition={trade_condition} side={signal.side} symbol={self.runtime.order_symbol} close={signal.price:.6f} {metadata}".strip(),
                         flush=True,
                     )
 

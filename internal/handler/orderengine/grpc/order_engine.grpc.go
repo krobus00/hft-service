@@ -62,6 +62,7 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		ExpiredAt:      null.NewInt(req.GetExpiredAt(), req.GetExpiredAt() != 0).Ptr(),
 		Source:         req.GetSource(),
 		StrategyID:     null.NewString(req.GetStrategyId(), req.GetStrategyId() != "").Ptr(),
+		TradeCondition: req.GetTradeCondition(),
 		IsPaperTrading: req.GetIsPaperTrading(),
 	})
 	if err != nil {
@@ -93,6 +94,7 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		AcknowledgedAt:    null.NewInt(orderHistory.AcknowledgedAt.Time.UnixMilli(), orderHistory.AcknowledgedAt.Valid).Ptr(),
 		FilledAt:          null.NewInt(orderHistory.FilledAt.Time.UnixMilli(), orderHistory.FilledAt.Valid).Ptr(),
 		StrategyId:        null.NewString(orderHistory.StrategyID.String, orderHistory.StrategyID.Valid).Ptr(),
+		TradeCondition:    orderHistory.TradeCondition,
 		ErrorMessage:      null.NewString(orderHistory.ErrorMessage.String, orderHistory.ErrorMessage.Valid).Ptr(),
 		CreatedAt:         orderHistory.CreatedAt.Unix(),
 		UpdatedAt:         orderHistory.UpdatedAt.Unix(),
