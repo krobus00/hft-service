@@ -214,6 +214,33 @@ func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) e
 }
 
 func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, message []byte, marketType entity.MarketType) error {
+	market := entity.NormalizeMarketType(string(marketType))
+
+	var wsResponse struct {
+		Result any    `json:"result"`
+		ID     any    `json:"id"`
+		Code   *int   `json:"code"`
+		Msg    string `json:"msg"`
+	}
+	if err := json.Unmarshal(message, &wsResponse); err == nil {
+		if wsResponse.Code != nil {
+			logrus.WithFields(logrus.Fields{
+				"exchange":    entity.ExchangeBinance,
+				"market_type": market,
+				"code":        *wsResponse.Code,
+				"message":     wsResponse.Msg,
+				"id":          wsResponse.ID,
+			}).Warn("binance websocket returned error response")
+		}
+		if wsResponse.Result == nil && wsResponse.ID != nil {
+			logrus.WithFields(logrus.Fields{
+				"exchange":    entity.ExchangeBinance,
+				"market_type": market,
+				"id":          wsResponse.ID,
+			}).Info("binance websocket subscription acknowledged")
+		}
+	}
+
 	type klinePayload struct {
 		Event     string `json:"e"`
 		EventTime int64  `json:"E"`
@@ -320,7 +347,7 @@ func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, messa
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeBinance),
-		MarketType:       string(entity.NormalizeMarketType(string(marketType))),
+		MarketType:       string(market),
 		EventType:        payload.Event,
 		EventTime:        eventAt,
 		Symbol:           symbol,
@@ -1280,7 +1307,7 @@ func (e *BinanceExchange) wsURLEnvKeyByMarketType(marketType entity.MarketType) 
 
 func (e *BinanceExchange) defaultWSURLByMarketType(marketType entity.MarketType) string {
 	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures {
-		return "wss://fstream.binance.com/stream"
+		return "wss://fstream.binance.com/ws"
 	}
 
 	return "wss://stream.binance.com:9443/stream"
