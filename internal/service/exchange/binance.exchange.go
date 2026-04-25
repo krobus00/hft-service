@@ -216,6 +216,8 @@ func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) e
 func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, message []byte, marketType entity.MarketType) error {
 	market := entity.NormalizeMarketType(string(marketType))
 
+	fmt.Printf("Received Binance kline data for market type %s: %s\n", market, string(message))
+
 	var wsResponse struct {
 		Result any    `json:"result"`
 		ID     any    `json:"id"`
