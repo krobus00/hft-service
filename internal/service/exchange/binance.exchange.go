@@ -214,89 +214,101 @@ func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) e
 }
 
 func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, message []byte, marketType entity.MarketType) error {
-	var payload struct {
-		Stream string `json:"stream"`
-		Data   struct {
-			Event     string `json:"e"`
-			EventTime int64  `json:"E"`
-			Symbol    string `json:"s"`
-			Kline     struct {
-				OpenTime         int64  `json:"t"`
-				CloseTime        int64  `json:"T"`
-				Symbol           string `json:"s"`
-				Interval         string `json:"i"`
-				FirstTradeID     int64  `json:"f"`
-				LastTradeID      int64  `json:"L"`
-				Open             string `json:"o"`
-				Close            string `json:"c"`
-				High             string `json:"h"`
-				Low              string `json:"l"`
-				BaseVolume       string `json:"v"`
-				TradeCount       int32  `json:"n"`
-				IsClosed         bool   `json:"x"`
-				QuoteVolume      string `json:"q"`
-				TakerBaseVolume  string `json:"V"`
-				TakerQuoteVolume string `json:"Q"`
-			} `json:"k"`
-		} `json:"data"`
+	type klinePayload struct {
+		Event     string `json:"e"`
+		EventTime int64  `json:"E"`
+		Symbol    string `json:"s"`
+		Kline     struct {
+			OpenTime         int64  `json:"t"`
+			CloseTime        int64  `json:"T"`
+			Symbol           string `json:"s"`
+			Interval         string `json:"i"`
+			FirstTradeID     int64  `json:"f"`
+			LastTradeID      int64  `json:"L"`
+			Open             string `json:"o"`
+			Close            string `json:"c"`
+			High             string `json:"h"`
+			Low              string `json:"l"`
+			BaseVolume       string `json:"v"`
+			TradeCount       int32  `json:"n"`
+			IsClosed         bool   `json:"x"`
+			QuoteVolume      string `json:"q"`
+			TakerBaseVolume  string `json:"V"`
+			TakerQuoteVolume string `json:"Q"`
+		} `json:"k"`
 	}
 
-	if err := json.Unmarshal(message, &payload); err != nil {
+	var wrapped struct {
+		Stream string       `json:"stream"`
+		Data   klinePayload `json:"data"`
+	}
+	if err := json.Unmarshal(message, &wrapped); err != nil {
 		return err
 	}
 
-	if payload.Data.Event != "kline" || payload.Data.Kline.Close == "" {
+	payload := wrapped.Data
+	// Binance supports both combined stream payloads (`{"stream":...,"data":...}`)
+	// and raw stream payloads (`{"e":"kline",...}`), so fall back to raw parsing.
+	if strings.TrimSpace(payload.Event) == "" {
+		var raw klinePayload
+		if err := json.Unmarshal(message, &raw); err != nil {
+			return err
+		}
+		payload = raw
+	}
+
+	if payload.Event != "kline" || payload.Kline.Close == "" {
 		return nil
 	}
 
-	openPrice, err := decimal.NewFromString(payload.Data.Kline.Open)
+	openPrice, err := decimal.NewFromString(payload.Kline.Open)
 	if err != nil {
 		return fmt.Errorf("invalid open price: %w", err)
 	}
 
-	closePrice, err := decimal.NewFromString(payload.Data.Kline.Close)
+	closePrice, err := decimal.NewFromString(payload.Kline.Close)
 	if err != nil {
 		return fmt.Errorf("invalid close price: %w", err)
 	}
 
-	highPrice, err := decimal.NewFromString(payload.Data.Kline.High)
+	highPrice, err := decimal.NewFromString(payload.Kline.High)
 	if err != nil {
 		return fmt.Errorf("invalid high price: %w", err)
 	}
 
-	lowPrice, err := decimal.NewFromString(payload.Data.Kline.Low)
+	lowPrice, err := decimal.NewFromString(payload.Kline.Low)
 	if err != nil {
 		return fmt.Errorf("invalid low price: %w", err)
 	}
 
-	baseVolume, err := decimal.NewFromString(payload.Data.Kline.BaseVolume)
+	baseVolume, err := decimal.NewFromString(payload.Kline.BaseVolume)
 	if err != nil {
 		return fmt.Errorf("invalid base volume: %w", err)
 	}
 
-	quoteVolume, err := decimal.NewFromString(payload.Data.Kline.QuoteVolume)
+	quoteVolume, err := decimal.NewFromString(payload.Kline.QuoteVolume)
 	if err != nil {
 		return fmt.Errorf("invalid quote volume: %w", err)
 	}
 
-	takerBaseVolume, err := decimal.NewFromString(payload.Data.Kline.TakerBaseVolume)
+	takerBaseVolume, err := decimal.NewFromString(payload.Kline.TakerBaseVolume)
 	if err != nil {
 		return fmt.Errorf("invalid taker base volume: %w", err)
 	}
 
-	takerQuoteVolume, err := decimal.NewFromString(payload.Data.Kline.TakerQuoteVolume)
+	takerQuoteVolume, err := decimal.NewFromString(payload.Kline.TakerQuoteVolume)
 	if err != nil {
 		return fmt.Errorf("invalid taker quote volume: %w", err)
 	}
 
-	eventAt := time.UnixMilli(payload.Data.EventTime).UTC()
-	openAt := time.UnixMilli(payload.Data.Kline.OpenTime).UTC()
-	closeAt := time.UnixMilli(payload.Data.Kline.CloseTime).UTC()
+	eventAt := time.UnixMilli(payload.EventTime).UTC()
+	openAt := time.UnixMilli(payload.Kline.OpenTime).UTC()
+	closeAt := time.UnixMilli(payload.Kline.CloseTime).UTC()
 	now := time.Now().UTC()
 
-	symbol := strings.TrimSpace(payload.Data.Kline.Symbol)
+	symbol := strings.TrimSpace(payload.Kline.Symbol)
 	if symbol == "" {
-		symbol = strings.TrimSpace(payload.Data.Symbol)
+		symbol = strings.TrimSpace(payload.Symbol)
 	}
 	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeBinance,
@@ -309,10 +321,10 @@ func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, messa
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeBinance),
 		MarketType:       string(entity.NormalizeMarketType(string(marketType))),
-		EventType:        payload.Data.Event,
+		EventType:        payload.Event,
 		EventTime:        eventAt,
 		Symbol:           symbol,
-		Interval:         payload.Data.Kline.Interval,
+		Interval:         payload.Kline.Interval,
 		OpenTime:         openAt,
 		CloseTime:        closeAt,
 		OpenPrice:        openPrice,
@@ -323,8 +335,8 @@ func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, messa
 		QuoteVolume:      quoteVolume,
 		TakerBaseVolume:  takerBaseVolume,
 		TakerQuoteVolume: takerQuoteVolume,
-		TradeCount:       payload.Data.Kline.TradeCount,
-		IsClosed:         payload.Data.Kline.IsClosed,
+		TradeCount:       payload.Kline.TradeCount,
+		IsClosed:         payload.Kline.IsClosed,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
