@@ -14,6 +14,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	wsWriteTimeout = 10 * time.Second
+	wsPongWait     = wsPingInterval*2 + 10*time.Second
+)
+
 type klineWSSubscriberConfig struct {
 	ExchangeName    entity.ExchangeName
 	WSURLEnvKey     string
@@ -117,7 +122,22 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 		logrus.Infof("connected to %s", wsHost.String())
 
 		attempt = 0
+		if err := conn.SetReadDeadline(time.Now().Add(wsPongWait)); err != nil {
+			_ = conn.Close()
+			wait := wsReconnectDelay(attempt, rng)
+			attempt++
+			logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("%s ws set read deadline failed: %v", cfg.ExchangeName, err)
+			select {
+			case <-time.After(wait):
+				continue
+			case <-ctx.Done():
+				return nil
+			}
+		}
 		conn.SetPongHandler(func(string) error {
+			if err := conn.SetReadDeadline(time.Now().Add(wsPongWait)); err != nil {
+				logrus.WithError(err).Warnf("%s ws set read deadline on pong failed", cfg.ExchangeName)
+			}
 			return nil
 		})
 
@@ -131,6 +151,19 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 
 			logrus.Infof("start subscription for symbol: %s, interval: %s", v.Symbol, v.Interval)
 			logrus.Infof("subscription payload: %s", v.Payload)
+
+			if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+				_ = conn.Close()
+				wait := wsReconnectDelay(attempt, rng)
+				attempt++
+				logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt, "symbol": v.Symbol, "interval": v.Interval}).Warnf("%s ws set write deadline failed: %v", cfg.ExchangeName, err)
+				select {
+				case <-time.After(wait):
+					continue
+				case <-ctx.Done():
+					return nil
+				}
+			}
 
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(v.Payload)); err != nil {
 				_ = conn.Close()
@@ -154,8 +187,14 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			for {
 				select {
 				case <-ticker.C:
+					if err := c.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+						logrus.WithError(err).Warnf("%s ws set write deadline for ping failed", cfg.ExchangeName)
+						_ = c.Close()
+						return
+					}
 					if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
-						logrus.Error(err)
+						logrus.WithError(err).Warnf("%s ws ping failed; reconnecting", cfg.ExchangeName)
+						_ = c.Close()
 						return
 					}
 				case <-ctx.Done():
