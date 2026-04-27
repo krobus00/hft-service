@@ -1316,7 +1316,7 @@ func (e *BinanceExchange) wsURLEnvKeyByMarketType(marketType entity.MarketType) 
 
 func (e *BinanceExchange) defaultWSURLByMarketType(marketType entity.MarketType) string {
 	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures {
-		return "wss://fstream.binance.com/stream"
+		return "wss://fstream.binance.com/market/stream"
 	}
 
 	return "wss://stream.binance.com:9443/stream"
