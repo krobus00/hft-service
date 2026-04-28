@@ -39,6 +39,7 @@ type PlaceOrderRequest struct {
 	ExpiredAt      int64  `json:"expired_at"`
 	Source         string `json:"source"`
 	StrategyID     string `json:"strategy_id"`
+	TradeCondition string `json:"trade_condition"`
 	IsPaperTrading bool   `json:"is_paper_trading"`
 }
 
@@ -67,6 +68,7 @@ type PlaceOrderResponse struct {
 	AcknowledgedAt    *int64  `json:"acknowledged_at,omitempty"`
 	FilledAt          *int64  `json:"filled_at,omitempty"`
 	StrategyID        *string `json:"strategy_id,omitempty"`
+	TradeCondition    string  `json:"trade_condition"`
 	ErrorMessage      *string `json:"error_message,omitempty"`
 	CreatedAt         int64   `json:"created_at"`
 	UpdatedAt         int64   `json:"updated_at"`
@@ -196,22 +198,29 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 		return entity.OrderRequest{}, errors.New("invalid quantity")
 	}
 
+	marketType := entity.NormalizeMarketType(req.MarketType)
+	side := entity.NormalizeOrderSideByMarket(req.Side, marketType)
+	if side == "" {
+		return entity.OrderRequest{}, errors.New("invalid side for market_type")
+	}
+
 	return entity.OrderRequest{
 		RequestID:      req.RequestID,
 		UserID:         req.UserID,
 		OrderID:        null.NewString(req.OrderID, req.OrderID != "").Ptr(),
 		Exchange:       req.Exchange,
-		MarketType:     string(entity.NormalizeMarketType(req.MarketType)),
+		MarketType:     string(marketType),
 		PositionSide:   string(entity.NormalizePositionSide(req.PositionSide)),
 		Symbol:         req.Symbol,
 		Type:           entity.OrderType(strings.ToUpper(req.Type)),
-		Side:           entity.OrderSide(strings.ToUpper(req.Side)),
+		Side:           side,
 		Price:          price,
 		Quantity:       quantity,
 		RequestedAt:    req.RequestedAt,
 		ExpiredAt:      null.NewInt(req.ExpiredAt, req.ExpiredAt != 0).Ptr(),
 		Source:         req.Source,
 		StrategyID:     null.NewString(req.StrategyID, req.StrategyID != "").Ptr(),
+		TradeCondition: req.TradeCondition,
 		IsPaperTrading: req.IsPaperTrading,
 	}, nil
 }
@@ -314,6 +323,7 @@ func mapOrderHistoryToHTTPResponse(orderHistory *entity.OrderHistory) *PlaceOrde
 		AcknowledgedAt:    acknowledgedAt,
 		FilledAt:          filledAt,
 		StrategyID:        strategyID,
+		TradeCondition:    orderHistory.TradeCondition,
 		ErrorMessage:      errorMessage,
 		CreatedAt:         orderHistory.CreatedAt.UnixMilli(),
 		UpdatedAt:         orderHistory.UpdatedAt.UnixMilli(),

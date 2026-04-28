@@ -14,10 +14,16 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	wsWriteTimeout = 10 * time.Second
+	wsPongWait     = wsPingInterval*2 + 10*time.Second
+)
+
 type klineWSSubscriberConfig struct {
 	ExchangeName    entity.ExchangeName
 	WSURLEnvKey     string
 	DefaultWSURL    string
+	ResolveWSURL    func(subscriptions []entity.KlineSubscription) string
 	NormalizeSubs   func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription
 	Resync          func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error)
 	LoadResyncState func(ctx context.Context) (klineResyncState, error)
@@ -27,16 +33,6 @@ type klineWSSubscriberConfig struct {
 func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriberConfig, subscriptions []entity.KlineSubscription) error {
 	if cfg.HandleMessage == nil {
 		return fmt.Errorf("%s handle message function is required", cfg.ExchangeName)
-	}
-
-	wsURL := strings.TrimSpace(os.Getenv(cfg.WSURLEnvKey))
-	if wsURL == "" {
-		wsURL = cfg.DefaultWSURL
-	}
-
-	wsHost, err := url.Parse(wsURL)
-	if err != nil {
-		return fmt.Errorf("invalid %s ws url: %w", cfg.ExchangeName, err)
 	}
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -61,11 +57,11 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			logrus.WithError(err).Warnf("%s initial resync failed; starting with existing subscriptions", cfg.ExchangeName)
 		} else {
 			logrus.WithFields(logrus.Fields{
-				"exchange":                           cfg.ExchangeName,
-				"subscriptions_before_resync":        len(activeSubscriptions),
-				"subscriptions_after_resync":         len(resyncedSubscriptions),
-				"symbol_mapping_updated_at":          state.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
-				"kline_subscription_updated_at":      state.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+				"exchange":                      cfg.ExchangeName,
+				"subscriptions_before_resync":   len(activeSubscriptions),
+				"subscriptions_after_resync":    len(resyncedSubscriptions),
+				"symbol_mapping_updated_at":     state.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+				"kline_subscription_updated_at": state.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
 			}).Info("initial exchange resync completed")
 
 			activeSubscriptions = resyncedSubscriptions
@@ -87,6 +83,21 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil
+		}
+
+		wsURL := strings.TrimSpace(os.Getenv(cfg.WSURLEnvKey))
+		if wsURL == "" {
+			wsURL = cfg.DefaultWSURL
+		}
+		if cfg.ResolveWSURL != nil {
+			if resolved := strings.TrimSpace(cfg.ResolveWSURL(activeSubscriptions)); resolved != "" {
+				wsURL = resolved
+			}
+		}
+
+		wsHost, err := url.Parse(wsURL)
+		if err != nil {
+			return fmt.Errorf("invalid %s ws url: %w", cfg.ExchangeName, err)
 		}
 
 		logrus.Infof("connecting to %s", wsHost.String())
@@ -111,7 +122,22 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 		logrus.Infof("connected to %s", wsHost.String())
 
 		attempt = 0
+		if err := conn.SetReadDeadline(time.Now().Add(wsPongWait)); err != nil {
+			_ = conn.Close()
+			wait := wsReconnectDelay(attempt, rng)
+			attempt++
+			logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("%s ws set read deadline failed: %v", cfg.ExchangeName, err)
+			select {
+			case <-time.After(wait):
+				continue
+			case <-ctx.Done():
+				return nil
+			}
+		}
 		conn.SetPongHandler(func(string) error {
+			if err := conn.SetReadDeadline(time.Now().Add(wsPongWait)); err != nil {
+				logrus.WithError(err).Warnf("%s ws set read deadline on pong failed", cfg.ExchangeName)
+			}
 			return nil
 		})
 
@@ -119,14 +145,31 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			if v.Exchange != string(cfg.ExchangeName) {
 				continue
 			}
+			if strings.TrimSpace(v.Payload) == "" {
+				continue
+			}
 
 			logrus.Infof("start subscription for symbol: %s, interval: %s", v.Symbol, v.Interval)
+			logrus.Infof("subscription payload: %s", v.Payload)
+
+			if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+				_ = conn.Close()
+				wait := wsReconnectDelay(attempt, rng)
+				attempt++
+				logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt, "symbol": v.Symbol, "interval": v.Interval}).Warnf("%s ws set write deadline failed: %v", cfg.ExchangeName, err)
+				select {
+				case <-time.After(wait):
+					continue
+				case <-ctx.Done():
+					return nil
+				}
+			}
 
 			if err := conn.WriteMessage(websocket.TextMessage, []byte(v.Payload)); err != nil {
 				_ = conn.Close()
 				wait := wsReconnectDelay(attempt, rng)
 				attempt++
-				logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt}).Warnf("%s ws subscribe failed: %v", cfg.ExchangeName, err)
+				logrus.WithFields(logrus.Fields{"retry_in": wait.String(), "attempt": attempt, "symbol": v.Symbol, "interval": v.Interval}).Warnf("%s ws subscribe failed: %v", cfg.ExchangeName, err)
 				select {
 				case <-time.After(wait):
 					continue
@@ -144,8 +187,14 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			for {
 				select {
 				case <-ticker.C:
+					if err := c.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+						logrus.WithError(err).Warnf("%s ws set write deadline for ping failed", cfg.ExchangeName)
+						_ = c.Close()
+						return
+					}
 					if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
-						logrus.Error(err)
+						logrus.WithError(err).Warnf("%s ws ping failed; reconnecting", cfg.ExchangeName)
+						_ = c.Close()
 						return
 					}
 				case <-ctx.Done():
@@ -211,12 +260,12 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 					}
 
 					logrus.WithFields(logrus.Fields{
-						"exchange":                              cfg.ExchangeName,
-						"symbol_mapping_updated_at_old":         lastResyncState.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
-						"symbol_mapping_updated_at_latest":      currentState.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
-						"kline_subscription_updated_at_old":     lastResyncState.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
-						"kline_subscription_updated_at_latest":  currentState.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
-						"active_subscriptions":                  len(activeSubscriptions),
+						"exchange":                             cfg.ExchangeName,
+						"symbol_mapping_updated_at_old":        lastResyncState.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"symbol_mapping_updated_at_latest":     currentState.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"kline_subscription_updated_at_old":    lastResyncState.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"kline_subscription_updated_at_latest": currentState.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+						"active_subscriptions":                 len(activeSubscriptions),
 					}).Info("detected exchange resync changes for subscriptions or symbol mappings")
 				}
 
@@ -228,11 +277,11 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 				}
 
 				logrus.WithFields(logrus.Fields{
-					"exchange":                           cfg.ExchangeName,
-					"subscriptions_before_resync":        previousCount,
-					"subscriptions_after_resync":         len(resyncedSubscriptions),
-					"symbol_mapping_updated_at":          state.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
-					"kline_subscription_updated_at":      state.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
+					"exchange":                      cfg.ExchangeName,
+					"subscriptions_before_resync":   previousCount,
+					"subscriptions_after_resync":    len(resyncedSubscriptions),
+					"symbol_mapping_updated_at":     state.SymbolMappingUpdatedAt.UTC().Format(time.RFC3339Nano),
+					"kline_subscription_updated_at": state.KlineSubscriptionUpdatedAt.UTC().Format(time.RFC3339Nano),
 				}).Info("exchange resync completed")
 
 				activeSubscriptions = resyncedSubscriptions

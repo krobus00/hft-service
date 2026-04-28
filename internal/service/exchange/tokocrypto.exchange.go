@@ -725,6 +725,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		AcknowledgedAt:    acknowledgedAt,
 		FilledAt:          sql.NullTime{},
 		StrategyID:        strategyID,
+		TradeCondition:    order.TradeCondition,
 		ErrorMessage:      sql.NullString{},
 		CreatedAt:         now,
 		UpdatedAt:         now,

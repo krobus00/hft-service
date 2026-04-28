@@ -11,10 +11,13 @@ import (
 type OrderType string
 type OrderSide string
 type PositionSide string
+type TradeCondition string
 
 const (
-	OrderSideBuy  OrderSide = "BUY"
-	OrderSideSell OrderSide = "SELL"
+	OrderSideBuy   OrderSide = "BUY"
+	OrderSideSell  OrderSide = "SELL"
+	OrderSideLong  OrderSide = "LONG"
+	OrderSideShort OrderSide = "SHORT"
 
 	OrderTypeLimit  OrderType = "LIMIT"
 	OrderTypeMarket OrderType = "MARKET"
@@ -22,6 +25,14 @@ const (
 	PositionSideBoth  PositionSide = "BOTH"
 	PositionSideLong  PositionSide = "LONG"
 	PositionSideShort PositionSide = "SHORT"
+
+	TradeConditionEntry        TradeCondition = "ENTRY"
+	TradeConditionExit         TradeCondition = "EXIT"
+	TradeConditionTakeProfit   TradeCondition = "TAKE_PROFIT"
+	TradeConditionStopLoss     TradeCondition = "STOP_LOSS"
+	TradeConditionTrailingStop TradeCondition = "TRAILING_STOP"
+	TradeConditionSignal       TradeCondition = "SIGNAL"
+	TradeConditionUnknown      TradeCondition = "UNKNOWN"
 )
 
 func NormalizePositionSide(raw string) PositionSide {
@@ -32,6 +43,64 @@ func NormalizePositionSide(raw string) PositionSide {
 		return PositionSideShort
 	default:
 		return PositionSideBoth
+	}
+}
+
+func NormalizeOrderSide(raw string) OrderSide {
+	switch OrderSide(strings.ToUpper(strings.TrimSpace(raw))) {
+	case OrderSideBuy:
+		return OrderSideBuy
+	case OrderSideSell:
+		return OrderSideSell
+	case OrderSideLong:
+		return OrderSideLong
+	case OrderSideShort:
+		return OrderSideShort
+	default:
+		return ""
+	}
+}
+
+func NormalizeOrderSideByMarket(raw string, marketType MarketType) OrderSide {
+	normalized := NormalizeOrderSide(raw)
+	if normalized == "" {
+		return ""
+	}
+
+	if NormalizeMarketType(string(marketType)) == MarketTypeFutures {
+		switch normalized {
+		case OrderSideBuy, OrderSideLong:
+			return OrderSideLong
+		case OrderSideSell, OrderSideShort:
+			return OrderSideShort
+		default:
+			return ""
+		}
+	}
+
+	if normalized == OrderSideBuy || normalized == OrderSideSell {
+		return normalized
+	}
+
+	return ""
+}
+
+func NormalizeTradeCondition(raw string) TradeCondition {
+	switch TradeCondition(strings.ToUpper(strings.TrimSpace(raw))) {
+	case TradeConditionEntry:
+		return TradeConditionEntry
+	case TradeConditionExit:
+		return TradeConditionExit
+	case TradeConditionTakeProfit:
+		return TradeConditionTakeProfit
+	case TradeConditionStopLoss:
+		return TradeConditionStopLoss
+	case TradeConditionTrailingStop:
+		return TradeConditionTrailingStop
+	case TradeConditionSignal:
+		return TradeConditionSignal
+	default:
+		return TradeConditionUnknown
 	}
 }
 
@@ -51,6 +120,7 @@ type OrderRequest struct {
 	ExpiredAt      *int64          `json:"expired_at,omitempty"`
 	Source         string          `json:"source"`
 	StrategyID     *string         `json:"strategy_id,omitempty"`
+	TradeCondition string          `json:"trade_condition"`
 	IsPaperTrading bool            `json:"is_paper_trading"`
 }
 
@@ -83,6 +153,7 @@ type OrderHistory struct {
 	AcknowledgedAt    sql.NullTime     `db:"acknowledged_at" json:"acknowledged_at"`
 	FilledAt          sql.NullTime     `db:"filled_at" json:"filled_at"`
 	StrategyID        sql.NullString   `db:"strategy_id" json:"strategy_id"`
+	TradeCondition    string           `db:"trade_condition" json:"trade_condition"`
 	ErrorMessage      sql.NullString   `db:"error_message" json:"error_message"`
 	CreatedAt         time.Time        `db:"created_at" json:"created_at"`
 	UpdatedAt         time.Time        `db:"updated_at" json:"updated_at"`

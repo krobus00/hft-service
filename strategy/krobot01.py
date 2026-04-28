@@ -1,431 +1,251 @@
 import asyncio
-import time
-import uuid
-from collections import deque
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
-import asyncpg
-import orjson
 import uvloop
-import yaml
-from nats.aio.client import Client as NATS
+
+from core.common import load_full_config, pct_to_frac
+from core.framework import StrategyBase, StrategyRunner
+from core.indicators import EMA, MACD, RollingVWAP
+from core.models import Candle, RuntimeConfig, StrategyConfig
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.yml"
-
-
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        raise FileNotFoundError(
-            f"Config file not found: {CONFIG_PATH}. Copy strategy/config.yml.example to strategy/config.yml"
-        )
-    with CONFIG_PATH.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file) or {}
-
-
-CONFIG = load_config()
+CONFIG = load_full_config()
 GLOBAL_CONFIG = CONFIG.get("global", {})
 KROBOT01_CONFIG = CONFIG.get("krobot01", {})
 
-DB_DSN = GLOBAL_CONFIG.get("db_dsn", "postgres://root:root@localhost:5432/market_data?sslmode=disable")
-NATS_URL = GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222")
-NATS_ALLOW_RECONNECT = GLOBAL_CONFIG.get("nats_allow_reconnect", True)
-NATS_MAX_RECONNECT_ATTEMPTS = GLOBAL_CONFIG.get("nats_max_reconnect_attempts", -1)
-NATS_RECONNECT_TIME_WAIT_SEC = GLOBAL_CONFIG.get("nats_reconnect_time_wait_sec", 2)
-NATS_CONNECT_TIMEOUT_SEC = GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5)
-NATS_PING_INTERVAL_SEC = GLOBAL_CONFIG.get("nats_ping_interval_sec", 30)
-NATS_MAX_OUTSTANDING_PINGS = GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3)
 
-KLINE_SUBJECT = KROBOT01_CONFIG.get("kline_subject", "KLINE.TOKOCRYPTO.>")
-ORDER_SUBJECT = KROBOT01_CONFIG.get("order_subject", "order_engine.place_order")
-QUEUE_NAME = KROBOT01_CONFIG.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_KROBOT01")
-
-SYMBOL = KROBOT01_CONFIG.get("symbol", "SOLUSDT")
-INTERVAL = KROBOT01_CONFIG.get("interval", "1m")
-
-USER_ID = KROBOT01_CONFIG.get("user_id", "paper-1")
-EXCHANGE = KROBOT01_CONFIG.get("exchange", "tokocrypto")
-MARKET_TYPE = KROBOT01_CONFIG.get("market_type", "spot")
-POSITION_SIDE = KROBOT01_CONFIG.get("position_side", "BOTH")
-SOURCE = KROBOT01_CONFIG.get("source", "python-krobot01")
-STRATEGY_ID = KROBOT01_CONFIG.get("strategy_id", "python-krobot01-ema-vwap-macd")
-IS_PAPER_TRADING = KROBOT01_CONFIG.get("is_paper_trading", True)
-
-ORDER_TYPE = KROBOT01_CONFIG.get("order_type", "LIMIT")
-ORDER_QTY = KROBOT01_CONFIG.get("order_qty", 10)
-ORDER_SYMBOL = KROBOT01_CONFIG.get("order_symbol", "SOLUSDT")
-LIMIT_SLIPPAGE_PCT = KROBOT01_CONFIG.get(
-    "limit_slippage_pct", KROBOT01_CONFIG.get("limit_slippage_bps", 2) / 100.0
-)
-
-EMA_PERIOD = int(KROBOT01_CONFIG.get("ema_period", 200))
-VWAP_WINDOW = int(KROBOT01_CONFIG.get("vwap_window", 200))
-MACD_FAST = int(KROBOT01_CONFIG.get("macd_fast", 12))
-MACD_SLOW = int(KROBOT01_CONFIG.get("macd_slow", 26))
-MACD_SIGNAL = int(KROBOT01_CONFIG.get("macd_signal", 9))
-COOLDOWN_BARS = int(KROBOT01_CONFIG.get("cooldown_bars", 1))
-HISTORICAL_LIMIT = int(KROBOT01_CONFIG.get("historical_limit", 800))
-TAKE_PROFIT_PCT = float(KROBOT01_CONFIG.get("take_profit_pct", KROBOT01_CONFIG.get("tp_pct", 0.0)))
-STOP_LOSS_PCT = float(KROBOT01_CONFIG.get("stop_loss_pct", KROBOT01_CONFIG.get("sl_pct", 0.0)))
-
-
-def pct_to_frac(pct: float) -> float:
-    return pct / 100.0
-
-
-def fmt_num(x: float) -> str:
-    return f"{x:.8f}".rstrip("0").rstrip(".")
-
-
-def parse_iso_to_ms(s: str) -> int:
-    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    return int(dt.timestamp() * 1000)
-
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def gen_id() -> str:
-    return uuid.uuid4().hex
-
-
-@dataclass
-class Candle:
-    close_time_ms: int
-    close: float
-    quote_volume: float
-
-
-class EMA:
-    __slots__ = ("alpha", "value", "count")
-
-    def __init__(self, period: int):
-        self.alpha = 2.0 / (max(1, period) + 1)
-        self.value = 0.0
-        self.count = 0
-
-    def update(self, price: float) -> float:
-        self.count += 1
-        if self.count == 1:
-            self.value = price
-        else:
-            self.value = self.alpha * price + (1.0 - self.alpha) * self.value
-        return self.value
-
-
-class RollingVWAP:
-    __slots__ = ("window", "buf", "sum_pv", "sum_v")
-
-    def __init__(self, window: int):
-        self.window = max(2, int(window))
-        self.buf = deque()
-        self.sum_pv = 0.0
-        self.sum_v = 0.0
-
-    def update(self, price: float, volume: float) -> Optional[float]:
-        v = max(0.0, float(volume))
-        pv = price * v
-
-        self.buf.append((pv, v))
-        self.sum_pv += pv
-        self.sum_v += v
-
-        if len(self.buf) > self.window:
-            old_pv, old_v = self.buf.popleft()
-            self.sum_pv -= old_pv
-            self.sum_v -= old_v
-
-        if self.sum_v <= 0:
-            return None
-        return self.sum_pv / self.sum_v
-
-
-class MACD:
+class Krobot01Strategy(StrategyBase):
     __slots__ = (
-        "ema_fast",
-        "ema_slow",
-        "ema_signal",
-        "prev_diff",
-        "count",
-        "crossed_up_active",
-        "crossed_down_active",
+        "ema",
+        "vwap",
+        "macd",
+        "cooldown",
+        "position_side",
+        "entry_price",
+        "highest_since_entry",
+        "lowest_since_entry",
+        "ema_period",
+        "macd_ready_min",
+        "cooldown_bars",
+        "take_profit_pct",
+        "stop_loss_pct",
+        "trailing_stop_pct",
     )
 
-    def __init__(self, fast: int, slow: int, signal: int):
-        self.ema_fast = EMA(fast)
-        self.ema_slow = EMA(slow)
-        self.ema_signal = EMA(signal)
-        self.prev_diff: Optional[float] = None
-        self.count = 0
-        self.crossed_up_active = False
-        self.crossed_down_active = False
+    def __init__(self, strategy_config: StrategyConfig, section: dict):
+        super().__init__(strategy_config)
 
-    def update(self, price: float):
-        self.count += 1
-        fast = self.ema_fast.update(price)
-        slow = self.ema_slow.update(price)
-        macd_line = fast - slow
-        signal_line = self.ema_signal.update(macd_line)
-        diff = macd_line - signal_line
+        ema_period = int(section.get("ema_period", 200))
+        vwap_window = int(section.get("vwap_window", 200))
+        macd_fast = int(section.get("macd_fast", 12))
+        macd_slow = int(section.get("macd_slow", 26))
+        macd_signal = int(section.get("macd_signal", 9))
 
-        if self.prev_diff is not None:
-            if self.prev_diff <= 0 and diff > 0:
-                self.crossed_up_active = True
-                self.crossed_down_active = False
-            elif self.prev_diff >= 0 and diff < 0:
-                self.crossed_up_active = False
-                self.crossed_down_active = True
-        else:
-            self.crossed_up_active = diff > 0
-            self.crossed_down_active = diff < 0
-        self.prev_diff = diff
+        self.ema = EMA(ema_period)
+        self.vwap = RollingVWAP(vwap_window)
+        self.macd = MACD(macd_fast, macd_slow, macd_signal)
 
-        return macd_line, signal_line, self.crossed_up_active, self.crossed_down_active
-
-
-class Krobot01Strategy:
-    __slots__ = ("ema", "vwap", "macd", "last_close_time_ms", "cooldown", "position_side", "entry_price")
-
-    def __init__(self):
-        self.ema = EMA(EMA_PERIOD)
-        self.vwap = RollingVWAP(VWAP_WINDOW)
-        self.macd = MACD(MACD_FAST, MACD_SLOW, MACD_SIGNAL)
-        self.last_close_time_ms = 0
         self.cooldown = 0
         self.position_side: Optional[str] = None
         self.entry_price: Optional[float] = None
+        self.highest_since_entry: Optional[float] = None
+        self.lowest_since_entry: Optional[float] = None
 
-    def on_closed_candle(self, c: Candle):
-        if c.close_time_ms <= self.last_close_time_ms:
+        self.ema_period = ema_period
+        self.macd_ready_min = max(50, macd_slow + macd_signal)
+        self.cooldown_bars = int(section.get("cooldown_bars", 1))
+        self.take_profit_pct = float(section.get("take_profit_pct", section.get("tp_pct", 0.0)))
+        self.stop_loss_pct = float(section.get("stop_loss_pct", section.get("sl_pct", 0.0)))
+        self.trailing_stop_pct = float(section.get("trailing_stop_pct", section.get("ts_pct", 0.0)))
+
+    def _reset_position(self) -> None:
+        self.position_side = None
+        self.entry_price = None
+        self.highest_since_entry = None
+        self.lowest_since_entry = None
+        self.cooldown = self.cooldown_bars
+
+    def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
+        if not self.allow_new_candle(candle):
             return None
-        self.last_close_time_ms = c.close_time_ms
 
         if self.cooldown > 0:
             self.cooldown -= 1
 
-        ema = self.ema.update(c.close)
-        vwap_px = self.vwap.update(c.close, c.quote_volume)
-        _, _, crossed_up, crossed_down = self.macd.update(c.close)
+        ema = self.ema.update(candle.close)
+        vwap_px = self.vwap.update(candle.close, candle.quote_volume)
+        _, _, crossed_up, crossed_down = self.macd.update(candle.close)
 
-        if self.ema.count < EMA_PERIOD or vwap_px is None or self.macd.count < max(50, MACD_SLOW + MACD_SIGNAL):
+        if self.ema.count < self.ema_period or vwap_px is None or self.macd.count < self.macd_ready_min:
             return None
 
+        if is_warmup:
+            return None
+
+        metadata = {
+            "ema": round(ema, 8),
+            "vwap": round(vwap_px, 8),
+        }
+
+        high_px = candle.high if candle.high is not None else candle.close
+        low_px = candle.low if candle.low is not None else candle.close
+
         if self.position_side == "LONG" and self.entry_price is not None:
-            if STOP_LOSS_PCT > 0 and c.close <= self.entry_price * (1.0 - pct_to_frac(STOP_LOSS_PCT)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = COOLDOWN_BARS
-                return "SELL", c.close, "STOP_LOSS_LONG", ema, vwap_px
-            if TAKE_PROFIT_PCT > 0 and c.close >= self.entry_price * (1.0 + pct_to_frac(TAKE_PROFIT_PCT)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = COOLDOWN_BARS
-                return "SELL", c.close, "TAKE_PROFIT_LONG", ema, vwap_px
+            self.highest_since_entry = max(self.highest_since_entry or high_px, high_px)
+
+            sl_px = self.entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
+            tp_px = self.entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
+            trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
+
+            metadata.update(
+                {
+                    "entry_price": round(self.entry_price, 8),
+                    "high_since_entry": round(self.highest_since_entry or high_px, 8),
+                    "tp_px": round(tp_px, 8),
+                    "sl_px": round(sl_px, 8),
+                    "trail_px": round(trail_px, 8),
+                }
+            )
+
+            if self.stop_loss_pct > 0 and low_px <= sl_px:
+                metadata["trade_condition"] = "STOP_LOSS"
+                self._reset_position()
+                return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
+
+            if self.take_profit_pct > 0 and high_px >= tp_px:
+                metadata["trade_condition"] = "TAKE_PROFIT"
+                self._reset_position()
+                return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
+
+            if self.trailing_stop_pct > 0 and low_px <= trail_px:
+                metadata["trade_condition"] = "TRAILING_STOP"
+                self._reset_position()
+                return self.sell(candle.close, "TRAILING_STOP_LONG", metadata)
 
         if self.position_side == "SHORT" and self.entry_price is not None:
-            if STOP_LOSS_PCT > 0 and c.close >= self.entry_price * (1.0 + pct_to_frac(STOP_LOSS_PCT)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = COOLDOWN_BARS
-                return "BUY", c.close, "STOP_LOSS_SHORT", ema, vwap_px
-            if TAKE_PROFIT_PCT > 0 and c.close <= self.entry_price * (1.0 - pct_to_frac(TAKE_PROFIT_PCT)):
-                self.position_side = None
-                self.entry_price = None
-                self.cooldown = COOLDOWN_BARS
-                return "BUY", c.close, "TAKE_PROFIT_SHORT", ema, vwap_px
+            self.lowest_since_entry = min(self.lowest_since_entry or low_px, low_px)
+
+            sl_px = self.entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
+            tp_px = self.entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
+            trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
+
+            metadata.update(
+                {
+                    "entry_price": round(self.entry_price, 8),
+                    "low_since_entry": round(self.lowest_since_entry or low_px, 8),
+                    "tp_px": round(tp_px, 8),
+                    "sl_px": round(sl_px, 8),
+                    "trail_px": round(trail_px, 8),
+                }
+            )
+
+            if self.stop_loss_pct > 0 and high_px >= sl_px:
+                metadata["trade_condition"] = "STOP_LOSS"
+                self._reset_position()
+                return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
+
+            if self.take_profit_pct > 0 and low_px <= tp_px:
+                metadata["trade_condition"] = "TAKE_PROFIT"
+                self._reset_position()
+                return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
+
+            if self.trailing_stop_pct > 0 and high_px >= trail_px:
+                metadata["trade_condition"] = "TRAILING_STOP"
+                self._reset_position()
+                return self.buy(candle.close, "TRAILING_STOP_SHORT", metadata)
 
         if self.cooldown > 0:
             return None
 
-        long_cond = c.close > ema and c.close > vwap_px and crossed_up
-        short_cond = c.close < ema and c.close < vwap_px and crossed_down
+        long_cond = candle.close > ema and candle.close > vwap_px and crossed_up
+        short_cond = candle.close < ema and candle.close < vwap_px and crossed_down
 
         print(
-            f"close= {c.close:.6f} EMA={ema:.6f} VWAP={vwap_px:.6f} MACD_crossed_up={crossed_up} crossed_down={crossed_down} long_cond={long_cond} short_cond={short_cond}",
-            flush=True,)
+            f"close={candle.close:.6f} ema={ema:.6f} vwap={vwap_px:.6f} crossed_up={crossed_up} crossed_down={crossed_down} long_cond={long_cond} short_cond={short_cond}",
+            flush=True,
+        )
 
         if long_cond:
             if self.position_side == "LONG":
                 return None
             self.position_side = "LONG"
-            self.entry_price = c.close
-            self.cooldown = COOLDOWN_BARS
-            return "BUY", c.close, "ENTER_LONG", ema, vwap_px
+            self.entry_price = candle.close
+            self.highest_since_entry = high_px
+            self.lowest_since_entry = low_px
+            self.cooldown = self.cooldown_bars
+            metadata["trade_condition"] = "ENTRY"
+            return self.buy(candle.close, "ENTER_LONG", metadata)
 
         if short_cond:
             if self.position_side == "SHORT":
                 return None
             self.position_side = "SHORT"
-            self.entry_price = c.close
-            self.cooldown = COOLDOWN_BARS
-            return "SELL", c.close, "ENTER_SHORT", ema, vwap_px
+            self.entry_price = candle.close
+            self.highest_since_entry = high_px
+            self.lowest_since_entry = low_px
+            self.cooldown = self.cooldown_bars
+            metadata["trade_condition"] = "ENTRY"
+            return self.sell(candle.close, "ENTER_SHORT", metadata)
 
         return None
 
 
-def build_order_payload(side: str, price: float) -> dict:
-    px = price
-    if ORDER_TYPE == "LIMIT":
-        if side == "BUY":
-            px = price * (1.0 + pct_to_frac(LIMIT_SLIPPAGE_PCT))
-        else:
-            px = price * (1.0 - pct_to_frac(LIMIT_SLIPPAGE_PCT))
-
-    return {
-        "retry": 0,
-        "data": {
-            "request_id": gen_id(),
-            "user_id": USER_ID,
-            "order_id": gen_id(),
-            "exchange": EXCHANGE,
-            "market_type": MARKET_TYPE,
-            "position_side": POSITION_SIDE,
-            "symbol": ORDER_SYMBOL,
-            "type": ORDER_TYPE,
-            "side": side,
-            "price": fmt_num(px),
-            "quantity": fmt_num(float(ORDER_QTY)),
-            "requested_at": now_ms(),
-            "expired_at": None,
-            "source": SOURCE,
-            "strategy_id": STRATEGY_ID,
-            "is_paper_trading": IS_PAPER_TRADING,
-        },
-    }
+def build_runtime_config(section: dict) -> RuntimeConfig:
+    return RuntimeConfig(
+        db_dsn=GLOBAL_CONFIG.get("db_dsn", "postgres://root:root@localhost:5432/market_data?sslmode=disable"),
+        nats_url=GLOBAL_CONFIG.get("nats_url", "nats://localhost:4222"),
+        nats_allow_reconnect=GLOBAL_CONFIG.get("nats_allow_reconnect", True),
+        nats_max_reconnect_attempts=GLOBAL_CONFIG.get("nats_max_reconnect_attempts", -1),
+        nats_reconnect_time_wait_sec=GLOBAL_CONFIG.get("nats_reconnect_time_wait_sec", 2),
+        nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
+        nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
+        nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
+        kline_subject=section.get("kline_subject", "KLINE.TOKOCRYPTO.>"),
+        order_subject=section.get("order_subject", "order_engine.place_order"),
+        queue_name=section.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_KROBOT01"),
+        user_id=section.get("user_id", "paper-1"),
+        exchange=section.get("exchange", "tokocrypto"),
+        market_type=section.get("market_type", "spot"),
+        position_side=section.get("position_side", "BOTH"),
+        source=section.get("source", "python-krobot01"),
+        strategy_id=section.get("strategy_id", "python-krobot01-ema-vwap-macd"),
+        is_paper_trading=section.get("is_paper_trading", True),
+        order_type=section.get("order_type", "LIMIT"),
+        order_qty=float(section.get("order_qty", 10)),
+        order_symbol=section.get("order_symbol", section.get("symbol", "SOLUSDT")),
+        limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
+    )
 
 
-async def warmup_from_postgres(strategy: Krobot01Strategy):
-    conn = await asyncpg.connect(DB_DSN)
-    try:
-        rows = await conn.fetch(
-            """
-            SELECT close_time, close_price, quote_volume
-            FROM market_klines
-            WHERE symbol = $1
-              AND interval = $2
-              AND is_closed IS TRUE
-            ORDER BY close_time DESC
-            LIMIT $3
-            """,
-            SYMBOL,
-            INTERVAL,
-            HISTORICAL_LIMIT,
-        )
-    finally:
-        await conn.close()
-
-    rows = list(reversed(rows))
-    for row in rows:
-        candle = Candle(
-            close_time_ms=int(row["close_time"].timestamp() * 1000),
-            close=float(row["close_price"]),
-            quote_volume=float(row["quote_volume"]),
-        )
-        strategy.on_closed_candle(candle)
-
-    print(f"Warmup completed with {len(rows)} candles", flush=True)
+def build_strategy_config(section: dict) -> StrategyConfig:
+    return StrategyConfig(
+        name="KROBOT01",
+        symbol=section.get("symbol", "SOLUSDT"),
+        interval=section.get("interval", "1m"),
+        warmup_limit=int(section.get("historical_limit", 800)),
+    )
 
 
 async def run():
-    if ORDER_QTY <= 0:
+    runtime = build_runtime_config(KROBOT01_CONFIG)
+
+    if runtime.order_qty <= 0:
         raise ValueError("order_qty must be > 0")
-    if TAKE_PROFIT_PCT < 0:
+
+    strategy = Krobot01Strategy(build_strategy_config(KROBOT01_CONFIG), KROBOT01_CONFIG)
+
+    if strategy.take_profit_pct < 0:
         raise ValueError("take_profit_pct must be >= 0")
-    if STOP_LOSS_PCT < 0:
+
+    if strategy.stop_loss_pct < 0:
         raise ValueError("stop_loss_pct must be >= 0")
 
-    strategy = Krobot01Strategy()
+    if strategy.trailing_stop_pct < 0:
+        raise ValueError("trailing_stop_pct must be >= 0")
 
-    try:
-        await warmup_from_postgres(strategy)
-    except Exception as exc:
-        print(f"Warmup skipped due to DB error: {exc}", flush=True)
-
-    nc = NATS()
-
-    async def on_disconnected():
-        print("NATS disconnected, reconnecting...", flush=True)
-
-    async def on_reconnected():
-        print(f"NATS reconnected, server={nc.connected_url}", flush=True)
-
-    async def on_error(exc):
-        print(f"NATS async error: {exc}", flush=True)
-
-    async def on_closed():
-        print("NATS connection closed", flush=True)
-
-    await nc.connect(
-        NATS_URL,
-        allow_reconnect=NATS_ALLOW_RECONNECT,
-        max_reconnect_attempts=NATS_MAX_RECONNECT_ATTEMPTS,
-        reconnect_time_wait=NATS_RECONNECT_TIME_WAIT_SEC,
-        connect_timeout=NATS_CONNECT_TIMEOUT_SEC,
-        ping_interval=NATS_PING_INTERVAL_SEC,
-        max_outstanding_pings=NATS_MAX_OUTSTANDING_PINGS,
-        disconnected_cb=on_disconnected,
-        reconnected_cb=on_reconnected,
-        error_cb=on_error,
-        closed_cb=on_closed,
-    )
-    js = nc.jetstream()
-
-    async def handler(msg):
-        try:
-            payload = orjson.loads(msg.data)
-            data = payload.get("data", {})
-
-            if not data.get("IsClosed"):
-                await msg.ack()
-                return
-
-            if data.get("Symbol") != SYMBOL:
-                await msg.ack()
-                return
-
-            if data.get("Interval") != INTERVAL:
-                await msg.ack()
-                return
-            print(f"Received closed candle: close_time={data.get('CloseTime')} close_price={data.get('ClosePrice')}", flush=True)
-            candle = Candle(
-                close_time_ms=parse_iso_to_ms(data["CloseTime"]),
-                close=float(data["ClosePrice"]),
-                quote_volume=float(data.get("QuoteVolume", "0") or "0"),
-            )
-
-            signal = strategy.on_closed_candle(candle)
-            if signal:
-                side, px, reason, ema, vwap_px = signal
-                out = build_order_payload(side, px)
-                await js.publish(ORDER_SUBJECT, orjson.dumps(out))
-                print(
-                    f"[KROBOT01] {reason} side={side} symbol={ORDER_SYMBOL} close={px:.6f} ema={ema:.6f} vwap={vwap_px:.6f}",
-                    flush=True,
-                )
-
-            await msg.ack()
-        except Exception as exc:
-            print(f"handler error: {exc}", flush=True)
-            return
-
-    await js.subscribe(
-        KLINE_SUBJECT,
-        manual_ack=True,
-        queue=QUEUE_NAME,
-        cb=handler,
-    )
-
-    print("Krobot01 strategy running...", flush=True)
-    while True:
-        if nc.is_closed:
-            raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
-        await asyncio.sleep(1)
+    runner = StrategyRunner(strategy=strategy, runtime=runtime)
+    await runner.run()
 
 
 if __name__ == "__main__":

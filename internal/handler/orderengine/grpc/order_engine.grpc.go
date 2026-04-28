@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 
 	"github.com/guregu/null/v6"
 	"github.com/krobus00/hft-service/internal/entity"
@@ -39,22 +40,29 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
+	marketType := entity.NormalizeMarketType(req.GetMarketType())
+	normalizedSide := entity.NormalizeOrderSideByMarket(req.GetSide(), marketType)
+	if normalizedSide == "" {
+		return nil, errors.New("invalid side for market_type")
+	}
+
 	orderHistory, err := s.orderEngineService.PlaceOrder(ctx, entity.OrderRequest{
 		RequestID:      req.GetRequestId(),
 		UserID:         req.GetUserId(),
 		Exchange:       req.GetExchange(),
-		MarketType:     string(entity.NormalizeMarketType(req.GetMarketType())),
+		MarketType:     string(marketType),
 		PositionSide:   string(entity.NormalizePositionSide(req.GetPositionSide())),
 		OrderID:        null.NewString(req.GetOrderId(), req.GetOrderId() != "").Ptr(),
 		Symbol:         req.GetSymbol(),
 		Type:           entity.OrderType(req.GetType()),
-		Side:           entity.OrderSide(req.GetSide()),
+		Side:           normalizedSide,
 		Price:          price,
 		Quantity:       quantity,
 		RequestedAt:    req.GetRequestedAt(),
 		ExpiredAt:      null.NewInt(req.GetExpiredAt(), req.GetExpiredAt() != 0).Ptr(),
 		Source:         req.GetSource(),
 		StrategyID:     null.NewString(req.GetStrategyId(), req.GetStrategyId() != "").Ptr(),
+		TradeCondition: req.GetTradeCondition(),
 		IsPaperTrading: req.GetIsPaperTrading(),
 	})
 	if err != nil {
@@ -86,6 +94,7 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		AcknowledgedAt:    null.NewInt(orderHistory.AcknowledgedAt.Time.UnixMilli(), orderHistory.AcknowledgedAt.Valid).Ptr(),
 		FilledAt:          null.NewInt(orderHistory.FilledAt.Time.UnixMilli(), orderHistory.FilledAt.Valid).Ptr(),
 		StrategyId:        null.NewString(orderHistory.StrategyID.String, orderHistory.StrategyID.Valid).Ptr(),
+		TradeCondition:    orderHistory.TradeCondition,
 		ErrorMessage:      null.NewString(orderHistory.ErrorMessage.String, orderHistory.ErrorMessage.Valid).Ptr(),
 		CreatedAt:         orderHistory.CreatedAt.Unix(),
 		UpdatedAt:         orderHistory.UpdatedAt.Unix(),

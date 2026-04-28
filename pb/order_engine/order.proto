@@ -20,6 +20,7 @@ message PlaceOrderRequest {
   bool            is_paper_trading = 14;
   string          market_type      = 15;
   string          position_side    = 16;
+  string          trade_condition  = 17;
 }
 
 message PlaceOrderResponse {
@@ -51,4 +52,5 @@ message PlaceOrderResponse {
   bool            is_paper_trading    = 26;
   string          market_type         = 27;
   string          position_side       = 28;
+  string          trade_condition     = 29;
 }

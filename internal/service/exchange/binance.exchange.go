@@ -214,89 +214,128 @@ func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) e
 }
 
 func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, message []byte, marketType entity.MarketType) error {
-	var payload struct {
-		Stream string `json:"stream"`
-		Data   struct {
-			Event     string `json:"e"`
-			EventTime int64  `json:"E"`
-			Symbol    string `json:"s"`
-			Kline     struct {
-				OpenTime         int64  `json:"t"`
-				CloseTime        int64  `json:"T"`
-				Symbol           string `json:"s"`
-				Interval         string `json:"i"`
-				FirstTradeID     int64  `json:"f"`
-				LastTradeID      int64  `json:"L"`
-				Open             string `json:"o"`
-				Close            string `json:"c"`
-				High             string `json:"h"`
-				Low              string `json:"l"`
-				BaseVolume       string `json:"v"`
-				TradeCount       int32  `json:"n"`
-				IsClosed         bool   `json:"x"`
-				QuoteVolume      string `json:"q"`
-				TakerBaseVolume  string `json:"V"`
-				TakerQuoteVolume string `json:"Q"`
-			} `json:"k"`
-		} `json:"data"`
+	market := entity.NormalizeMarketType(string(marketType))
+
+	var wsResponse struct {
+		Result any    `json:"result"`
+		ID     any    `json:"id"`
+		Code   *int   `json:"code"`
+		Msg    string `json:"msg"`
+	}
+	if err := json.Unmarshal(message, &wsResponse); err == nil {
+		if wsResponse.Code != nil {
+			logrus.WithFields(logrus.Fields{
+				"exchange":    entity.ExchangeBinance,
+				"market_type": market,
+				"code":        *wsResponse.Code,
+				"message":     wsResponse.Msg,
+				"id":          wsResponse.ID,
+			}).Warn("binance websocket returned error response")
+		}
+		if wsResponse.Result == nil && wsResponse.ID != nil {
+			logrus.WithFields(logrus.Fields{
+				"exchange":    entity.ExchangeBinance,
+				"market_type": market,
+				"id":          wsResponse.ID,
+			}).Info("binance websocket subscription acknowledged")
+		}
 	}
 
-	if err := json.Unmarshal(message, &payload); err != nil {
+	type klinePayload struct {
+		Event     string `json:"e"`
+		EventTime int64  `json:"E"`
+		Symbol    string `json:"s"`
+		Kline     struct {
+			OpenTime         int64  `json:"t"`
+			CloseTime        int64  `json:"T"`
+			Symbol           string `json:"s"`
+			Interval         string `json:"i"`
+			FirstTradeID     int64  `json:"f"`
+			LastTradeID      int64  `json:"L"`
+			Open             string `json:"o"`
+			Close            string `json:"c"`
+			High             string `json:"h"`
+			Low              string `json:"l"`
+			BaseVolume       string `json:"v"`
+			TradeCount       int32  `json:"n"`
+			IsClosed         bool   `json:"x"`
+			QuoteVolume      string `json:"q"`
+			TakerBaseVolume  string `json:"V"`
+			TakerQuoteVolume string `json:"Q"`
+		} `json:"k"`
+	}
+
+	var wrapped struct {
+		Stream string       `json:"stream"`
+		Data   klinePayload `json:"data"`
+	}
+	if err := json.Unmarshal(message, &wrapped); err != nil {
 		return err
 	}
 
-	if payload.Data.Event != "kline" || payload.Data.Kline.Close == "" {
+	payload := wrapped.Data
+	// Binance supports both combined stream payloads (`{"stream":...,"data":...}`)
+	// and raw stream payloads (`{"e":"kline",...}`), so fall back to raw parsing.
+	if strings.TrimSpace(payload.Event) == "" {
+		var raw klinePayload
+		if err := json.Unmarshal(message, &raw); err != nil {
+			return err
+		}
+		payload = raw
+	}
+
+	if payload.Event != "kline" || payload.Kline.Close == "" {
 		return nil
 	}
 
-	openPrice, err := decimal.NewFromString(payload.Data.Kline.Open)
+	openPrice, err := decimal.NewFromString(payload.Kline.Open)
 	if err != nil {
 		return fmt.Errorf("invalid open price: %w", err)
 	}
 
-	closePrice, err := decimal.NewFromString(payload.Data.Kline.Close)
+	closePrice, err := decimal.NewFromString(payload.Kline.Close)
 	if err != nil {
 		return fmt.Errorf("invalid close price: %w", err)
 	}
 
-	highPrice, err := decimal.NewFromString(payload.Data.Kline.High)
+	highPrice, err := decimal.NewFromString(payload.Kline.High)
 	if err != nil {
 		return fmt.Errorf("invalid high price: %w", err)
 	}
 
-	lowPrice, err := decimal.NewFromString(payload.Data.Kline.Low)
+	lowPrice, err := decimal.NewFromString(payload.Kline.Low)
 	if err != nil {
 		return fmt.Errorf("invalid low price: %w", err)
 	}
 
-	baseVolume, err := decimal.NewFromString(payload.Data.Kline.BaseVolume)
+	baseVolume, err := decimal.NewFromString(payload.Kline.BaseVolume)
 	if err != nil {
 		return fmt.Errorf("invalid base volume: %w", err)
 	}
 
-	quoteVolume, err := decimal.NewFromString(payload.Data.Kline.QuoteVolume)
+	quoteVolume, err := decimal.NewFromString(payload.Kline.QuoteVolume)
 	if err != nil {
 		return fmt.Errorf("invalid quote volume: %w", err)
 	}
 
-	takerBaseVolume, err := decimal.NewFromString(payload.Data.Kline.TakerBaseVolume)
+	takerBaseVolume, err := decimal.NewFromString(payload.Kline.TakerBaseVolume)
 	if err != nil {
 		return fmt.Errorf("invalid taker base volume: %w", err)
 	}
 
-	takerQuoteVolume, err := decimal.NewFromString(payload.Data.Kline.TakerQuoteVolume)
+	takerQuoteVolume, err := decimal.NewFromString(payload.Kline.TakerQuoteVolume)
 	if err != nil {
 		return fmt.Errorf("invalid taker quote volume: %w", err)
 	}
 
-	eventAt := time.UnixMilli(payload.Data.EventTime).UTC()
-	openAt := time.UnixMilli(payload.Data.Kline.OpenTime).UTC()
-	closeAt := time.UnixMilli(payload.Data.Kline.CloseTime).UTC()
+	eventAt := time.UnixMilli(payload.EventTime).UTC()
+	openAt := time.UnixMilli(payload.Kline.OpenTime).UTC()
+	closeAt := time.UnixMilli(payload.Kline.CloseTime).UTC()
 	now := time.Now().UTC()
 
-	symbol := strings.TrimSpace(payload.Data.Kline.Symbol)
+	symbol := strings.TrimSpace(payload.Kline.Symbol)
 	if symbol == "" {
-		symbol = strings.TrimSpace(payload.Data.Symbol)
+		symbol = strings.TrimSpace(payload.Symbol)
 	}
 	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeBinance,
@@ -308,11 +347,11 @@ func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, messa
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeBinance),
-		MarketType:       string(entity.NormalizeMarketType(string(marketType))),
-		EventType:        payload.Data.Event,
+		MarketType:       string(market),
+		EventType:        payload.Event,
 		EventTime:        eventAt,
 		Symbol:           symbol,
-		Interval:         payload.Data.Kline.Interval,
+		Interval:         payload.Kline.Interval,
 		OpenTime:         openAt,
 		CloseTime:        closeAt,
 		OpenPrice:        openPrice,
@@ -323,8 +362,8 @@ func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, messa
 		QuoteVolume:      quoteVolume,
 		TakerBaseVolume:  takerBaseVolume,
 		TakerQuoteVolume: takerQuoteVolume,
-		TradeCount:       payload.Data.Kline.TradeCount,
-		IsClosed:         payload.Data.Kline.IsClosed,
+		TradeCount:       payload.Kline.TradeCount,
+		IsClosed:         payload.Kline.IsClosed,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -365,8 +404,15 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 				ExchangeName: entity.ExchangeBinance,
 				WSURLEnvKey:  e.wsURLEnvKeyByMarketType(marketType),
 				DefaultWSURL: e.defaultWSURLByMarketType(marketType),
+				ResolveWSURL: func(subscriptions []entity.KlineSubscription) string {
+					return e.resolveBinanceKlineWSURL(marketType, deps, subscriptions)
+				},
 				NormalizeSubs: func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription {
-					return normalizeExchangeSubscriptions(deps, subscriptions)
+					normalized := normalizeExchangeSubscriptions(deps, subscriptions)
+					for i := range normalized {
+						normalized[i].Payload = ""
+					}
+					return normalized
 				},
 				Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
 					return resyncSymbolMappingAndSubscriptions(
@@ -431,6 +477,10 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 
 	marketType := e.resolveMarketType(order.MarketType)
 	order.MarketType = string(marketType)
+	order.Side = entity.NormalizeOrderSideByMarket(string(order.Side), marketType)
+	if order.Side == "" {
+		return nil, fmt.Errorf("unsupported order side for market type %s", marketType)
+	}
 
 	deps := exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeBinance,
@@ -450,7 +500,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		return nil, err
 	}
 
-	sideCode, err := binanceOrderSideCode(order.Side)
+	sideCode, err := binanceOrderSideCode(order.Side, marketType)
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +622,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		}
 
 		if marketType == entity.MarketTypeFutures && apiErr.Code == -4061 {
-			if alternatePositionSide, ok := alternateFuturesPositionSide(futuresPositionSide, order.Side); ok && alternatePositionSide != futuresPositionSide {
+			if alternatePositionSide, ok := alternateFuturesPositionSide(futuresPositionSide, sideCode); ok && alternatePositionSide != futuresPositionSide {
 				logrus.WithFields(logrus.Fields{
 					"market_type":             marketType,
 					"symbol":                  orderSymbol,
@@ -768,6 +818,19 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 	if err != nil {
 		return entity.OrderHistory{}, err
 	}
+	if marketType == entity.MarketTypeFutures {
+		historySide = entity.NormalizeOrderSideByMarket(string(order.Side), marketType)
+		if historySide == "" {
+			switch strings.ToUpper(strings.TrimSpace(resp.Side)) {
+			case "BUY":
+				historySide = entity.OrderSideLong
+			case "SELL":
+				historySide = entity.OrderSideShort
+			default:
+				return entity.OrderHistory{}, fmt.Errorf("unsupported binance futures order side code: %s", resp.Side)
+			}
+		}
+	}
 
 	historyType, err := binanceOrderTypeFromCode(resp.Type)
 	if err != nil {
@@ -841,6 +904,7 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 		AcknowledgedAt:    acknowledgedAt,
 		FilledAt:          sql.NullTime{},
 		StrategyID:        strategyID,
+		TradeCondition:    order.TradeCondition,
 		ErrorMessage:      sql.NullString{},
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -965,14 +1029,30 @@ func binanceOrderTypeCode(orderType entity.OrderType) (string, error) {
 	}
 }
 
-func binanceOrderSideCode(orderSide entity.OrderSide) (string, error) {
-	switch orderSide {
+func binanceOrderSideCode(orderSide entity.OrderSide, marketType entity.MarketType) (string, error) {
+	normalized := entity.NormalizeOrderSideByMarket(string(orderSide), marketType)
+	if normalized == "" {
+		return "", fmt.Errorf("unsupported order side for binance: %s", orderSide)
+	}
+
+	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures {
+		switch normalized {
+		case entity.OrderSideLong:
+			return "BUY", nil
+		case entity.OrderSideShort:
+			return "SELL", nil
+		default:
+			return "", fmt.Errorf("unsupported futures order side for binance: %s", orderSide)
+		}
+	}
+
+	switch normalized {
 	case entity.OrderSideBuy:
 		return "BUY", nil
 	case entity.OrderSideSell:
 		return "SELL", nil
 	default:
-		return "", fmt.Errorf("unsupported order side for binance: %s", orderSide)
+		return "", fmt.Errorf("unsupported spot order side for binance: %s", orderSide)
 	}
 }
 
@@ -1236,10 +1316,76 @@ func (e *BinanceExchange) wsURLEnvKeyByMarketType(marketType entity.MarketType) 
 
 func (e *BinanceExchange) defaultWSURLByMarketType(marketType entity.MarketType) string {
 	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures {
-		return "wss://fstream.binance.com/stream"
+		return "wss://fstream.binance.com/market/stream"
 	}
 
 	return "wss://stream.binance.com:9443/stream"
+}
+
+func (e *BinanceExchange) resolveBinanceKlineWSURL(marketType entity.MarketType, deps exchangeKlineResyncDeps, subscriptions []entity.KlineSubscription) string {
+	wsURL := strings.TrimSpace(os.Getenv(e.wsURLEnvKeyByMarketType(marketType)))
+	if wsURL == "" {
+		wsURL = e.defaultWSURLByMarketType(marketType)
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(wsURL))
+	if err != nil {
+		return wsURL
+	}
+
+	streams := make([]string, 0, len(subscriptions))
+	for _, sub := range subscriptions {
+		if sub.Exchange != string(entity.ExchangeBinance) {
+			continue
+		}
+		if string(entity.NormalizeMarketType(sub.MarketType)) != string(entity.NormalizeMarketType(string(marketType))) {
+			continue
+		}
+
+		exchangeSymbol := resolveExchangeKlineSymbolFromMapping(deps, sub.Symbol)
+		exchangeSymbol = normalizeBinanceKlineStreamSymbol(exchangeSymbol, marketType)
+		exchangeSymbol = strings.ToLower(strings.TrimSpace(exchangeSymbol))
+		interval := strings.TrimSpace(sub.Interval)
+		if exchangeSymbol == "" || interval == "" {
+			continue
+		}
+
+		streams = append(streams, exchangeSymbol+"@kline_"+interval)
+	}
+
+	if len(streams) == 0 {
+		return wsURL
+	}
+
+	if strings.HasSuffix(parsed.Path, "/ws") {
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/ws") + "/stream"
+	}
+	if !strings.HasSuffix(parsed.Path, "/stream") {
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/stream"
+	}
+
+	query := parsed.Query()
+	query.Set("streams", strings.Join(streams, "/"))
+	parsed.RawQuery = query.Encode()
+
+	return parsed.String()
+}
+
+func normalizeBinanceKlineStreamSymbol(symbol string, marketType entity.MarketType) string {
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	if normalized == "" {
+		return ""
+	}
+
+	if entity.NormalizeMarketType(string(marketType)) == entity.MarketTypeFutures && strings.HasSuffix(normalized, ".P") {
+		normalized = strings.TrimSuffix(normalized, ".P")
+	}
+
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	normalized = strings.ReplaceAll(normalized, ".", "")
+
+	return normalized
 }
 
 func (e *BinanceExchange) symbolPrecisionCacheKey(marketType entity.MarketType, symbol string) string {
@@ -1271,7 +1417,7 @@ func (e *BinanceExchange) futuresPositionSide(order entity.OrderRequest) string 
 	}
 
 	if mode == "HEDGE" {
-		if order.Side == entity.OrderSideSell {
+		if order.Side == entity.OrderSideShort {
 			return "SHORT"
 		}
 		return "LONG"
@@ -1292,17 +1438,17 @@ func normalizeBinanceFuturesPositionMode(raw string) string {
 	}
 }
 
-func alternateFuturesPositionSide(current string, side entity.OrderSide) (string, bool) {
+func alternateFuturesPositionSide(current string, sideCode string) (string, bool) {
 	switch strings.ToUpper(strings.TrimSpace(current)) {
 	case "BOTH":
-		if side == entity.OrderSideSell {
+		if strings.EqualFold(strings.TrimSpace(sideCode), "SELL") {
 			return "SHORT", true
 		}
 		return "LONG", true
 	case "LONG", "SHORT":
 		return "BOTH", true
 	default:
-		if side == entity.OrderSideSell {
+		if strings.EqualFold(strings.TrimSpace(sideCode), "SELL") {
 			return "SHORT", true
 		}
 		return "LONG", true

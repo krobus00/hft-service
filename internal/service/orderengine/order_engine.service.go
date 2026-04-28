@@ -147,7 +147,30 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, ctx.Err()
 	}
 
-	order.MarketType = string(entity.NormalizeMarketType(order.MarketType))
+	marketType := entity.NormalizeMarketType(order.MarketType)
+	order.MarketType = string(marketType)
+
+	normalizedSide := entity.NormalizeOrderSideByMarket(string(order.Side), marketType)
+	if normalizedSide == "" {
+		return nil, fmt.Errorf("invalid order side for market type %s: %s", marketType, order.Side)
+	}
+	order.Side = normalizedSide
+
+	if marketType == entity.MarketTypeFutures {
+		normalizedPosition := entity.NormalizePositionSide(order.PositionSide)
+		if normalizedPosition == entity.PositionSideBoth {
+			if order.Side == entity.OrderSideShort {
+				normalizedPosition = entity.PositionSideShort
+			} else {
+				normalizedPosition = entity.PositionSideLong
+			}
+		}
+		order.PositionSide = string(normalizedPosition)
+	} else {
+		order.PositionSide = string(entity.PositionSideBoth)
+	}
+
+	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
 
 	exchange, ok := s.exchanges[entity.ExchangeName(order.Exchange)]
 	if !ok {
@@ -197,6 +220,31 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+
+	marketType := entity.NormalizeMarketType(order.MarketType)
+	order.MarketType = string(marketType)
+
+	normalizedSide := entity.NormalizeOrderSideByMarket(string(order.Side), marketType)
+	if normalizedSide == "" {
+		return fmt.Errorf("invalid order side for market type %s: %s", marketType, order.Side)
+	}
+	order.Side = normalizedSide
+
+	if marketType == entity.MarketTypeFutures {
+		normalizedPosition := entity.NormalizePositionSide(order.PositionSide)
+		if normalizedPosition == entity.PositionSideBoth {
+			if order.Side == entity.OrderSideShort {
+				normalizedPosition = entity.PositionSideShort
+			} else {
+				normalizedPosition = entity.PositionSideLong
+			}
+		}
+		order.PositionSide = string(normalizedPosition)
+	} else {
+		order.PositionSide = string(entity.PositionSideBoth)
+	}
+
+	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
 
 	event := entity.OrderRequestEvent{
 		Data: order,
@@ -268,6 +316,7 @@ func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
 		AcknowledgedAt:    acknowledgedAt,
 		FilledAt:          filledAt,
 		StrategyID:        strategyID,
+		TradeCondition:    order.TradeCondition,
 		ErrorMessage:      sql.NullString{},
 		CreatedAt:         now,
 		UpdatedAt:         now,
