@@ -29,6 +29,7 @@ type EnvConfig struct {
 	Database                map[string]DatabaseConfig `mapstructure:"database"`
 	Redis                   map[string]RedisConfig    `mapstructure:"redis"`
 	NatsJetstream           NatsJetstreamConfig       `mapstructure:"nats_jetstream"`
+	Notification            NotificationConfig        `mapstructure:"notification"`
 }
 
 type APIKeyConfig struct {
@@ -76,6 +77,10 @@ type ExchangeConfig struct {
 
 type RedisConfig struct {
 	CacheDSN string `mapstructure:"cache_dsn"`
+}
+
+type NotificationConfig struct {
+	DiscordWebhookURL string `mapstructure:"discord_webhook_url"`
 }
 
 func LoadConfig(configPath string) error {

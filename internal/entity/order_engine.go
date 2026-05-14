@@ -120,12 +120,34 @@ type OrderRequest struct {
 	ExpiredAt      *int64          `json:"expired_at,omitempty"`
 	Source         string          `json:"source"`
 	StrategyID     *string         `json:"strategy_id,omitempty"`
+	StrategyName   string          `json:"strategy_name,omitempty"`
+	Interval       string          `json:"interval,omitempty"`
+	Internal       string          `json:"internal,omitempty"`
 	TradeCondition string          `json:"trade_condition"`
+	NeedNotification bool          `json:"need_notification"`
 	IsPaperTrading bool            `json:"is_paper_trading"`
 }
 
 type OrderRequestEvent struct {
 	Data OrderRequest `json:"data"`
+}
+
+type OrderNotification struct {
+	RequestID      string `json:"request_id"`
+	Exchange       string `json:"exchange"`
+	MarketType     string `json:"market_type"`
+	StrategyID     string `json:"strategy_id,omitempty"`
+	StrategyName   string `json:"strategy_name,omitempty"`
+	Symbol         string `json:"symbol"`
+	Internal       string `json:"internal,omitempty"`
+	Interval       string `json:"interval,omitempty"`
+	Side           string `json:"side"`
+	Price          string `json:"price"`
+	TradeCondition string `json:"trade_condition"`
+}
+
+type OrderNotificationEvent struct {
+	Data OrderNotification `json:"data"`
 }
 
 type OrderHistory struct {

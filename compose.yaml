@@ -104,6 +104,25 @@ services:
     networks:
       - hft-network
 
+  notification-service:
+    build:
+      context: .
+      target: final
+    command: ["notification-service"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - app
+    cpus: "0.50"
+    mem_limit: 256m
+    networks:
+      - hft-network
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis
@@ -138,7 +157,8 @@ services:
       - nats_data:/data
       - ./tools/nats/nats.conf:/etc/nats/nats.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz | grep -q ok"]
+      test:
+        ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz | grep -q ok"]
       interval: 5s
       timeout: 3s
       retries: 20

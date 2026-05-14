@@ -14,10 +14,13 @@ const (
 
 	OrderEngineQueueName  = "order_engine_queue"
 	OrderEngineQueueGroup = "order_engine_group"
+	NotificationQueueName = "notification_queue"
+	NotificationQueueGroup = "notification_group"
 
 	OrderEngineStreamName              = "order_engine"
 	OrderEngineStreamSubjectAll        = "order_engine.*"
 	OrderEngineStreamSubjectPlaceOrder = "order_engine.place_order"
+	OrderEngineStreamSubjectNotificationAlert = "order_engine.notification_alert"
 )
 
 func GetKlineStreamSubject(exchange, symbol, interval string) string {

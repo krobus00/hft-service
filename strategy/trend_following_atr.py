@@ -339,6 +339,7 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 		position_side=section.get("position_side", "ONE_WAY"),
 		source=section.get("source", "python-trend-following-atr"),
 		strategy_id=section.get("strategy_id", "python-trend-following-atr"),
+		need_notification=bool(section.get("need_notification", False)),
 		is_paper_trading=section.get("is_paper_trading", True),
 		order_type=section.get("order_type", "MARKET"),
 		order_qty=float(section.get("order_qty", 1)),

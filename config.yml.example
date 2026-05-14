@@ -33,6 +33,9 @@ nats_jetstream:
     insert_kline: 5s
     place_order: 5s
     grid_strategy: 5s
+    notification_alert: 5s
+notification:
+  discord_webhook_url: ""
 database:
   market_data:
     dsn: "postgres://root:root@postgresql:5432/market_data?sslmode=disable"

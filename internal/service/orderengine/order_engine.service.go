@@ -26,6 +26,7 @@ var (
 	ErrCreateOrderHistoryFailed    = errors.New("failed to create order history")
 	ErrDuplicateOrder              = errors.New("duplicate order")
 	ErrPublishOrderEventFailed     = errors.New("failed to publish order event")
+	ErrPublishOrderNotificationFailed = errors.New("failed to publish order notification event")
 	ErrInvalidAPIKey               = errors.New("invalid API key")
 )
 
@@ -198,6 +199,12 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 			return nil, ErrCreateOrderHistoryFailed
 		}
 
+		err = s.publishOrderNotificationEvent(order, orderHistory)
+		if err != nil {
+			logrus.Error(err)
+			return nil, err
+		}
+
 		return orderHistory, nil
 	}
 
@@ -211,6 +218,12 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 	if err != nil {
 		logrus.Error(err)
 		return nil, ErrCreateOrderHistoryFailed
+	}
+
+	err = s.publishOrderNotificationEvent(order, orderHistory)
+	if err != nil {
+		logrus.Error(err)
+		return nil, err
 	}
 
 	return orderHistory, nil
@@ -322,4 +335,61 @@ func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
 		UpdatedAt:         now,
 		IsPaperTrading:    true,
 	}
+}
+
+func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderRequest, orderHistory *entity.OrderHistory) error {
+	if !order.NeedNotification {
+		return nil
+	}
+
+	strategyID := ""
+	if order.StrategyID != nil {
+		strategyID = strings.TrimSpace(*order.StrategyID)
+	}
+
+	strategyName := strings.TrimSpace(order.StrategyName)
+	if strategyName == "" {
+		strategyName = strategyID
+	}
+
+	price := order.Price.String()
+	if orderHistory != nil {
+		if orderHistory.AvgFillPrice != nil {
+			price = orderHistory.AvgFillPrice.String()
+		} else if orderHistory.Price != nil {
+			price = orderHistory.Price.String()
+		}
+	}
+
+	event := entity.OrderNotificationEvent{
+		Data: entity.OrderNotification{
+			RequestID:      order.RequestID,
+			Exchange:       order.Exchange,
+			MarketType:     order.MarketType,
+			StrategyID:     strategyID,
+			StrategyName:   strategyName,
+			Symbol:         order.Symbol,
+			Internal:       fallbackOrderField(order.Internal, order.Symbol),
+			Interval:       strings.TrimSpace(order.Interval),
+			Side:           strings.ToUpper(strings.TrimSpace(string(order.Side))),
+			Price:          price,
+			TradeCondition: strings.ToUpper(strings.TrimSpace(order.TradeCondition)),
+		},
+	}
+
+	err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectNotificationAlert, event)
+	if err != nil {
+		return ErrPublishOrderNotificationFailed
+	}
+
+	return nil
+}
+
+func fallbackOrderField(primary, secondary string) string {
+	primary = strings.TrimSpace(primary)
+	if primary != "" {
+		return primary
+	}
+
+	return strings.TrimSpace(secondary)
 }
