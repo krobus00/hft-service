@@ -39,7 +39,11 @@ type PlaceOrderRequest struct {
 	ExpiredAt      int64  `json:"expired_at"`
 	Source         string `json:"source"`
 	StrategyID     string `json:"strategy_id"`
+	StrategyName   string `json:"strategy_name"`
+	Interval       string `json:"interval"`
+	Internal       string `json:"internal"`
 	TradeCondition string `json:"trade_condition"`
+	NeedNotification bool `json:"need_notification"`
 	IsPaperTrading bool   `json:"is_paper_trading"`
 }
 
@@ -220,7 +224,11 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 		ExpiredAt:      null.NewInt(req.ExpiredAt, req.ExpiredAt != 0).Ptr(),
 		Source:         req.Source,
 		StrategyID:     null.NewString(req.StrategyID, req.StrategyID != "").Ptr(),
+		StrategyName:   req.StrategyName,
+		Interval:       req.Interval,
+		Internal:       req.Internal,
 		TradeCondition: req.TradeCondition,
+		NeedNotification: req.NeedNotification,
 		IsPaperTrading: req.IsPaperTrading,
 	}, nil
 }

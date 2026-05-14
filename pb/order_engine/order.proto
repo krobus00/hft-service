@@ -21,6 +21,10 @@ message PlaceOrderRequest {
   string          market_type      = 15;
   string          position_side    = 16;
   string          trade_condition  = 17;
+  optional string strategy_name    = 18;
+  optional string interval         = 19;
+  optional string internal         = 20;
+  bool            need_notification = 21;
 }
 
 message PlaceOrderResponse {

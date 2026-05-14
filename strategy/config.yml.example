@@ -14,6 +14,7 @@ krobot01:
   user_id: paper-1
   source: python-krobot01
   strategy_id: python-krobot01-ema200-vwap-macd
+  need_notification: true
   is_paper_trading: true
 
   kline_subject: KLINE.TOKOCRYPTO.>
@@ -49,6 +50,7 @@ template:
   user_id: paper-1
   source: python-template
   strategy_id: python-template
+  need_notification: true
   is_paper_trading: true
 
   kline_subject: KLINE.TOKOCRYPTO.>
@@ -74,6 +76,7 @@ ai:
   user_id: minimax-01
   source: python-ai-minimax-m2-7
   strategy_id: python-ai-minimax-m2-7-hybrid
+  need_notification: true
   is_paper_trading: false
 
   kline_subject: KLINE.BINANCE.>
@@ -123,6 +126,7 @@ breakout:
   user_id: paper-1
   source: python-breakout
   strategy_id: python-breakout-pullback
+  need_notification: true
   is_paper_trading: true
 
   kline_subject: KLINE.BINANCE.>
@@ -161,6 +165,7 @@ trend_following_atr:
   user_id: paper-1
   source: python-trend-following-atr
   strategy_id: python-trend-following-atr
+  need_notification: true
   is_paper_trading: true
 
   kline_subject: KLINE.BINANCE.>

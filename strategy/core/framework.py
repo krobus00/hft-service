@@ -102,7 +102,11 @@ class StrategyRunner:
                 "expired_at": None,
                 "source": self.runtime.source,
                 "strategy_id": self.runtime.strategy_id,
+                "strategy_name": self.strategy.config.name,
+                "interval": self.strategy.config.interval,
+                "internal": self.runtime.order_symbol,
                 "trade_condition": trade_condition,
+                "need_notification": self.runtime.need_notification,
                 "is_paper_trading": self.runtime.is_paper_trading,
             },
         }

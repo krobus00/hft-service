@@ -48,6 +48,7 @@ class RuntimeConfig:
     position_side: str
     source: str
     strategy_id: str
+    need_notification: bool
     is_paper_trading: bool
     order_type: str
     order_qty: float
