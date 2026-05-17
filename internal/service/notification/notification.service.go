@@ -108,16 +108,36 @@ func (s *Service) handleOrderNotificationEvent(ctx context.Context, msg *nats.Ms
 }
 
 func (s *Service) sendDiscordAlert(ctx context.Context, payload entity.OrderNotification) error {
-	body := map[string]string{
-		"content": fmt.Sprintf(
-			"order alert | strategy=%s | symbol=%s | internal=%s | interval=%s | side=%s | price=%s",
-			fallback(payload.StrategyName, payload.StrategyID),
-			fallback(payload.Symbol, "-"),
-			fallback(payload.Internal, payload.Symbol),
-			fallback(payload.Interval, "-"),
-			payload.Side,
-			fallback(payload.Price, "-"),
-		),
+	side := strings.ToUpper(strings.TrimSpace(payload.Side))
+	if side == "" {
+		side = "-"
+	}
+
+	embedColor := 3447003 // blue (default)
+	switch side {
+	case "BUY", "LONG":
+		embedColor = 5763719 // green
+	case "SELL", "SHORT":
+		embedColor = 15548997 // red
+	}
+
+	body := map[string]any{
+		"embeds": []map[string]any{
+			{
+				"title":       fmt.Sprintf("[%s] New Order", fallback(payload.StrategyName, payload.StrategyID)),
+				"description": "New order notification received",
+				"color":       embedColor,
+				"timestamp":   time.Now().UTC().Format(time.RFC3339),
+				"fields": []map[string]any{
+					{"name": "Strategy", "value": fallback(payload.StrategyName, payload.StrategyID), "inline": true},
+					{"name": "Symbol", "value": fallback(payload.Symbol, "-"), "inline": true},
+					{"name": "Internal", "value": fallback(payload.Internal, payload.Symbol), "inline": true},
+					{"name": "Interval", "value": fallback(payload.Interval, "-"), "inline": true},
+					{"name": "Side", "value": side, "inline": true},
+					{"name": "Price", "value": fallback(payload.Price, "-"), "inline": true},
+				},
+			},
+		},
 	}
 
 	raw, err := json.Marshal(body)
