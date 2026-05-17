@@ -84,10 +84,27 @@ func EnsureConsumer(ctx context.Context, js nats.JetStreamContext, streamName st
 		return fmt.Errorf("consumer durable name is required")
 	}
 
-	_, err := js.ConsumerInfo(streamName, durable, nats.Context(ctx))
+	existingConsumer, err := js.ConsumerInfo(streamName, durable, nats.Context(ctx))
 	if err == nil {
+		existingIsPush := isPushConsumer(existingConsumer.Config)
+		desiredIsPush := isPushConsumer(*consumerConfig)
+
+		if existingIsPush != desiredIsPush {
+			if recreateErr := recreateConsumer(ctx, js, streamName, durable, consumerConfig); recreateErr != nil {
+				return recreateErr
+			}
+			return nil
+		}
+
 		_, updateErr := js.UpdateConsumer(streamName, consumerConfig, nats.Context(ctx))
 		if updateErr != nil {
+			if shouldRecreateConsumer(updateErr) {
+				if recreateErr := recreateConsumer(ctx, js, streamName, durable, consumerConfig); recreateErr != nil {
+					return recreateErr
+				}
+				return nil
+			}
+
 			logrus.WithError(updateErr).WithFields(logrus.Fields{
 				"stream":   streamName,
 				"consumer": durable,
@@ -104,6 +121,40 @@ func EnsureConsumer(ctx context.Context, js nats.JetStreamContext, streamName st
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func isPushConsumer(config nats.ConsumerConfig) bool {
+	return strings.TrimSpace(config.DeliverSubject) != "" || strings.TrimSpace(config.DeliverGroup) != ""
+}
+
+func shouldRecreateConsumer(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "pull based consumer") ||
+		strings.Contains(errMsg, "push based consumer") ||
+		strings.Contains(errMsg, "deliver subject")
+}
+
+func recreateConsumer(ctx context.Context, js nats.JetStreamContext, streamName, durable string, consumerConfig *nats.ConsumerConfig) error {
+	deleteErr := js.DeleteConsumer(streamName, durable, nats.Context(ctx))
+	if deleteErr != nil && !errors.Is(deleteErr, nats.ErrConsumerNotFound) {
+		return deleteErr
+	}
+
+	_, addErr := js.AddConsumer(streamName, consumerConfig, nats.Context(ctx))
+	if addErr != nil {
+		return addErr
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"stream":   streamName,
+		"consumer": durable,
+	}).Info("recreated consumer to match desired config")
 
 	return nil
 }
