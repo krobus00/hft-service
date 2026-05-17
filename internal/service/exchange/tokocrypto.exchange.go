@@ -129,19 +129,6 @@ func (e *TokocryptoExchange) JetstreamEventSubscribe(ctx context.Context) error 
 	}
 
 	consumerName := constant.GetKlineInsertQueueGroup(string(entity.ExchangeTokoCrypto))
-	err = util.EnsureConsumer(ctx, e.js, constant.KlineStreamName, &nats.ConsumerConfig{
-		Durable:       consumerName,
-		DeliverGroup:  consumerName,
-		FilterSubject: constant.GetKlineExchangeStreamSubject(string(entity.ExchangeTokoCrypto)),
-		AckPolicy:     nats.AckExplicitPolicy,
-		DeliverPolicy: nats.DeliverNewPolicy,
-		MaxDeliver:    int(config.Env.NatsJetstream.MaxRetries),
-	})
-	if err != nil {
-		logrus.Error(err)
-		return err
-	}
-
 	_, err = e.js.QueueSubscribe(
 		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeTokoCrypto)),
 		consumerName,
