@@ -89,3 +89,36 @@ DO UPDATE SET
 	_, err = r.db.ExecContext(ctx, query, args...)
 	return err
 }
+
+// DeleteOldKlines removes the oldest kline rows for a given subscription key
+// when the total count exceeds maxCount, keeping the most recent maxCount rows by open_time.
+//
+// Strategy: find the boundary open_time at position maxCount (0-indexed OFFSET) using the
+// idx_kline_lookup index, then delete every row older than that boundary in a single range
+// sweep on the same index. This avoids materializing a keep-list and performs two narrow
+// index seeks instead of an anti-join. If total rows <= maxCount the subquery returns NULL
+// and nothing is deleted.
+func (r *MarketKlineRepository) DeleteOldKlines(ctx context.Context, exchange, marketType, symbol, interval string, maxCount int) error {
+	if maxCount <= 0 {
+		return nil
+	}
+	const query = `
+DELETE FROM market_klines
+WHERE exchange = $1
+  AND market_type = $2
+  AND symbol = $3
+  AND interval = $4
+  AND open_time < (
+      SELECT open_time
+      FROM market_klines
+      WHERE exchange = $1
+        AND market_type = $2
+        AND symbol = $3
+        AND interval = $4
+      ORDER BY open_time DESC
+      OFFSET $5
+      LIMIT 1
+  )`
+	_, err := r.db.ExecContext(ctx, query, exchange, marketType, symbol, interval, maxCount)
+	return err
+}

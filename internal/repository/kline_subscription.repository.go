@@ -35,6 +35,18 @@ func (r *KlineSubscriptionRepository) GetByExchangeAndMarketType(ctx context.Con
 	return subscriptions, err
 }
 
+func (r *KlineSubscriptionRepository) GetByExchangeMarketTypeSymbolInterval(ctx context.Context, exchange, marketType, symbol, interval string) (*entity.KlineSubscription, error) {
+	var sub entity.KlineSubscription
+	err := r.db.GetContext(ctx, &sub,
+		"SELECT * FROM kline_subscriptions WHERE exchange = $1 AND market_type = $2 AND symbol = $3 AND interval = $4 LIMIT 1",
+		exchange, marketType, symbol, interval,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
+}
+
 func (r *KlineSubscriptionRepository) GetLatestUpdatedAtByExchange(ctx context.Context, exchange string) (time.Time, error) {
 	var updatedAt sql.NullTime
 	err := r.db.GetContext(ctx, &updatedAt, "SELECT MAX(updated_at) FROM kline_subscriptions WHERE exchange = $1", exchange)
