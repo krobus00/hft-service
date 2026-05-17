@@ -64,17 +64,6 @@ func (s *Service) JetstreamEventSubscribe(ctx context.Context) error {
 		return err
 	}
 
-	err = util.EnsureConsumer(ctx, s.js, constant.OrderEngineStreamName, &nats.ConsumerConfig{
-		Durable:       constant.NotificationQueueGroup,
-		DeliverGroup:  constant.NotificationQueueName,
-		FilterSubject: constant.OrderEngineStreamSubjectNotificationAlert,
-		AckPolicy:     nats.AckExplicitPolicy,
-		MaxDeliver:    int(config.Env.NatsJetstream.MaxRetries),
-	})
-	if err != nil {
-		return err
-	}
-
 	_, err = s.js.QueueSubscribe(
 		constant.OrderEngineStreamSubjectNotificationAlert,
 		constant.NotificationQueueName,

@@ -2,9 +2,7 @@ package util
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -67,40 +65,6 @@ func PublishEvent(js nats.JetStreamContext, subject string, data any) error {
 	}
 
 	_, err = js.Publish(subject, payload)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func EnsureConsumer(ctx context.Context, js nats.JetStreamContext, streamName string, consumerConfig *nats.ConsumerConfig) error {
-	if consumerConfig == nil {
-		return fmt.Errorf("consumer config is required")
-	}
-
-	durable := strings.TrimSpace(consumerConfig.Durable)
-	if durable == "" {
-		return fmt.Errorf("consumer durable name is required")
-	}
-
-	_, err := js.ConsumerInfo(streamName, durable, nats.Context(ctx))
-	if err == nil {
-		_, updateErr := js.UpdateConsumer(streamName, consumerConfig, nats.Context(ctx))
-		if updateErr != nil {
-			logrus.WithError(updateErr).WithFields(logrus.Fields{
-				"stream":   streamName,
-				"consumer": durable,
-			}).Warn("failed to update consumer config; using existing consumer")
-		}
-		return nil
-	}
-
-	if !errors.Is(err, nats.ErrConsumerNotFound) {
-		return err
-	}
-
-	_, err = js.AddConsumer(streamName, consumerConfig, nats.Context(ctx))
 	if err != nil {
 		return err
 	}
