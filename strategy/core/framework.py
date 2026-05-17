@@ -74,7 +74,42 @@ class StrategyRunner:
 
         return "SIGNAL"
 
+    @staticmethod
+    def infer_order_reason(reason: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        if metadata:
+            raw = str(metadata.get("order_reason", "")).strip()
+            if raw:
+                return raw
+
+        raw_reason = str(reason or "").strip()
+        if raw_reason:
+            return raw_reason
+
+        return "UNKNOWN"
+
+    @staticmethod
+    def infer_exit_type(reason: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        if metadata:
+            raw = str(metadata.get("exit_type", "")).strip().upper()
+            if raw in {"TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"}:
+                return raw
+
+            tc = str(metadata.get("trade_condition", "")).strip().upper()
+            if tc in {"TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"}:
+                return tc
+
+        normalized = str(reason or "").strip().upper()
+        if "TRAIL" in normalized:
+            return "TRAILING_STOP"
+        if "STOP_LOSS" in normalized or normalized.startswith("SL") or "_SL_" in normalized or normalized.endswith("_SL"):
+            return "STOP_LOSS"
+        if "TAKE_PROFIT" in normalized or normalized.startswith("TP") or "_TP_" in normalized or normalized.endswith("_TP"):
+            return "TAKE_PROFIT"
+
+        return ""
+
     def build_order_payload(self, side: str, price: float, reason: str, metadata: Optional[Dict[str, Any]] = None) -> dict:
+        metadata = metadata or {}
         px = float(price)
         if self.runtime.order_type == "LIMIT":
             if side == "BUY":
@@ -83,6 +118,8 @@ class StrategyRunner:
                 px = price * (1.0 - pct_to_frac(self.runtime.limit_slippage_pct))
 
         trade_condition = self.infer_trade_condition(reason, metadata)
+        order_reason = self.infer_order_reason(reason, metadata)
+        exit_type = self.infer_exit_type(reason, metadata)
 
         return {
             "retry": 0,
@@ -106,6 +143,8 @@ class StrategyRunner:
                 "interval": self.strategy.config.interval,
                 "internal": self.runtime.order_symbol,
                 "trade_condition": trade_condition,
+                "order_reason": order_reason,
+                "exit_type": exit_type,
                 "need_notification": self.runtime.need_notification,
                 "is_paper_trading": self.runtime.is_paper_trading,
             },

@@ -23,28 +23,30 @@ var (
 )
 
 type PlaceOrderRequest struct {
-	ApiKey         string `json:"api_key"`
-	RequestID      string `json:"request_id"`
-	UserID         string `json:"user_id"`
-	OrderID        string `json:"order_id"`
-	Exchange       string `json:"exchange"`
-	MarketType     string `json:"market_type"`
-	PositionSide   string `json:"position_side"`
-	Symbol         string `json:"symbol"`
-	Type           string `json:"type"`
-	Side           string `json:"side"`
-	Price          string `json:"price"`
-	Quantity       string `json:"quantity"`
-	RequestedAt    int64  `json:"requested_at"`
-	ExpiredAt      int64  `json:"expired_at"`
-	Source         string `json:"source"`
-	StrategyID     string `json:"strategy_id"`
-	StrategyName   string `json:"strategy_name"`
-	Interval       string `json:"interval"`
-	Internal       string `json:"internal"`
-	TradeCondition string `json:"trade_condition"`
-	NeedNotification bool `json:"need_notification"`
-	IsPaperTrading bool   `json:"is_paper_trading"`
+	ApiKey           string `json:"api_key"`
+	RequestID        string `json:"request_id"`
+	UserID           string `json:"user_id"`
+	OrderID          string `json:"order_id"`
+	Exchange         string `json:"exchange"`
+	MarketType       string `json:"market_type"`
+	PositionSide     string `json:"position_side"`
+	Symbol           string `json:"symbol"`
+	Type             string `json:"type"`
+	Side             string `json:"side"`
+	Price            string `json:"price"`
+	Quantity         string `json:"quantity"`
+	RequestedAt      int64  `json:"requested_at"`
+	ExpiredAt        int64  `json:"expired_at"`
+	Source           string `json:"source"`
+	StrategyID       string `json:"strategy_id"`
+	StrategyName     string `json:"strategy_name"`
+	Interval         string `json:"interval"`
+	Internal         string `json:"internal"`
+	TradeCondition   string `json:"trade_condition"`
+	OrderReason      string `json:"order_reason"`
+	ExitType         string `json:"exit_type"`
+	NeedNotification bool   `json:"need_notification"`
+	IsPaperTrading   bool   `json:"is_paper_trading"`
 }
 
 type PlaceOrderResponse struct {
@@ -73,6 +75,8 @@ type PlaceOrderResponse struct {
 	FilledAt          *int64  `json:"filled_at,omitempty"`
 	StrategyID        *string `json:"strategy_id,omitempty"`
 	TradeCondition    string  `json:"trade_condition"`
+	OrderReason       string  `json:"order_reason,omitempty"`
+	ExitType          string  `json:"exit_type,omitempty"`
 	ErrorMessage      *string `json:"error_message,omitempty"`
 	CreatedAt         int64   `json:"created_at"`
 	UpdatedAt         int64   `json:"updated_at"`
@@ -141,6 +145,8 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := mapOrderHistoryToHTTPResponse(history)
+	resp.OrderReason = strings.TrimSpace(orderReq.OrderReason)
+	resp.ExitType = strings.TrimSpace(orderReq.ExitType)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -209,27 +215,29 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 	}
 
 	return entity.OrderRequest{
-		RequestID:      req.RequestID,
-		UserID:         req.UserID,
-		OrderID:        null.NewString(req.OrderID, req.OrderID != "").Ptr(),
-		Exchange:       req.Exchange,
-		MarketType:     string(marketType),
-		PositionSide:   string(entity.NormalizePositionSide(req.PositionSide)),
-		Symbol:         req.Symbol,
-		Type:           entity.OrderType(strings.ToUpper(req.Type)),
-		Side:           side,
-		Price:          price,
-		Quantity:       quantity,
-		RequestedAt:    req.RequestedAt,
-		ExpiredAt:      null.NewInt(req.ExpiredAt, req.ExpiredAt != 0).Ptr(),
-		Source:         req.Source,
-		StrategyID:     null.NewString(req.StrategyID, req.StrategyID != "").Ptr(),
-		StrategyName:   req.StrategyName,
-		Interval:       req.Interval,
-		Internal:       req.Internal,
-		TradeCondition: req.TradeCondition,
+		RequestID:        req.RequestID,
+		UserID:           req.UserID,
+		OrderID:          null.NewString(req.OrderID, req.OrderID != "").Ptr(),
+		Exchange:         req.Exchange,
+		MarketType:       string(marketType),
+		PositionSide:     string(entity.NormalizePositionSide(req.PositionSide)),
+		Symbol:           req.Symbol,
+		Type:             entity.OrderType(strings.ToUpper(req.Type)),
+		Side:             side,
+		Price:            price,
+		Quantity:         quantity,
+		RequestedAt:      req.RequestedAt,
+		ExpiredAt:        null.NewInt(req.ExpiredAt, req.ExpiredAt != 0).Ptr(),
+		Source:           req.Source,
+		StrategyID:       null.NewString(req.StrategyID, req.StrategyID != "").Ptr(),
+		StrategyName:     req.StrategyName,
+		Interval:         req.Interval,
+		Internal:         req.Internal,
+		TradeCondition:   req.TradeCondition,
+		OrderReason:      req.OrderReason,
+		ExitType:         req.ExitType,
 		NeedNotification: req.NeedNotification,
-		IsPaperTrading: req.IsPaperTrading,
+		IsPaperTrading:   req.IsPaperTrading,
 	}, nil
 }
 

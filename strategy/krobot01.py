@@ -110,16 +110,22 @@ class Krobot01Strategy(StrategyBase):
 
             if self.stop_loss_pct > 0 and low_px <= sl_px:
                 metadata["trade_condition"] = "STOP_LOSS"
+                metadata["order_reason"] = "STOP_LOSS_LONG"
+                metadata["exit_type"] = "STOP_LOSS"
                 self._reset_position()
                 return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
 
             if self.take_profit_pct > 0 and high_px >= tp_px:
                 metadata["trade_condition"] = "TAKE_PROFIT"
+                metadata["order_reason"] = "TAKE_PROFIT_LONG"
+                metadata["exit_type"] = "TAKE_PROFIT"
                 self._reset_position()
                 return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
 
             if self.trailing_stop_pct > 0 and low_px <= trail_px:
                 metadata["trade_condition"] = "TRAILING_STOP"
+                metadata["order_reason"] = "TRAILING_STOP_LONG"
+                metadata["exit_type"] = "TRAILING_STOP"
                 self._reset_position()
                 return self.sell(candle.close, "TRAILING_STOP_LONG", metadata)
 
@@ -142,16 +148,22 @@ class Krobot01Strategy(StrategyBase):
 
             if self.stop_loss_pct > 0 and high_px >= sl_px:
                 metadata["trade_condition"] = "STOP_LOSS"
+                metadata["order_reason"] = "STOP_LOSS_SHORT"
+                metadata["exit_type"] = "STOP_LOSS"
                 self._reset_position()
                 return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
 
             if self.take_profit_pct > 0 and low_px <= tp_px:
                 metadata["trade_condition"] = "TAKE_PROFIT"
+                metadata["order_reason"] = "TAKE_PROFIT_SHORT"
+                metadata["exit_type"] = "TAKE_PROFIT"
                 self._reset_position()
                 return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
 
             if self.trailing_stop_pct > 0 and high_px >= trail_px:
                 metadata["trade_condition"] = "TRAILING_STOP"
+                metadata["order_reason"] = "TRAILING_STOP_SHORT"
+                metadata["exit_type"] = "TRAILING_STOP"
                 self._reset_position()
                 return self.buy(candle.close, "TRAILING_STOP_SHORT", metadata)
 
@@ -175,6 +187,8 @@ class Krobot01Strategy(StrategyBase):
             self.lowest_since_entry = low_px
             self.cooldown = self.cooldown_bars
             metadata["trade_condition"] = "ENTRY"
+            metadata["order_reason"] = "ENTER_LONG"
+            metadata["exit_type"] = ""
             return self.buy(candle.close, "ENTER_LONG", metadata)
 
         if short_cond:
@@ -186,6 +200,8 @@ class Krobot01Strategy(StrategyBase):
             self.lowest_since_entry = low_px
             self.cooldown = self.cooldown_bars
             metadata["trade_condition"] = "ENTRY"
+            metadata["order_reason"] = "ENTER_SHORT"
+            metadata["exit_type"] = ""
             return self.sell(candle.close, "ENTER_SHORT", metadata)
 
         return None

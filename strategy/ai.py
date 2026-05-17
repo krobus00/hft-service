@@ -242,7 +242,8 @@ class AIHybridStrategy(StrategyBase):
             "- If already in position, decide whether to HOLD or EXIT using side action"
             " (SELL exits BUY/LONG, BUY exits SELL/SHORT).\n\n"
             "Respond in JSON:\n"
-            "{\"action\":\"BUY | SELL | HOLD\",\"confidence\":0..1,\"reason\":\"short explanation\"}\n"
+            "{\"action\":\"BUY | SELL | HOLD\",\"confidence\":0..1,\"reason\":\"short explanation (max 255 chars)\"}\n"
+            "The reason must be concise and MUST NOT exceed 255 characters.\n"
             "Return ONLY valid JSON."
         )
 
@@ -294,7 +295,7 @@ class AIHybridStrategy(StrategyBase):
             confidence = float(parsed.get("confidence", 0.0))
             confidence = max(0.0, min(1.0, confidence))
 
-            reason = str(parsed.get("reason", "AI_DECISION"))[:160]
+            reason = " ".join(str(parsed.get("reason", "AI_DECISION")).split())[:255]
             print(
                 (
                     f"[AI_RESPONSE_PARSED] symbol={self.config.symbol} interval={self.config.interval} "
@@ -575,6 +576,15 @@ class AIHybridStrategy(StrategyBase):
                 tagged_metadata["trade_condition"] = "TRAILING_STOP"
             else:
                 tagged_metadata["trade_condition"] = "EXIT"
+        tagged_metadata["order_reason"] = reason[:255]
+        if reason.startswith("TAKE_PROFIT"):
+            tagged_metadata["exit_type"] = "TAKE_PROFIT"
+        elif reason.startswith("STOP_LOSS"):
+            tagged_metadata["exit_type"] = "STOP_LOSS"
+        elif reason.startswith("TRAILING_STOP"):
+            tagged_metadata["exit_type"] = "TRAILING_STOP"
+        else:
+            tagged_metadata["exit_type"] = ""
         self.position_side = None
         self.entry_price = None
         self.highest_since_entry = None
@@ -594,6 +604,15 @@ class AIHybridStrategy(StrategyBase):
                 tagged_metadata["trade_condition"] = "TRAILING_STOP"
             else:
                 tagged_metadata["trade_condition"] = "EXIT"
+        tagged_metadata["order_reason"] = reason[:255]
+        if reason.startswith("TAKE_PROFIT"):
+            tagged_metadata["exit_type"] = "TAKE_PROFIT"
+        elif reason.startswith("STOP_LOSS"):
+            tagged_metadata["exit_type"] = "STOP_LOSS"
+        elif reason.startswith("TRAILING_STOP"):
+            tagged_metadata["exit_type"] = "TRAILING_STOP"
+        else:
+            tagged_metadata["exit_type"] = ""
         self.position_side = None
         self.entry_price = None
         self.highest_since_entry = None
@@ -695,6 +714,8 @@ class AIHybridStrategy(StrategyBase):
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
+                    metadata["order_reason"] = "ENTER_LONG_AI"
+                    metadata["exit_type"] = ""
                     signal = self.buy(candle.close, "ENTER_LONG_AI", metadata)
                 elif final_action == "SELL":
                     self.position_side = "SHORT"
@@ -704,6 +725,8 @@ class AIHybridStrategy(StrategyBase):
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
+                    metadata["order_reason"] = "ENTER_SHORT_AI"
+                    metadata["exit_type"] = ""
                     signal = self.sell(candle.close, "ENTER_SHORT_AI", metadata)
 
         self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)

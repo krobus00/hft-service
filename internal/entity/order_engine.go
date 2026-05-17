@@ -12,6 +12,7 @@ type OrderType string
 type OrderSide string
 type PositionSide string
 type TradeCondition string
+type ExitType string
 
 const (
 	OrderSideBuy   OrderSide = "BUY"
@@ -33,6 +34,10 @@ const (
 	TradeConditionTrailingStop TradeCondition = "TRAILING_STOP"
 	TradeConditionSignal       TradeCondition = "SIGNAL"
 	TradeConditionUnknown      TradeCondition = "UNKNOWN"
+
+	ExitTypeTakeProfit   ExitType = "TAKE_PROFIT"
+	ExitTypeStopLoss     ExitType = "STOP_LOSS"
+	ExitTypeTrailingStop ExitType = "TRAILING_STOP"
 )
 
 func NormalizePositionSide(raw string) PositionSide {
@@ -104,28 +109,43 @@ func NormalizeTradeCondition(raw string) TradeCondition {
 	}
 }
 
+func NormalizeExitType(raw string) ExitType {
+	switch ExitType(strings.ToUpper(strings.TrimSpace(raw))) {
+	case ExitTypeTakeProfit:
+		return ExitTypeTakeProfit
+	case ExitTypeStopLoss:
+		return ExitTypeStopLoss
+	case ExitTypeTrailingStop:
+		return ExitTypeTrailingStop
+	default:
+		return ""
+	}
+}
+
 type OrderRequest struct {
-	RequestID      string          `json:"request_id"`
-	UserID         string          `json:"user_id"`
-	OrderID        *string         `json:"order_id"`
-	Exchange       string          `json:"exchange"`
-	MarketType     string          `json:"market_type"`
-	PositionSide   string          `json:"position_side"`
-	Symbol         string          `json:"symbol"`
-	Type           OrderType       `json:"type"`
-	Side           OrderSide       `json:"side"`
-	Price          decimal.Decimal `json:"price"`
-	Quantity       decimal.Decimal `json:"quantity"`
-	RequestedAt    int64           `json:"requested_at"`
-	ExpiredAt      *int64          `json:"expired_at,omitempty"`
-	Source         string          `json:"source"`
-	StrategyID     *string         `json:"strategy_id,omitempty"`
-	StrategyName   string          `json:"strategy_name,omitempty"`
-	Interval       string          `json:"interval,omitempty"`
-	Internal       string          `json:"internal,omitempty"`
-	TradeCondition string          `json:"trade_condition"`
-	NeedNotification bool          `json:"need_notification"`
-	IsPaperTrading bool            `json:"is_paper_trading"`
+	RequestID        string          `json:"request_id"`
+	UserID           string          `json:"user_id"`
+	OrderID          *string         `json:"order_id"`
+	Exchange         string          `json:"exchange"`
+	MarketType       string          `json:"market_type"`
+	PositionSide     string          `json:"position_side"`
+	Symbol           string          `json:"symbol"`
+	Type             OrderType       `json:"type"`
+	Side             OrderSide       `json:"side"`
+	Price            decimal.Decimal `json:"price"`
+	Quantity         decimal.Decimal `json:"quantity"`
+	RequestedAt      int64           `json:"requested_at"`
+	ExpiredAt        *int64          `json:"expired_at,omitempty"`
+	Source           string          `json:"source"`
+	StrategyID       *string         `json:"strategy_id,omitempty"`
+	StrategyName     string          `json:"strategy_name,omitempty"`
+	Interval         string          `json:"interval,omitempty"`
+	Internal         string          `json:"internal,omitempty"`
+	TradeCondition   string          `json:"trade_condition"`
+	OrderReason      string          `json:"order_reason,omitempty"`
+	ExitType         string          `json:"exit_type,omitempty"`
+	NeedNotification bool            `json:"need_notification"`
+	IsPaperTrading   bool            `json:"is_paper_trading"`
 }
 
 type OrderRequestEvent struct {
@@ -144,6 +164,8 @@ type OrderNotification struct {
 	Side           string `json:"side"`
 	Price          string `json:"price"`
 	TradeCondition string `json:"trade_condition"`
+	OrderReason    string `json:"order_reason,omitempty"`
+	ExitType       string `json:"exit_type,omitempty"`
 }
 
 type OrderNotificationEvent struct {
@@ -176,6 +198,8 @@ type OrderHistory struct {
 	FilledAt          sql.NullTime     `db:"filled_at" json:"filled_at"`
 	StrategyID        sql.NullString   `db:"strategy_id" json:"strategy_id"`
 	TradeCondition    string           `db:"trade_condition" json:"trade_condition"`
+	OrderReason       string           `db:"order_reason" json:"order_reason"`
+	ExitType          string           `db:"exit_type" json:"exit_type"`
 	ErrorMessage      sql.NullString   `db:"error_message" json:"error_message"`
 	CreatedAt         time.Time        `db:"created_at" json:"created_at"`
 	UpdatedAt         time.Time        `db:"updated_at" json:"updated_at"`

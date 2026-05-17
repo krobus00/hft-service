@@ -25,6 +25,8 @@ message PlaceOrderRequest {
   optional string interval         = 19;
   optional string internal         = 20;
   bool            need_notification = 21;
+  string          order_reason      = 22;
+  string          exit_type         = 23;
 }
 
 message PlaceOrderResponse {
@@ -57,4 +59,6 @@ message PlaceOrderResponse {
   string          market_type         = 27;
   string          position_side       = 28;
   string          trade_condition     = 29;
+  string          order_reason        = 30;
+  string          exit_type           = 31;
 }
