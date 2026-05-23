@@ -44,12 +44,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
         nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
         nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-        kline_subject=section.get("kline_subject", "KLINE.TOKOCRYPTO.>"),
         order_subject=section.get("order_subject", "order_engine.place_order"),
-        queue_name=section.get("queue_name", "KLINE_STRATEGY_TEMPLATE"),
         user_id=section.get("user_id", "paper-1"),
-        exchange=section.get("exchange", "tokocrypto"),
-        market_type=section.get("market_type", "spot"),
         position_side=section.get("position_side", "BOTH"),
         source=section.get("source", "python-template"),
         strategy_id=section.get("strategy_id", "python-template"),
@@ -57,7 +53,6 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         is_paper_trading=section.get("is_paper_trading", True),
         order_type=section.get("order_type", "LIMIT"),
         order_qty=float(section.get("order_qty", 10)),
-        order_symbol=section.get("order_symbol", section.get("symbol", "SOLUSDT")),
         limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
     )
 

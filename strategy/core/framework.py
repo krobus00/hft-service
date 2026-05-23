@@ -1,6 +1,7 @@
 import asyncio
+import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import asyncpg
 import orjson
@@ -11,13 +12,22 @@ from .models import Candle, RuntimeConfig, Signal, StrategyConfig
 
 
 class StrategyBase(ABC):
-    __slots__ = ("config", "last_close_time_ms")
+    __slots__ = ("config", "last_close_time_ms", "last_close_time_ms_by_symbol")
 
     def __init__(self, config: StrategyConfig):
         self.config = config
         self.last_close_time_ms = 0
+        self.last_close_time_ms_by_symbol: Dict[str, int] = {}
 
     def allow_new_candle(self, candle: Candle) -> bool:
+        symbol = str(getattr(candle, "symbol", "") or "").strip().upper()
+        if symbol:
+            prev = self.last_close_time_ms_by_symbol.get(symbol, 0)
+            if candle.close_time_ms <= prev:
+                return False
+            self.last_close_time_ms_by_symbol[symbol] = candle.close_time_ms
+            return True
+
         if candle.close_time_ms <= self.last_close_time_ms:
             return False
         self.last_close_time_ms = candle.close_time_ms
@@ -108,7 +118,70 @@ class StrategyRunner:
 
         return ""
 
-    def build_order_payload(self, side: str, price: float, reason: str, metadata: Optional[Dict[str, Any]] = None) -> dict:
+    def _safe_token(self, value: str, fallback: str = "NA") -> str:
+        token = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip())
+        token = token.strip("_")
+        return (token or fallback).upper()
+
+    def _resolve_queue_name(self, exchange: str, market_type: str, symbol: str) -> str:
+        queue_base = "KLINE_STRATEGY"
+        strategy_key = str(self.runtime.strategy_id or self.strategy.config.name or "STRATEGY").strip()
+        return (
+            f"{self._safe_token(queue_base)}_"
+            f"{self._safe_token(exchange)}_"
+            f"{self._safe_token(market_type)}_"
+            f"{self._safe_token(strategy_key)}_"
+            f"{self._safe_token(symbol)}"
+        )
+
+    def _resolve_subject_for_symbol(self, exchange: str, symbol: str, interval: str) -> str:
+        return f"KLINE.{self._safe_token(exchange)}.{self._safe_token(symbol)}.{interval}".upper()
+
+    async def load_symbols_from_subscriptions(self) -> List[Dict[str, str]]:
+        conn = await asyncpg.connect(self.runtime.db_dsn)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT exchange, market_type, symbol, interval
+                FROM kline_subscriptions
+                WHERE lower(interval) = lower($1)
+                ORDER BY exchange ASC, market_type ASC, symbol ASC
+                """,
+                self.strategy.config.interval,
+            )
+        finally:
+            await conn.close()
+
+        targets: List[Dict[str, str]] = []
+        for row in rows:
+            symbol = str(row["symbol"]).strip().upper()
+            interval = str(row["interval"]).strip() or str(self.strategy.config.interval or "").strip()
+            exchange_raw = str(row["exchange"]).strip()
+            exchange = exchange_raw.upper()
+            market_type = str(row["market_type"]).strip().lower()
+            if not symbol:
+                continue
+            if not exchange:
+                continue
+            if not market_type:
+                continue
+            targets.append({"exchange": exchange, "market_type": market_type, "symbol": symbol, "interval": interval})
+
+        if targets:
+            return targets
+        return []
+
+    def build_order_payload(
+        self,
+        side: str,
+        price: float,
+        reason: str,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        interval: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> dict:
         metadata = metadata or {}
         px = float(price)
         if self.runtime.order_type == "LIMIT":
@@ -127,10 +200,10 @@ class StrategyRunner:
                 "request_id": gen_id(),
                 "user_id": self.runtime.user_id,
                 "order_id": gen_id(),
-                "exchange": self.runtime.exchange,
-                "market_type": self.runtime.market_type,
+                "exchange": exchange,
+                "market_type": market_type,
                 "position_side": self.runtime.position_side,
-                "symbol": self.runtime.order_symbol,
+                "symbol": symbol,
                 "type": self.runtime.order_type,
                 "side": side,
                 "price": fmt_num(px),
@@ -140,8 +213,8 @@ class StrategyRunner:
                 "source": self.runtime.source,
                 "strategy_id": self.runtime.strategy_id,
                 "strategy_name": self.strategy.config.name,
-                "interval": self.strategy.config.interval,
-                "internal": self.runtime.order_symbol,
+                "interval": interval,
+                "internal": symbol,
                 "trade_condition": trade_condition,
                 "order_reason": order_reason,
                 "exit_type": exit_type,
@@ -150,7 +223,7 @@ class StrategyRunner:
             },
         }
 
-    async def warmup_from_postgres(self) -> None:
+    async def warmup_from_postgres(self, exchange: str, market_type: str, symbol: str, interval: str) -> None:
         conn = await asyncpg.connect(self.runtime.db_dsn)
         try:
             rows = await conn.fetch(
@@ -164,14 +237,18 @@ class StrategyRunner:
                     taker_quote_volume,
                     trade_count
                 FROM market_klines
-                WHERE symbol = $1
-                  AND interval = $2
+                                WHERE lower(exchange) = lower($1)
+                                    AND lower(market_type) = lower($2)
+                                    AND symbol = $3
+                                    AND interval = $4
                   AND is_closed IS TRUE
                 ORDER BY close_time DESC
-                LIMIT $3
+                                LIMIT $5
                 """,
-                self.strategy.config.symbol,
-                self.strategy.config.interval,
+                                exchange,
+                                market_type,
+                                symbol,
+                interval,
                 self.strategy.config.warmup_limit,
             )
         finally:
@@ -183,6 +260,8 @@ class StrategyRunner:
                 close_time_ms=int(row["close_time"].timestamp() * 1000),
                 close=float(row["close_price"]),
                 quote_volume=float(row["quote_volume"]),
+                symbol=symbol,
+                interval=interval,
                 high=float(row["high_price"]),
                 low=float(row["low_price"]),
                 taker_quote_volume=float(row["taker_quote_volume"]),
@@ -190,14 +269,28 @@ class StrategyRunner:
             )
             self.strategy.on_closed_candle(candle, is_warmup=True)
 
-        print(f"Warmup completed with {len(rows)} candles", flush=True)
+        print(f"Warmup completed for {exchange}:{market_type}:{symbol}:{interval} with {len(rows)} candles", flush=True)
 
     async def run(self) -> None:
         if self.runtime.order_qty <= 0:
             raise ValueError("order_qty must be > 0")
 
         try:
-            await self.warmup_from_postgres()
+            targets = await self.load_symbols_from_subscriptions()
+        except Exception as exc:
+            raise RuntimeError(f"failed loading symbols from kline_subscriptions: {exc}") from exc
+
+        if not targets:
+            raise RuntimeError("No matching rows found in kline_subscriptions for strategy interval")
+
+        try:
+            for target in targets:
+                await self.warmup_from_postgres(
+                    target["exchange"],
+                    target["market_type"],
+                    target["symbol"],
+                    target["interval"],
+                )
         except Exception as exc:
             print(f"Warmup skipped due to DB error: {exc}", flush=True)
 
@@ -230,63 +323,94 @@ class StrategyRunner:
         )
         js = nc.jetstream()
 
-        async def handler(msg):
-            try:
-                payload = orjson.loads(msg.data)
-                data = payload.get("data", {})
+        def build_handler(expected_exchange: str, expected_market_type: str, expected_symbol: str, expected_interval: str):
+            normalized_expected = str(expected_symbol).strip().upper()
+            normalized_interval = str(expected_interval).strip()
+            normalized_exchange = str(expected_exchange).strip().upper()
+            normalized_market_type = str(expected_market_type).strip().lower()
 
-                if data.get("Symbol") != self.strategy.config.symbol:
-                    await msg.ack()
-                    return
+            async def handler(msg):
+                try:
+                    payload = orjson.loads(msg.data)
+                    data = payload.get("data", {})
 
-                if data.get("Interval") != self.strategy.config.interval:
-                    await msg.ack()
-                    return
+                    incoming_symbol = str(data.get("Symbol", "")).strip().upper() or normalized_expected
+                    incoming_interval = str(data.get("Interval", "")).strip() or normalized_interval
 
-                candle = Candle(
-                    close_time_ms=parse_iso_to_ms(data["CloseTime"]),
-                    close=float(data["ClosePrice"]),
-                    quote_volume=float(data.get("QuoteVolume", "0") or "0"),
-                    high=float(data.get("HighPrice", data.get("ClosePrice", "0")) or "0"),
-                    low=float(data.get("LowPrice", data.get("ClosePrice", "0")) or "0"),
-                    taker_quote_volume=float(data.get("TakerQuoteVolume", "0") or "0"),
-                    trade_count=int(data.get("TradeCount", 0) or 0),
-                )
+                    if incoming_symbol != normalized_expected:
+                        await msg.ack()
+                        return
 
-                snapshot = self.strategy.snapshot_state()
-                if data.get("IsClosed"):
-                    signal = self.strategy.on_closed_candle(candle, is_warmup=False)
-                elif self.runtime.enable_intrabar_risk_exit:
-                    signal = self.strategy.on_price_update(candle)
-                else:
-                    signal = None
+                    if incoming_interval != normalized_interval:
+                        await msg.ack()
+                        return
 
-                if signal is not None:
-                    try:
-                        out = self.build_order_payload(signal.side, signal.price, signal.reason, signal.metadata)
-                        await js.publish(self.runtime.order_subject, orjson.dumps(out))
-                    except Exception:
-                        self.strategy.restore_state(snapshot)
-                        raise
-                    metadata = " ".join(f"{k}={v}" for k, v in signal.metadata.items())
-                    trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
-                    print(
-                        f"[{self.strategy.config.name}] {signal.reason} trade_condition={trade_condition} side={signal.side} symbol={self.runtime.order_symbol} close={signal.price:.6f} {metadata}".strip(),
-                        flush=True,
+                    candle = Candle(
+                        close_time_ms=parse_iso_to_ms(data["CloseTime"]),
+                        close=float(data["ClosePrice"]),
+                        quote_volume=float(data.get("QuoteVolume", "0") or "0"),
+                        symbol=incoming_symbol,
+                        interval=incoming_interval,
+                        high=float(data.get("HighPrice", data.get("ClosePrice", "0")) or "0"),
+                        low=float(data.get("LowPrice", data.get("ClosePrice", "0")) or "0"),
+                        taker_quote_volume=float(data.get("TakerQuoteVolume", "0") or "0"),
+                        trade_count=int(data.get("TradeCount", 0) or 0),
                     )
 
-                await msg.ack()
-            except Exception as exc:
-                print(f"handler error: {exc}", flush=True)
+                    snapshot = self.strategy.snapshot_state()
+                    if data.get("IsClosed"):
+                        signal = self.strategy.on_closed_candle(candle, is_warmup=False)
+                    elif self.runtime.enable_intrabar_risk_exit:
+                        signal = self.strategy.on_price_update(candle)
+                    else:
+                        signal = None
 
-        await js.subscribe(
-            self.runtime.kline_subject,
-            manual_ack=True,
-            queue=self.runtime.queue_name,
-            cb=handler,
-        )
+                    if signal is not None:
+                        try:
+                            out = self.build_order_payload(
+                                signal.side,
+                                signal.price,
+                                signal.reason,
+                                exchange=normalized_exchange,
+                                market_type=normalized_market_type,
+                                symbol=candle.symbol,
+                                interval=candle.interval,
+                                metadata=signal.metadata,
+                            )
+                            await js.publish(self.runtime.order_subject, orjson.dumps(out))
+                        except Exception:
+                            self.strategy.restore_state(snapshot)
+                            raise
+                        metadata = " ".join(f"{k}={v}" for k, v in signal.metadata.items())
+                        trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
+                        print(
+                            f"[{self.strategy.config.name}] {signal.reason} trade_condition={trade_condition} side={signal.side} symbol={candle.symbol} close={signal.price:.6f} {metadata}".strip(),
+                            flush=True,
+                        )
 
-        print(f"{self.strategy.config.name} strategy running...", flush=True)
+                    await msg.ack()
+                except Exception as exc:
+                    print(f"handler error: {exc}", flush=True)
+
+            return handler
+
+        for target in targets:
+            exchange = target["exchange"]
+            market_type = target["market_type"]
+            symbol = target["symbol"]
+            interval = target["interval"]
+            subject = self._resolve_subject_for_symbol(exchange, symbol, interval)
+            queue_name = self._resolve_queue_name(exchange, market_type, symbol)
+            await js.subscribe(
+                subject,
+                manual_ack=True,
+                queue=queue_name,
+                cb=build_handler(exchange, market_type, symbol, interval),
+            )
+            print(f"Subscribed subject={subject} queue={queue_name}", flush=True)
+
+        symbols_for_log = ",".join(f"{t['exchange']}:{t['market_type']}:{t['symbol']}:{t['interval']}" for t in targets)
+        print(f"{self.strategy.config.name} strategy running for symbols={symbols_for_log}", flush=True)
         while True:
             if nc.is_closed:
                 raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")

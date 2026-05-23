@@ -7,6 +7,8 @@ class Candle:
     close_time_ms: int
     close: float
     quote_volume: float
+    symbol: str = ""
+    interval: str = ""
     high: Optional[float] = None
     low: Optional[float] = None
     taker_quote_volume: float = 0.0
@@ -39,12 +41,8 @@ class RuntimeConfig:
     nats_connect_timeout_sec: int
     nats_ping_interval_sec: int
     nats_max_outstanding_pings: int
-    kline_subject: str
     order_subject: str
-    queue_name: str
     user_id: str
-    exchange: str
-    market_type: str
     position_side: str
     source: str
     strategy_id: str
@@ -52,6 +50,5 @@ class RuntimeConfig:
     is_paper_trading: bool
     order_type: str
     order_qty: float
-    order_symbol: str
     limit_slippage_pct: float
     enable_intrabar_risk_exit: bool = False
