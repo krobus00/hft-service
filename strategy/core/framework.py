@@ -123,7 +123,7 @@ class StrategyRunner:
         token = token.strip("_")
         return (token or fallback).upper()
 
-    def _resolve_queue_name(self, exchange: str, market_type: str, symbol: str) -> str:
+    def _resolve_queue_name(self, exchange: str, market_type: str, scope: str) -> str:
         queue_base = "KLINE_STRATEGY"
         strategy_key = str(self.runtime.strategy_id or self.strategy.config.name or "STRATEGY").strip()
         return (
@@ -131,14 +131,12 @@ class StrategyRunner:
             f"{self._safe_token(exchange)}_"
             f"{self._safe_token(market_type)}_"
             f"{self._safe_token(strategy_key)}_"
-            f"{self._safe_token(symbol)}"
+            f"{self._safe_token(scope)}"
         )
 
-    def _resolve_subject_for_symbol(self, exchange: str, symbol: str, interval: str) -> str:
+    def _resolve_subject_for_exchange(self, exchange: str) -> str:
         normalized_exchange = str(exchange or "").strip().upper()
-        normalized_symbol = str(symbol or "").strip().upper()
-        normalized_interval = str(interval or "").strip()
-        return f"KLINE.{normalized_exchange}.{normalized_symbol}.{normalized_interval}".upper()
+        return f"KLINE.{normalized_exchange}.>"
 
     async def load_symbols_from_subscriptions(self) -> List[Dict[str, str]]:
         conn = await asyncpg.connect(self.runtime.db_dsn)
@@ -326,37 +324,48 @@ class StrategyRunner:
         )
         js = nc.jetstream()
 
-        def build_handler(expected_exchange: str, expected_market_type: str, expected_symbol: str, expected_interval: str):
-            normalized_expected = str(expected_symbol).strip().upper()
-            normalized_interval = str(expected_interval).strip()
+        def build_handler(expected_exchange: str, expected_market_type: str, symbol_intervals: Dict[str, str]):
             normalized_exchange = str(expected_exchange).strip().upper()
             normalized_market_type = str(expected_market_type).strip().lower()
+            normalized_symbol_intervals = {
+                str(symbol).strip().upper(): str(interval).strip() for symbol, interval in symbol_intervals.items()
+            }
 
             async def handler(msg):
                 try:
                     payload = orjson.loads(msg.data)
                     data = payload.get("data", {})
 
-                    incoming_symbol = str(data.get("Symbol", "")).strip().upper() or normalized_expected
-                    incoming_interval = str(data.get("Interval", "")).strip() or normalized_interval
+                    incoming_symbol = str(data.get("Symbol", "")).strip().upper()
+                    incoming_interval = str(data.get("Interval", "")).strip()
+                    incoming_market_type = str(data.get("MarketType", "")).strip().lower()
                     is_closed = bool(data.get("IsClosed"))
 
                     print(
-                        f"[{self.strategy.config.name}] event_received subject={getattr(msg, 'subject', '')} expected_exchange={normalized_exchange} expected_market_type={normalized_market_type} expected_symbol={normalized_expected} expected_interval={normalized_interval} incoming_symbol={incoming_symbol} incoming_interval={incoming_interval} is_closed={is_closed}",
+                        f"[{self.strategy.config.name}] event_received subject={getattr(msg, 'subject', '')} expected_exchange={normalized_exchange} expected_market_type={normalized_market_type} incoming_market_type={incoming_market_type} incoming_symbol={incoming_symbol} incoming_interval={incoming_interval} is_closed={is_closed}",
                         flush=True,
                     )
 
-                    if incoming_symbol != normalized_expected:
+                    if incoming_market_type and incoming_market_type != normalized_market_type:
                         print(
-                            f"[{self.strategy.config.name}] event_skipped reason=symbol_mismatch expected={normalized_expected} got={incoming_symbol}",
+                            f"[{self.strategy.config.name}] event_skipped reason=market_type_mismatch expected={normalized_market_type} got={incoming_market_type}",
                             flush=True,
                         )
                         await msg.ack()
                         return
 
-                    if incoming_interval != normalized_interval:
+                    expected_interval = normalized_symbol_intervals.get(incoming_symbol)
+                    if not expected_interval:
                         print(
-                            f"[{self.strategy.config.name}] event_skipped reason=interval_mismatch expected={normalized_interval} got={incoming_interval}",
+                            f"[{self.strategy.config.name}] event_skipped reason=symbol_not_subscribed got={incoming_symbol}",
+                            flush=True,
+                        )
+                        await msg.ack()
+                        return
+
+                    if incoming_interval != expected_interval:
+                        print(
+                            f"[{self.strategy.config.name}] event_skipped reason=interval_mismatch expected={expected_interval} got={incoming_interval}",
                             flush=True,
                         )
                         await msg.ack()
@@ -412,13 +421,28 @@ class StrategyRunner:
             return handler
 
         stream_bindings: List[str] = []
+        grouped_targets: Dict[str, Dict[str, Any]] = {}
         for target in targets:
             exchange = target["exchange"]
             market_type = target["market_type"]
             symbol = target["symbol"]
             interval = target["interval"]
-            subject = self._resolve_subject_for_symbol(exchange, symbol, interval)
-            queue_name = self._resolve_queue_name(exchange, market_type, symbol)
+            group_key = f"{exchange}|{market_type}"
+            group = grouped_targets.get(group_key)
+            if group is None:
+                group = {
+                    "exchange": exchange,
+                    "market_type": market_type,
+                    "symbol_intervals": {},
+                }
+                grouped_targets[group_key] = group
+            group["symbol_intervals"][symbol] = interval
+
+        for group in grouped_targets.values():
+            exchange = group["exchange"]
+            market_type = group["market_type"]
+            subject = self._resolve_subject_for_exchange(exchange)
+            queue_name = self._resolve_queue_name(exchange, market_type, "ALL")
             stream_bindings.append(f"{subject}|{queue_name}")
 
         print(
@@ -426,20 +450,20 @@ class StrategyRunner:
             flush=True,
         )
 
-        for target in targets:
-            exchange = target["exchange"]
-            market_type = target["market_type"]
-            symbol = target["symbol"]
-            interval = target["interval"]
-            subject = self._resolve_subject_for_symbol(exchange, symbol, interval)
-            queue_name = self._resolve_queue_name(exchange, market_type, symbol)
+        for group in grouped_targets.values():
+            exchange = group["exchange"]
+            market_type = group["market_type"]
+            symbol_intervals = group["symbol_intervals"]
+            subject = self._resolve_subject_for_exchange(exchange)
+            queue_name = self._resolve_queue_name(exchange, market_type, "ALL")
             await js.subscribe(
                 subject,
                 manual_ack=True,
                 queue=queue_name,
-                cb=build_handler(exchange, market_type, symbol, interval),
+                cb=build_handler(exchange, market_type, symbol_intervals),
             )
-            print(f"Subscribed subject={subject} queue={queue_name}", flush=True)
+            symbols_summary = ",".join(f"{s}:{i}" for s, i in sorted(symbol_intervals.items()))
+            print(f"Subscribed subject={subject} queue={queue_name} symbols={symbols_summary}", flush=True)
 
         symbols_for_log = ",".join(f"{t['exchange']}:{t['market_type']}:{t['symbol']}:{t['interval']}" for t in targets)
         print(f"{self.strategy.config.name} strategy running for symbols={symbols_for_log}", flush=True)
