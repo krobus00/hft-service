@@ -37,7 +37,9 @@ func processMessageWithRetry(ctx context.Context, maxRetry uint64, msg *nats.Msg
 	}
 
 	attempt := meta.NumDelivered
-	logrus.Infof("subject: %s, subscribed message: %s, attempt: %d", msg.Subject, string(msg.Data), attempt)
+	if attempt > 1 {
+		logrus.Infof("subject: %s, subscribed message: %s, attempt: %d", msg.Subject, string(msg.Data), attempt)
+	}
 
 	err = callback(ctx, msg)
 	if err != nil {
