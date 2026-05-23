@@ -341,33 +341,16 @@ class StrategyRunner:
                     incoming_market_type = str(data.get("MarketType", "")).strip().lower()
                     is_closed = bool(data.get("IsClosed"))
 
-                    print(
-                        f"[{self.strategy.config.name}] event_received subject={getattr(msg, 'subject', '')} expected_exchange={normalized_exchange} expected_market_type={normalized_market_type} incoming_market_type={incoming_market_type} incoming_symbol={incoming_symbol} incoming_interval={incoming_interval} is_closed={is_closed}",
-                        flush=True,
-                    )
-
                     if incoming_market_type and incoming_market_type != normalized_market_type:
-                        print(
-                            f"[{self.strategy.config.name}] event_skipped reason=market_type_mismatch expected={normalized_market_type} got={incoming_market_type}",
-                            flush=True,
-                        )
                         await msg.ack()
                         return
 
                     expected_interval = normalized_symbol_intervals.get(incoming_symbol)
                     if not expected_interval:
-                        print(
-                            f"[{self.strategy.config.name}] event_skipped reason=symbol_not_subscribed got={incoming_symbol}",
-                            flush=True,
-                        )
                         await msg.ack()
                         return
 
                     if incoming_interval != expected_interval:
-                        print(
-                            f"[{self.strategy.config.name}] event_skipped reason=interval_mismatch expected={expected_interval} got={incoming_interval}",
-                            flush=True,
-                        )
                         await msg.ack()
                         return
 
@@ -420,7 +403,6 @@ class StrategyRunner:
 
             return handler
 
-        stream_bindings: List[str] = []
         grouped_targets: Dict[str, Dict[str, Any]] = {}
         for target in targets:
             exchange = target["exchange"]
@@ -437,18 +419,6 @@ class StrategyRunner:
                 }
                 grouped_targets[group_key] = group
             group["symbol_intervals"][symbol] = interval
-
-        for group in grouped_targets.values():
-            exchange = group["exchange"]
-            market_type = group["market_type"]
-            subject = self._resolve_subject_for_exchange(exchange)
-            queue_name = self._resolve_queue_name(exchange, market_type, "ALL")
-            stream_bindings.append(f"{subject}|{queue_name}")
-
-        print(
-            f"[{self.strategy.config.name}] kline_stream_bindings_count={len(stream_bindings)} bindings={';'.join(stream_bindings)}",
-            flush=True,
-        )
 
         for group in grouped_targets.values():
             exchange = group["exchange"]

@@ -176,7 +176,6 @@ class Krobot01Strategy(StrategyBase):
         return None
 
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
-        print(f"Received closed candle: {candle}", flush=True)
         symbol = self._symbol_key(candle)
         state = self._get_state(symbol)
 
