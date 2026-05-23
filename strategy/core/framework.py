@@ -411,6 +411,21 @@ class StrategyRunner:
 
             return handler
 
+        stream_bindings: List[str] = []
+        for target in targets:
+            exchange = target["exchange"]
+            market_type = target["market_type"]
+            symbol = target["symbol"]
+            interval = target["interval"]
+            subject = self._resolve_subject_for_symbol(exchange, symbol, interval)
+            queue_name = self._resolve_queue_name(exchange, market_type, symbol)
+            stream_bindings.append(f"{subject}|{queue_name}")
+
+        print(
+            f"[{self.strategy.config.name}] kline_stream_bindings_count={len(stream_bindings)} bindings={';'.join(stream_bindings)}",
+            flush=True,
+        )
+
         for target in targets:
             exchange = target["exchange"]
             market_type = target["market_type"]
