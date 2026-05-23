@@ -122,6 +122,7 @@ func (e *OrderEngineService) handlePlaceOrderEvent(ctx context.Context, msg *nat
 	_, err = e.PlaceOrder(ctx, req.Data)
 	if err != nil {
 		if err == ErrExchangeNotFound || err == ErrCreateOrderHistoryFailed || err == ErrDuplicateOrder {
+			logger.WithError(err).Warn("place_order event dropped")
 			return nil
 		}
 		logger.Error(err)
@@ -135,6 +136,8 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+
+	order.Exchange = strings.ToLower(strings.TrimSpace(order.Exchange))
 
 	marketType := entity.NormalizeMarketType(order.MarketType)
 	order.MarketType = string(marketType)
@@ -225,6 +228,8 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+
+	order.Exchange = strings.ToLower(strings.TrimSpace(order.Exchange))
 
 	marketType := entity.NormalizeMarketType(order.MarketType)
 	order.MarketType = string(marketType)
