@@ -135,7 +135,10 @@ class StrategyRunner:
         )
 
     def _resolve_subject_for_symbol(self, exchange: str, symbol: str, interval: str) -> str:
-        return f"KLINE.{self._safe_token(exchange)}.{self._safe_token(symbol)}.{interval}".upper()
+        normalized_exchange = str(exchange or "").strip().upper()
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_interval = str(interval or "").strip()
+        return f"KLINE.{normalized_exchange}.{normalized_symbol}.{normalized_interval}".upper()
 
     async def load_symbols_from_subscriptions(self) -> List[Dict[str, str]]:
         conn = await asyncpg.connect(self.runtime.db_dsn)
