@@ -5,9 +5,6 @@ global:
   anthropic_api_key: YOUR_API_KEY
 
 krobot01:
-  symbol: SOLUSDT
-  interval: 1m
-
   exchange: tokocrypto
   market_type: spot
   position_side: BOTH
@@ -23,7 +20,6 @@ krobot01:
 
   order_type: LIMIT
   order_qty: 10
-  order_symbol: SOLUSDT
   limit_slippage_pct: 0.02
 
   ema_period: 200
@@ -40,9 +36,6 @@ krobot01:
 
 krobot02:
   name: KROBOT02_VWAP_VOLUME
-  symbol: SOLUSDT
-  interval: 1m
-
   exchange: tokocrypto
   market_type: spot
   position_side: BOTH
@@ -58,7 +51,6 @@ krobot02:
 
   order_type: LIMIT
   order_qty: 10
-  order_symbol: SOLUSDT
   limit_slippage_pct: 0.02
 
   historical_limit: 800
@@ -74,8 +66,6 @@ krobot02:
 
 template:
   name: TEMPLATE
-  symbol: SOLUSDT
-  interval: 1m
   historical_limit: 500
 
   exchange: tokocrypto
@@ -93,15 +83,12 @@ template:
 
   order_type: LIMIT
   order_qty: 10
-  order_symbol: SOLUSDT
   limit_slippage_pct: 0.02
 
   cooldown_bars: 1
 
 ai:
   name: AI-M2.7
-  symbol: ETH_USDT.P
-  interval: 1m
   historical_limit: 800
 
   exchange: binance
@@ -119,7 +106,6 @@ ai:
 
   order_type: MARKET
   order_qty: 10
-  order_symbol: ETH_USDT.P
   limit_slippage_pct: 0.02
 
   # AI settings
@@ -150,8 +136,6 @@ ai:
 
 breakout:
   name: BREAKOUT_PULLBACK
-  symbol: SOL_USDT.P
-  interval: 15m
   historical_limit: 800
 
   exchange: binance
@@ -169,7 +153,6 @@ breakout:
 
   order_type: MARKET
   order_qty: 2
-  order_symbol: SOL_USDT.P
   limit_slippage_pct: 0.02
 
   ema_fast: 20
@@ -189,8 +172,6 @@ breakout:
 
 trend_following_atr:
   name: TREND_FOLLOWING_ATR
-  symbol: SOL_USDT.P
-  interval: 15m
   historical_limit: 800
 
   exchange: binance
@@ -208,7 +189,6 @@ trend_following_atr:
 
   order_type: MARKET
   order_qty: 2
-  order_symbol: SOL_USDT.P
   limit_slippage_pct: 0.02
 
   ema_fast: 20

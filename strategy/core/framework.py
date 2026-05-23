@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -39,10 +40,47 @@ class StrategyBase(ABC):
     def sell(self, price: float, reason: str, metadata: Optional[Dict[str, Any]] = None) -> Signal:
         return Signal(side="SELL", price=price, reason=reason, metadata=metadata or {})
 
+    @staticmethod
+    def _safe_deepcopy(value: Any) -> Any:
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+    @classmethod
+    def _iter_slots(cls):
+        seen = set()
+        for klass in cls.mro():
+            slots = getattr(klass, "__slots__", ())
+            if isinstance(slots, str):
+                slots = (slots,)
+            for slot in slots:
+                if slot in seen:
+                    continue
+                seen.add(slot)
+                yield slot
+
     def snapshot_state(self):
-        return None
+        snapshot: Dict[str, Any] = {}
+        for slot in self._iter_slots():
+            if slot == "config":
+                continue
+            if not hasattr(self, slot):
+                continue
+            snapshot[slot] = self._safe_deepcopy(getattr(self, slot))
+        return snapshot
 
     def restore_state(self, snapshot) -> None:
+        if snapshot is None:
+            return
+        if not isinstance(snapshot, dict):
+            return
+        for slot in self._iter_slots():
+            if slot == "config":
+                continue
+            if slot not in snapshot:
+                continue
+            setattr(self, slot, self._safe_deepcopy(snapshot[slot]))
         return None
 
     def on_price_update(self, candle: Candle) -> Optional[Signal]:
@@ -59,6 +97,10 @@ class StrategyRunner:
     def __init__(self, strategy: StrategyBase, runtime: RuntimeConfig):
         self.strategy = strategy
         self.runtime = runtime
+
+    @staticmethod
+    def _state_key(symbol: str, interval: str) -> str:
+        return f"{str(symbol or '').strip().upper()}|{str(interval or '').strip()}"
 
     @staticmethod
     def infer_trade_condition(reason: str, metadata: Optional[Dict[str, Any]] = None) -> str:
@@ -145,10 +187,8 @@ class StrategyRunner:
                 """
                 SELECT DISTINCT exchange, market_type, symbol, interval
                 FROM kline_subscriptions
-                WHERE lower(interval) = lower($1)
                 ORDER BY exchange ASC, market_type ASC, symbol ASC
                 """,
-                self.strategy.config.interval,
             )
         finally:
             await conn.close()
@@ -289,14 +329,21 @@ class StrategyRunner:
         if not targets:
             raise RuntimeError("No matching rows found in kline_subscriptions for strategy interval")
 
+        initial_state = self.strategy.snapshot_state()
+        state_store: Dict[str, Any] = {}
+
         try:
             for target in targets:
+                state_key = self._state_key(target["symbol"], target["interval"])
+                previous = state_store.get(state_key)
+                self.strategy.restore_state(previous if previous is not None else initial_state)
                 await self.warmup_from_postgres(
                     target["exchange"],
                     target["market_type"],
                     target["symbol"],
                     target["interval"],
                 )
+                state_store[state_key] = self.strategy.snapshot_state()
         except Exception as exc:
             print(f"Warmup skipped due to DB error: {exc}", flush=True)
 
@@ -328,6 +375,7 @@ class StrategyRunner:
             closed_cb=on_closed,
         )
         js = nc.jetstream()
+        state_lock = asyncio.Lock()
 
         def build_handler(expected_exchange: str, expected_market_type: str, symbol_intervals: Dict[str, str]):
             normalized_exchange = str(expected_exchange).strip().upper()
@@ -338,69 +386,76 @@ class StrategyRunner:
 
             async def handler(msg):
                 try:
-                    payload = orjson.loads(msg.data)
-                    data = payload.get("data", {})
+                    async with state_lock:
+                        payload = orjson.loads(msg.data)
+                        data = payload.get("data", {})
 
-                    incoming_symbol = str(data.get("Symbol", "")).strip().upper()
-                    incoming_interval = str(data.get("Interval", "")).strip()
-                    incoming_market_type = str(data.get("MarketType", "")).strip().lower()
-                    is_closed = bool(data.get("IsClosed"))
+                        incoming_symbol = str(data.get("Symbol", "")).strip().upper()
+                        incoming_interval = str(data.get("Interval", "")).strip()
+                        incoming_market_type = str(data.get("MarketType", "")).strip().lower()
+                        is_closed = bool(data.get("IsClosed"))
 
-                    if incoming_market_type and incoming_market_type != normalized_market_type:
-                        await msg.ack()
-                        return
+                        if incoming_market_type and incoming_market_type != normalized_market_type:
+                            await msg.ack()
+                            return
 
-                    expected_interval = normalized_symbol_intervals.get(incoming_symbol)
-                    if not expected_interval:
-                        await msg.ack()
-                        return
+                        expected_interval = normalized_symbol_intervals.get(incoming_symbol)
+                        if not expected_interval:
+                            await msg.ack()
+                            return
 
-                    if incoming_interval != expected_interval:
-                        await msg.ack()
-                        return
+                        if incoming_interval != expected_interval:
+                            await msg.ack()
+                            return
 
-                    candle = Candle(
-                        close_time_ms=parse_iso_to_ms(data["CloseTime"]),
-                        close=float(data["ClosePrice"]),
-                        quote_volume=float(data.get("QuoteVolume", "0") or "0"),
-                        symbol=incoming_symbol,
-                        interval=incoming_interval,
-                        high=float(data.get("HighPrice", data.get("ClosePrice", "0")) or "0"),
-                        low=float(data.get("LowPrice", data.get("ClosePrice", "0")) or "0"),
-                        taker_quote_volume=float(data.get("TakerQuoteVolume", "0") or "0"),
-                        trade_count=int(data.get("TradeCount", 0) or 0),
-                    )
-
-                    snapshot = self.strategy.snapshot_state()
-                    if is_closed:
-                        signal = self.strategy.on_closed_candle(candle, is_warmup=False)
-                    elif self.runtime.enable_intrabar_risk_exit:
-                        signal = self.strategy.on_price_update(candle)
-                    else:
-                        signal = None
-
-                    if signal is not None:
-                        try:
-                            out = self.build_order_payload(
-                                signal.side,
-                                signal.price,
-                                signal.reason,
-                                exchange=normalized_exchange,
-                                market_type=normalized_market_type,
-                                symbol=candle.symbol,
-                                interval=candle.interval,
-                                metadata=signal.metadata,
-                            )
-                            await js.publish(self.runtime.order_subject, orjson.dumps(out))
-                        except Exception:
-                            self.strategy.restore_state(snapshot)
-                            raise
-                        metadata = " ".join(f"{k}={v}" for k, v in signal.metadata.items())
-                        trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
-                        print(
-                            f"[{self.strategy.config.name}] {signal.reason} trade_condition={trade_condition} side={signal.side} symbol={candle.symbol} close={signal.price:.6f} {metadata}".strip(),
-                            flush=True,
+                        candle = Candle(
+                            close_time_ms=parse_iso_to_ms(data["CloseTime"]),
+                            close=float(data["ClosePrice"]),
+                            quote_volume=float(data.get("QuoteVolume", "0") or "0"),
+                            symbol=incoming_symbol,
+                            interval=incoming_interval,
+                            high=float(data.get("HighPrice", data.get("ClosePrice", "0")) or "0"),
+                            low=float(data.get("LowPrice", data.get("ClosePrice", "0")) or "0"),
+                            taker_quote_volume=float(data.get("TakerQuoteVolume", "0") or "0"),
+                            trade_count=int(data.get("TradeCount", 0) or 0),
                         )
+
+                        state_key = self._state_key(candle.symbol, candle.interval)
+                        previous_snapshot = state_store.get(state_key)
+                        self.strategy.restore_state(previous_snapshot if previous_snapshot is not None else initial_state)
+
+                        snapshot = self.strategy.snapshot_state()
+                        if is_closed:
+                            signal = self.strategy.on_closed_candle(candle, is_warmup=False)
+                        elif self.runtime.enable_intrabar_risk_exit:
+                            signal = self.strategy.on_price_update(candle)
+                        else:
+                            signal = None
+
+                        if signal is not None:
+                            try:
+                                out = self.build_order_payload(
+                                    signal.side,
+                                    signal.price,
+                                    signal.reason,
+                                    exchange=normalized_exchange,
+                                    market_type=normalized_market_type,
+                                    symbol=candle.symbol,
+                                    interval=candle.interval,
+                                    metadata=signal.metadata,
+                                )
+                                await js.publish(self.runtime.order_subject, orjson.dumps(out))
+                            except Exception:
+                                self.strategy.restore_state(snapshot)
+                                raise
+                            metadata = " ".join(f"{k}={v}" for k, v in signal.metadata.items())
+                            trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
+                            print(
+                                f"[{self.strategy.config.name}] {signal.reason} trade_condition={trade_condition} side={signal.side} symbol={candle.symbol} close={signal.price:.6f} {metadata}".strip(),
+                                flush=True,
+                            )
+
+                        state_store[state_key] = self.strategy.snapshot_state()
 
                     await msg.ack()
                 except Exception as exc:

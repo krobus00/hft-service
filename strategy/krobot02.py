@@ -232,8 +232,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 def build_strategy_config(section: dict) -> StrategyConfig:
 	return StrategyConfig(
 		name=section.get("name", "KROBOT02_VWAP_VOLUME"),
-		symbol=section.get("symbol", "SOLUSDT"),
-		interval=section.get("interval", "1m"),
+		symbol="*",
+		interval="*",
 		warmup_limit=int(section.get("historical_limit", 800)),
 	)
 

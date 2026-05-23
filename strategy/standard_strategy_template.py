@@ -58,12 +58,12 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 
 
 def build_strategy_config(section: dict) -> StrategyConfig:
-    # Symbol routing is driven by kline_subscriptions in StrategyRunner.
-    # Keep a placeholder symbol only to satisfy StrategyConfig shape.
+    # Symbol/interval routing is driven by kline_subscriptions in StrategyRunner.
+    # Keep placeholders only to satisfy StrategyConfig shape.
     return StrategyConfig(
         name=section.get("name", "TEMPLATE"),
         symbol="*",
-        interval=section.get("interval", "1m"),
+        interval="*",
         warmup_limit=int(section.get("historical_limit", 500)),
     )
 
