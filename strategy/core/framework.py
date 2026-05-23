@@ -339,12 +339,26 @@ class StrategyRunner:
 
                     incoming_symbol = str(data.get("Symbol", "")).strip().upper() or normalized_expected
                     incoming_interval = str(data.get("Interval", "")).strip() or normalized_interval
+                    is_closed = bool(data.get("IsClosed"))
+
+                    print(
+                        f"[{self.strategy.config.name}] event_received subject={getattr(msg, 'subject', '')} expected_exchange={normalized_exchange} expected_market_type={normalized_market_type} expected_symbol={normalized_expected} expected_interval={normalized_interval} incoming_symbol={incoming_symbol} incoming_interval={incoming_interval} is_closed={is_closed}",
+                        flush=True,
+                    )
 
                     if incoming_symbol != normalized_expected:
+                        print(
+                            f"[{self.strategy.config.name}] event_skipped reason=symbol_mismatch expected={normalized_expected} got={incoming_symbol}",
+                            flush=True,
+                        )
                         await msg.ack()
                         return
 
                     if incoming_interval != normalized_interval:
+                        print(
+                            f"[{self.strategy.config.name}] event_skipped reason=interval_mismatch expected={normalized_interval} got={incoming_interval}",
+                            flush=True,
+                        )
                         await msg.ack()
                         return
 
@@ -361,7 +375,7 @@ class StrategyRunner:
                     )
 
                     snapshot = self.strategy.snapshot_state()
-                    if data.get("IsClosed"):
+                    if is_closed:
                         signal = self.strategy.on_closed_candle(candle, is_warmup=False)
                     elif self.runtime.enable_intrabar_risk_exit:
                         signal = self.strategy.on_price_update(candle)
