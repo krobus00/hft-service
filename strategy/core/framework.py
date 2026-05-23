@@ -444,7 +444,12 @@ class StrategyRunner:
                                     interval=candle.interval,
                                     metadata=signal.metadata,
                                 )
-                                await js.publish(self.runtime.order_subject, orjson.dumps(out))
+                                out_bytes = orjson.dumps(out)
+                                print(
+                                    f"[{self.strategy.config.name}] publish subject={self.runtime.order_subject} payload={out_bytes.decode('utf-8')}",
+                                    flush=True,
+                                )
+                                await js.publish(self.runtime.order_subject, out_bytes)
                             except Exception:
                                 self.strategy.restore_state(snapshot)
                                 raise
