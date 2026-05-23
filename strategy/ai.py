@@ -242,7 +242,8 @@ class AIHybridStrategy(StrategyBase):
             "- If already in position, decide whether to HOLD or EXIT using side action"
             " (SELL exits BUY/LONG, BUY exits SELL/SHORT).\n\n"
             "Respond in JSON:\n"
-            "{\"action\":\"BUY | SELL | HOLD\",\"confidence\":0..1,\"reason\":\"short explanation\"}\n"
+            "{\"action\":\"BUY | SELL | HOLD\",\"confidence\":0..1,\"reason\":\"short explanation (max 255 chars)\"}\n"
+            "The reason must be concise and MUST NOT exceed 255 characters.\n"
             "Return ONLY valid JSON."
         )
 
@@ -294,7 +295,7 @@ class AIHybridStrategy(StrategyBase):
             confidence = float(parsed.get("confidence", 0.0))
             confidence = max(0.0, min(1.0, confidence))
 
-            reason = str(parsed.get("reason", "AI_DECISION"))[:160]
+            reason = " ".join(str(parsed.get("reason", "AI_DECISION")).split())[:255]
             print(
                 (
                     f"[AI_RESPONSE_PARSED] symbol={self.config.symbol} interval={self.config.interval} "
@@ -575,6 +576,15 @@ class AIHybridStrategy(StrategyBase):
                 tagged_metadata["trade_condition"] = "TRAILING_STOP"
             else:
                 tagged_metadata["trade_condition"] = "EXIT"
+        tagged_metadata["order_reason"] = reason[:255]
+        if reason.startswith("TAKE_PROFIT"):
+            tagged_metadata["exit_type"] = "TAKE_PROFIT"
+        elif reason.startswith("STOP_LOSS"):
+            tagged_metadata["exit_type"] = "STOP_LOSS"
+        elif reason.startswith("TRAILING_STOP"):
+            tagged_metadata["exit_type"] = "TRAILING_STOP"
+        else:
+            tagged_metadata["exit_type"] = ""
         self.position_side = None
         self.entry_price = None
         self.highest_since_entry = None
@@ -594,6 +604,15 @@ class AIHybridStrategy(StrategyBase):
                 tagged_metadata["trade_condition"] = "TRAILING_STOP"
             else:
                 tagged_metadata["trade_condition"] = "EXIT"
+        tagged_metadata["order_reason"] = reason[:255]
+        if reason.startswith("TAKE_PROFIT"):
+            tagged_metadata["exit_type"] = "TAKE_PROFIT"
+        elif reason.startswith("STOP_LOSS"):
+            tagged_metadata["exit_type"] = "STOP_LOSS"
+        elif reason.startswith("TRAILING_STOP"):
+            tagged_metadata["exit_type"] = "TRAILING_STOP"
+        else:
+            tagged_metadata["exit_type"] = ""
         self.position_side = None
         self.entry_price = None
         self.highest_since_entry = None
@@ -695,6 +714,8 @@ class AIHybridStrategy(StrategyBase):
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
+                    metadata["order_reason"] = "ENTER_LONG_AI"
+                    metadata["exit_type"] = ""
                     signal = self.buy(candle.close, "ENTER_LONG_AI", metadata)
                 elif final_action == "SELL":
                     self.position_side = "SHORT"
@@ -704,6 +725,8 @@ class AIHybridStrategy(StrategyBase):
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
+                    metadata["order_reason"] = "ENTER_SHORT_AI"
+                    metadata["exit_type"] = ""
                     signal = self.sell(candle.close, "ENTER_SHORT_AI", metadata)
 
         self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)
@@ -720,12 +743,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
         nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
         nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-        kline_subject=section.get("kline_subject", "KLINE.TOKOCRYPTO.>"),
         order_subject=section.get("order_subject", "order_engine.place_order"),
-        queue_name=section.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_AI"),
         user_id=section.get("user_id", "paper-1"),
-        exchange=section.get("exchange", "tokocrypto"),
-        market_type=section.get("market_type", "spot"),
         position_side=section.get("position_side", "BOTH"),
         source=section.get("source", "python-ai-minimax-m2-7"),
         strategy_id=section.get("strategy_id", "python-ai-minimax-m2-7-hybrid"),
@@ -733,7 +752,6 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         is_paper_trading=section.get("is_paper_trading", True),
         order_type=section.get("order_type", "LIMIT"),
         order_qty=float(section.get("order_qty", 10)),
-        order_symbol=section.get("order_symbol", section.get("symbol", "SOLUSDT")),
         limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
         enable_intrabar_risk_exit=bool(section.get("enable_intrabar_risk_exit", True)),
     )
@@ -742,8 +760,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 def build_strategy_config(section: dict) -> StrategyConfig:
     return StrategyConfig(
         name=section.get("name", "AI-M2.7"),
-        symbol=section.get("symbol", "SOLUSDT"),
-        interval=section.get("interval", "1m"),
+        symbol="*",
+        interval="*",
         warmup_limit=int(section.get("historical_limit", 800)),
     )
 

@@ -132,11 +132,15 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 
 			if self.stop_loss_pct > 0 and low_px <= sl_px:
 				metadata["trade_condition"] = "STOP_LOSS"
+				metadata["order_reason"] = "STOP_LOSS_LONG"
+				metadata["exit_type"] = "STOP_LOSS"
 				self._reset_position()
 				return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
 
 			if self.take_profit_pct > 0 and high_px >= tp_px:
 				metadata["trade_condition"] = "TAKE_PROFIT"
+				metadata["order_reason"] = "TAKE_PROFIT_LONG"
+				metadata["exit_type"] = "TAKE_PROFIT"
 				self._reset_position()
 				return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
 
@@ -155,11 +159,15 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 
 			if self.stop_loss_pct > 0 and high_px >= sl_px:
 				metadata["trade_condition"] = "STOP_LOSS"
+				metadata["order_reason"] = "STOP_LOSS_SHORT"
+				metadata["exit_type"] = "STOP_LOSS"
 				self._reset_position()
 				return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
 
 			if self.take_profit_pct > 0 and low_px <= tp_px:
 				metadata["trade_condition"] = "TAKE_PROFIT"
+				metadata["order_reason"] = "TAKE_PROFIT_SHORT"
+				metadata["exit_type"] = "TAKE_PROFIT"
 				self._reset_position()
 				return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
 
@@ -178,6 +186,8 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.lowest_since_entry = low_px
 			self.cooldown = self.cooldown_bars
 			metadata["trade_condition"] = "ENTRY"
+			metadata["order_reason"] = "ENTER_LONG_VWAP_VOLUME"
+			metadata["exit_type"] = ""
 			return self.buy(candle.close, "ENTER_LONG_VWAP_VOLUME", metadata)
 
 		if short_cond:
@@ -189,6 +199,8 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.lowest_since_entry = low_px
 			self.cooldown = self.cooldown_bars
 			metadata["trade_condition"] = "ENTRY"
+			metadata["order_reason"] = "ENTER_SHORT_VWAP_VOLUME"
+			metadata["exit_type"] = ""
 			return self.sell(candle.close, "ENTER_SHORT_VWAP_VOLUME", metadata)
 
 		return None
@@ -204,12 +216,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 		nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
 		nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
 		nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-		kline_subject=section.get("kline_subject", "KLINE.TOKOCRYPTO.>"),
 		order_subject=section.get("order_subject", "order_engine.place_order"),
-		queue_name=section.get("queue_name", "KLINE_STRATEGY_TOKOCRYPTO_KROBOT02"),
 		user_id=section.get("user_id", "paper-1"),
-		exchange=section.get("exchange", "tokocrypto"),
-		market_type=section.get("market_type", "spot"),
 		position_side=section.get("position_side", "BOTH"),
 		source=section.get("source", "python-krobot02"),
 		strategy_id=section.get("strategy_id", "python-krobot02-vwap-volume"),
@@ -217,7 +225,6 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 		is_paper_trading=section.get("is_paper_trading", True),
 		order_type=section.get("order_type", "LIMIT"),
 		order_qty=float(section.get("order_qty", 10)),
-		order_symbol=section.get("order_symbol", section.get("symbol", "SOLUSDT")),
 		limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
 	)
 
@@ -225,8 +232,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 def build_strategy_config(section: dict) -> StrategyConfig:
 	return StrategyConfig(
 		name=section.get("name", "KROBOT02_VWAP_VOLUME"),
-		symbol=section.get("symbol", "SOLUSDT"),
-		interval=section.get("interval", "1m"),
+		symbol="*",
+		interval="*",
 		warmup_limit=int(section.get("historical_limit", 800)),
 	)
 

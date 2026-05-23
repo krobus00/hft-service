@@ -20,14 +20,14 @@ import (
 )
 
 var (
-	ErrExchangeNotFound            = errors.New("exchange not found")
-	ErrPlaceOrderFailed            = errors.New("failed to place order")
-	ErrFailToGetOrderHistoryFailed = errors.New("failed to get order history")
-	ErrCreateOrderHistoryFailed    = errors.New("failed to create order history")
-	ErrDuplicateOrder              = errors.New("duplicate order")
-	ErrPublishOrderEventFailed     = errors.New("failed to publish order event")
+	ErrExchangeNotFound               = errors.New("exchange not found")
+	ErrPlaceOrderFailed               = errors.New("failed to place order")
+	ErrFailToGetOrderHistoryFailed    = errors.New("failed to get order history")
+	ErrCreateOrderHistoryFailed       = errors.New("failed to create order history")
+	ErrDuplicateOrder                 = errors.New("duplicate order")
+	ErrPublishOrderEventFailed        = errors.New("failed to publish order event")
 	ErrPublishOrderNotificationFailed = errors.New("failed to publish order notification event")
-	ErrInvalidAPIKey               = errors.New("invalid API key")
+	ErrInvalidAPIKey                  = errors.New("invalid API key")
 )
 
 type OrderEngineService struct {
@@ -122,6 +122,7 @@ func (e *OrderEngineService) handlePlaceOrderEvent(ctx context.Context, msg *nat
 	_, err = e.PlaceOrder(ctx, req.Data)
 	if err != nil {
 		if err == ErrExchangeNotFound || err == ErrCreateOrderHistoryFailed || err == ErrDuplicateOrder {
+			logger.WithError(err).Warn("place_order event dropped")
 			return nil
 		}
 		logger.Error(err)
@@ -135,6 +136,8 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+
+	order.Exchange = strings.ToLower(strings.TrimSpace(order.Exchange))
 
 	marketType := entity.NormalizeMarketType(order.MarketType)
 	order.MarketType = string(marketType)
@@ -160,6 +163,8 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 	}
 
 	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
+	order.OrderReason = strings.TrimSpace(order.OrderReason)
+	order.ExitType = normalizeExitType(order.ExitType, order.TradeCondition)
 
 	exchange, ok := s.exchanges[entity.ExchangeName(order.Exchange)]
 	if !ok {
@@ -202,6 +207,8 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, ErrPlaceOrderFailed
 	}
 
+	orderHistory = applyOrderMetadataToHistory(orderHistory, order)
+
 	err = s.orderHistoryRepo.Create(ctx, orderHistory)
 	if err != nil {
 		logrus.Error(err)
@@ -221,6 +228,8 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+
+	order.Exchange = strings.ToLower(strings.TrimSpace(order.Exchange))
 
 	marketType := entity.NormalizeMarketType(order.MarketType)
 	order.MarketType = string(marketType)
@@ -246,6 +255,8 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 	}
 
 	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
+	order.OrderReason = strings.TrimSpace(order.OrderReason)
+	order.ExitType = normalizeExitType(order.ExitType, order.TradeCondition)
 
 	event := entity.OrderRequestEvent{
 		Data: order,
@@ -318,6 +329,8 @@ func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
 		FilledAt:          filledAt,
 		StrategyID:        strategyID,
 		TradeCondition:    order.TradeCondition,
+		OrderReason:       order.OrderReason,
+		ExitType:          order.ExitType,
 		ErrorMessage:      sql.NullString{},
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -349,6 +362,15 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 		}
 	}
 
+	entryPrice := strings.TrimSpace(order.EntryPrice)
+	exitPrice := strings.TrimSpace(order.ExitPrice)
+	pnlPercentage := strings.TrimSpace(order.PnlPercentage)
+	tradeCondition := strings.ToUpper(strings.TrimSpace(order.TradeCondition))
+
+	if exitPrice == "" && tradeCondition != string(entity.TradeConditionEntry) {
+		exitPrice = price
+	}
+
 	event := entity.OrderNotificationEvent{
 		Data: entity.OrderNotification{
 			RequestID:      order.RequestID,
@@ -357,11 +379,15 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 			StrategyID:     strategyID,
 			StrategyName:   strategyName,
 			Symbol:         order.Symbol,
-			Internal:       fallbackOrderField(order.Internal, order.Symbol),
 			Interval:       strings.TrimSpace(order.Interval),
 			Side:           strings.ToUpper(strings.TrimSpace(string(order.Side))),
 			Price:          price,
-			TradeCondition: strings.ToUpper(strings.TrimSpace(order.TradeCondition)),
+			EntryPrice:     entryPrice,
+			ExitPrice:      exitPrice,
+			PnlPercentage:  pnlPercentage,
+			TradeCondition: tradeCondition,
+			OrderReason:    strings.TrimSpace(order.OrderReason),
+			ExitType:       normalizeExitType(order.ExitType, order.TradeCondition),
 		},
 	}
 
@@ -373,11 +399,40 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 	return nil
 }
 
-func fallbackOrderField(primary, secondary string) string {
-	primary = strings.TrimSpace(primary)
-	if primary != "" {
-		return primary
+func normalizeExitType(rawExitType, tradeCondition string) string {
+	normalized := entity.NormalizeExitType(rawExitType)
+	if normalized != "" {
+		return string(normalized)
 	}
 
-	return strings.TrimSpace(secondary)
+	switch entity.NormalizeTradeCondition(tradeCondition) {
+	case entity.TradeConditionTakeProfit:
+		return string(entity.ExitTypeTakeProfit)
+	case entity.TradeConditionStopLoss:
+		return string(entity.ExitTypeStopLoss)
+	case entity.TradeConditionTrailingStop:
+		return string(entity.ExitTypeTrailingStop)
+	default:
+		return ""
+	}
+}
+
+func applyOrderMetadataToHistory(orderHistory *entity.OrderHistory, order entity.OrderRequest) *entity.OrderHistory {
+	if orderHistory == nil {
+		return nil
+	}
+
+	if strings.TrimSpace(orderHistory.TradeCondition) == "" || strings.EqualFold(strings.TrimSpace(orderHistory.TradeCondition), string(entity.TradeConditionUnknown)) {
+		orderHistory.TradeCondition = order.TradeCondition
+	}
+
+	if strings.TrimSpace(orderHistory.OrderReason) == "" {
+		orderHistory.OrderReason = order.OrderReason
+	}
+
+	if strings.TrimSpace(orderHistory.ExitType) == "" {
+		orderHistory.ExitType = order.ExitType
+	}
+
+	return orderHistory
 }
