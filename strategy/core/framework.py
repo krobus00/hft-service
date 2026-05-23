@@ -160,6 +160,74 @@ class StrategyRunner:
 
         return ""
 
+    @staticmethod
+    def _metadata_float(metadata: Optional[Dict[str, Any]], key: str) -> Optional[float]:
+        if not metadata:
+            return None
+        raw = metadata.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, str) and not raw.strip():
+            return None
+        try:
+            return float(raw)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_optional_num(value: Optional[float]) -> str:
+        if value is None:
+            return ""
+        return fmt_num(float(value))
+
+    def infer_entry_exit_and_pnl(
+        self,
+        side: str,
+        signal_price: float,
+        trade_condition: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> tuple[str, str, str]:
+        metadata = metadata or {}
+
+        entry_price = self._metadata_float(metadata, "entry_price")
+        if entry_price is None:
+            entry_price = self._metadata_float(metadata, "entry")
+
+        exit_price = self._metadata_float(metadata, "exit_price")
+        if exit_price is None and trade_condition != "ENTRY":
+            exit_price = float(signal_price)
+
+        if trade_condition == "ENTRY" and entry_price is None:
+            entry_price = float(signal_price)
+
+        pnl_percentage = self._metadata_float(metadata, "pnl_percentage")
+        if pnl_percentage is None:
+            pnl_percentage = self._metadata_float(metadata, "pnl_pct")
+
+        if (
+            pnl_percentage is None
+            and entry_price is not None
+            and exit_price is not None
+            and entry_price > 0
+            and trade_condition in {"EXIT", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"}
+        ):
+            normalized_side = str(side or "").strip().upper()
+            if normalized_side == "SELL":
+                pnl_percentage = ((exit_price - entry_price) / entry_price) * 100.0
+            elif normalized_side == "BUY":
+                pnl_percentage = ((entry_price - exit_price) / entry_price) * 100.0
+
+        return (
+            self._format_optional_num(entry_price),
+            self._format_optional_num(exit_price),
+            self._format_optional_num(pnl_percentage),
+        )
+
+    @staticmethod
+    def _is_exit_trade_condition(trade_condition: str) -> bool:
+        normalized = str(trade_condition or "").strip().upper()
+        return normalized in {"EXIT", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"}
+
     def _safe_token(self, value: str, fallback: str = "NA") -> str:
         token = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip())
         token = token.strip("_")
@@ -234,6 +302,12 @@ class StrategyRunner:
         trade_condition = self.infer_trade_condition(reason, metadata)
         order_reason = self.infer_order_reason(reason, metadata)
         exit_type = self.infer_exit_type(reason, metadata)
+        entry_price, exit_price, pnl_percentage = self.infer_entry_exit_and_pnl(
+            side=side,
+            signal_price=px,
+            trade_condition=trade_condition,
+            metadata=metadata,
+        )
 
         return {
             "retry": 0,
@@ -255,7 +329,9 @@ class StrategyRunner:
                 "strategy_id": self.runtime.strategy_id,
                 "strategy_name": self.strategy.config.name,
                 "interval": interval,
-                "internal": symbol,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl_percentage": pnl_percentage,
                 "trade_condition": trade_condition,
                 "order_reason": order_reason,
                 "exit_type": exit_type,
@@ -331,6 +407,7 @@ class StrategyRunner:
 
         initial_state = self.strategy.snapshot_state()
         state_store: Dict[str, Any] = {}
+        entry_price_store: Dict[str, float] = {}
 
         try:
             for target in targets:
@@ -434,6 +511,21 @@ class StrategyRunner:
 
                         if signal is not None:
                             try:
+                                trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
+                                signal_metadata = dict(signal.metadata or {})
+
+                                if trade_condition == "ENTRY":
+                                    if self._metadata_float(signal_metadata, "entry_price") is None:
+                                        signal_metadata["entry_price"] = float(signal.price)
+                                elif self._is_exit_trade_condition(trade_condition):
+                                    if self._metadata_float(signal_metadata, "entry_price") is None:
+                                        remembered_entry = entry_price_store.get(state_key)
+                                        if remembered_entry is not None:
+                                            signal_metadata["entry_price"] = float(remembered_entry)
+
+                                    if self._metadata_float(signal_metadata, "exit_price") is None:
+                                        signal_metadata["exit_price"] = float(signal.price)
+
                                 out = self.build_order_payload(
                                     signal.side,
                                     signal.price,
@@ -442,7 +534,7 @@ class StrategyRunner:
                                     market_type=normalized_market_type,
                                     symbol=candle.symbol,
                                     interval=candle.interval,
-                                    metadata=signal.metadata,
+                                    metadata=signal_metadata,
                                 )
                                 out_bytes = orjson.dumps(out)
                                 print(
@@ -450,11 +542,17 @@ class StrategyRunner:
                                     flush=True,
                                 )
                                 await js.publish(self.runtime.order_subject, out_bytes)
+
+                                if trade_condition == "ENTRY":
+                                    persisted_entry = self._metadata_float(signal_metadata, "entry_price")
+                                    if persisted_entry is not None:
+                                        entry_price_store[state_key] = float(persisted_entry)
+                                elif self._is_exit_trade_condition(trade_condition):
+                                    entry_price_store.pop(state_key, None)
                             except Exception:
                                 self.strategy.restore_state(snapshot)
                                 raise
                             metadata = " ".join(f"{k}={v}" for k, v in signal.metadata.items())
-                            trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
                             print(
                                 f"[{self.strategy.config.name}] {signal.reason} trade_condition={trade_condition} side={signal.side} symbol={candle.symbol} close={signal.price:.6f} {metadata}".strip(),
                                 flush=True,

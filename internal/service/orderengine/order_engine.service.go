@@ -362,6 +362,15 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 		}
 	}
 
+	entryPrice := strings.TrimSpace(order.EntryPrice)
+	exitPrice := strings.TrimSpace(order.ExitPrice)
+	pnlPercentage := strings.TrimSpace(order.PnlPercentage)
+	tradeCondition := strings.ToUpper(strings.TrimSpace(order.TradeCondition))
+
+	if exitPrice == "" && tradeCondition != string(entity.TradeConditionEntry) {
+		exitPrice = price
+	}
+
 	event := entity.OrderNotificationEvent{
 		Data: entity.OrderNotification{
 			RequestID:      order.RequestID,
@@ -370,11 +379,13 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 			StrategyID:     strategyID,
 			StrategyName:   strategyName,
 			Symbol:         order.Symbol,
-			Internal:       fallbackOrderField(order.Internal, order.Symbol),
 			Interval:       strings.TrimSpace(order.Interval),
 			Side:           strings.ToUpper(strings.TrimSpace(string(order.Side))),
 			Price:          price,
-			TradeCondition: strings.ToUpper(strings.TrimSpace(order.TradeCondition)),
+			EntryPrice:     entryPrice,
+			ExitPrice:      exitPrice,
+			PnlPercentage:  pnlPercentage,
+			TradeCondition: tradeCondition,
 			OrderReason:    strings.TrimSpace(order.OrderReason),
 			ExitType:       normalizeExitType(order.ExitType, order.TradeCondition),
 		},
@@ -386,15 +397,6 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 	}
 
 	return nil
-}
-
-func fallbackOrderField(primary, secondary string) string {
-	primary = strings.TrimSpace(primary)
-	if primary != "" {
-		return primary
-	}
-
-	return strings.TrimSpace(secondary)
 }
 
 func normalizeExitType(rawExitType, tradeCondition string) string {

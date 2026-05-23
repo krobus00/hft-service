@@ -141,6 +141,9 @@ type OrderRequest struct {
 	StrategyName     string          `json:"strategy_name,omitempty"`
 	Interval         string          `json:"interval,omitempty"`
 	Internal         string          `json:"internal,omitempty"`
+	EntryPrice       string          `json:"entry_price,omitempty"`
+	ExitPrice        string          `json:"exit_price,omitempty"`
+	PnlPercentage    string          `json:"pnl_percentage,omitempty"`
 	TradeCondition   string          `json:"trade_condition"`
 	OrderReason      string          `json:"order_reason,omitempty"`
 	ExitType         string          `json:"exit_type,omitempty"`
@@ -159,10 +162,12 @@ type OrderNotification struct {
 	StrategyID     string `json:"strategy_id,omitempty"`
 	StrategyName   string `json:"strategy_name,omitempty"`
 	Symbol         string `json:"symbol"`
-	Internal       string `json:"internal,omitempty"`
 	Interval       string `json:"interval,omitempty"`
 	Side           string `json:"side"`
 	Price          string `json:"price"`
+	EntryPrice     string `json:"entry_price,omitempty"`
+	ExitPrice      string `json:"exit_price,omitempty"`
+	PnlPercentage  string `json:"pnl_percentage,omitempty"`
 	TradeCondition string `json:"trade_condition"`
 	OrderReason    string `json:"order_reason,omitempty"`
 	ExitType       string `json:"exit_type,omitempty"`

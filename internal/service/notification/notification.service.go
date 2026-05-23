@@ -131,10 +131,11 @@ func (s *Service) sendDiscordAlert(ctx context.Context, payload entity.OrderNoti
 				"fields": []map[string]any{
 					{"name": "Strategy", "value": fallback(payload.StrategyName, payload.StrategyID), "inline": true},
 					{"name": "Symbol", "value": fallback(payload.Symbol, "-"), "inline": true},
-					{"name": "Internal", "value": fallback(payload.Internal, payload.Symbol), "inline": true},
 					{"name": "Interval", "value": fallback(payload.Interval, "-"), "inline": true},
 					{"name": "Side", "value": side, "inline": true},
-					{"name": "Price", "value": fallback(payload.Price, "-"), "inline": true},
+					{"name": "Entry Price", "value": fallback(payload.EntryPrice, "-"), "inline": true},
+					{"name": "Exit Price", "value": fallback(payload.ExitPrice, "-"), "inline": true},
+					{"name": "PnL %", "value": fallback(payload.PnlPercentage, "-"), "inline": true},
 					{"name": "Reason", "value": fallback(payload.OrderReason, "-"), "inline": false},
 					{"name": "Exit Type", "value": fallback(payload.ExitType, "-"), "inline": true},
 					{"name": "Condition", "value": fallback(payload.TradeCondition, "-"), "inline": true},
