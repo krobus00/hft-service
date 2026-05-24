@@ -19,6 +19,20 @@ def load_full_config() -> Dict[str, Any]:
         return yaml.safe_load(file) or {}
 
 
+def cfg_value(section: Dict[str, Any], global_config: Dict[str, Any], key: str, default: Any) -> Any:
+    if key in section and section.get(key) is not None:
+        return section.get(key)
+
+    risk_controls = global_config.get("risk_controls", {}) if isinstance(global_config, dict) else {}
+    if isinstance(risk_controls, dict) and key in risk_controls and risk_controls.get(key) is not None:
+        return risk_controls.get(key)
+
+    if key in global_config and global_config.get(key) is not None:
+        return global_config.get(key)
+
+    return default
+
+
 def parse_iso_to_ms(value: str) -> int:
     dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return int(dt.timestamp() * 1000)

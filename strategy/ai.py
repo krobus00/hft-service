@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 import anthropic
 import uvloop
 
-from core.common import load_full_config, pct_to_frac
+from core.common import cfg_value, load_full_config, pct_to_frac
 from core.framework import StrategyBase, StrategyRunner
 from core.indicators import ATR, EMA, MACD, RollingVWAP
 from core.models import Candle, RuntimeConfig, StrategyConfig
@@ -45,6 +45,11 @@ class AIHybridStrategy(StrategyBase):
         "trailing_stop_pct",
         "max_hold_bars",
         "cooldown_bars",
+        "sl_cooldown_bars",
+        "max_consecutive_stop_losses",
+        "sl_pause_bars",
+        "pause_bars",
+        "stop_loss_streak",
         "max_positions",
         "macd_ready_min",
         "rsi_period",
@@ -88,6 +93,8 @@ class AIHybridStrategy(StrategyBase):
         self.lowest_since_entry: Optional[float] = None
         self.bars_in_pos = 0
         self.cooldown = 0
+        self.pause_bars = 0
+        self.stop_loss_streak = 0
         self.bar_count = 0
 
         self.use_ai = bool(section.get("use_ai", True))
@@ -96,12 +103,22 @@ class AIHybridStrategy(StrategyBase):
         self.entry_confidence = float(section.get("entry_confidence", 0.62))
         self.override_confidence = float(section.get("override_confidence", 0.75))
 
-        self.take_profit_pct = float(section.get("take_profit_pct", 0.40))
-        self.stop_loss_pct = float(section.get("stop_loss_pct", 0.25))
-        self.trailing_stop_pct = float(section.get("trailing_stop_pct", 0.20))
-        self.max_hold_bars = int(section.get("max_hold_bars", 24))
-        self.cooldown_bars = int(section.get("cooldown_bars", 2))
-        self.max_positions = int(section.get("max_positions", 1))
+        self.take_profit_pct = float(cfg_value(section, GLOBAL_CONFIG, "take_profit_pct", 0.40))
+        self.stop_loss_pct = float(cfg_value(section, GLOBAL_CONFIG, "stop_loss_pct", 0.25))
+        self.trailing_stop_pct = float(cfg_value(section, GLOBAL_CONFIG, "trailing_stop_pct", 0.20))
+        self.max_hold_bars = int(cfg_value(section, GLOBAL_CONFIG, "max_hold_bars", 24))
+        self.cooldown_bars = int(cfg_value(section, GLOBAL_CONFIG, "cooldown_bars", 2))
+        self.sl_cooldown_bars = int(
+            cfg_value(
+                section,
+                GLOBAL_CONFIG,
+                "sl_cooldown_bars",
+                cfg_value(section, GLOBAL_CONFIG, "stop_loss_cooldown_bars", 3),
+            )
+        )
+        self.max_consecutive_stop_losses = int(cfg_value(section, GLOBAL_CONFIG, "max_consecutive_stop_losses", 2))
+        self.sl_pause_bars = int(cfg_value(section, GLOBAL_CONFIG, "sl_pause_bars", 10))
+        self.max_positions = int(cfg_value(section, GLOBAL_CONFIG, "max_positions", 1))
 
         self.macd_ready_min = max(50, macd_slow + macd_signal)
         self.rsi_period = max(2, int(section.get("rsi_period", 14)))
@@ -590,7 +607,19 @@ class AIHybridStrategy(StrategyBase):
         self.highest_since_entry = None
         self.lowest_since_entry = None
         self.bars_in_pos = 0
-        self.cooldown = self.cooldown_bars
+        if reason.startswith("STOP_LOSS"):
+            self.stop_loss_streak += 1
+            self.cooldown = max(self.cooldown_bars, self.sl_cooldown_bars)
+            if (
+                self.max_consecutive_stop_losses > 0
+                and self.stop_loss_streak >= self.max_consecutive_stop_losses
+                and self.sl_pause_bars > 0
+            ):
+                self.pause_bars = max(self.pause_bars, self.sl_pause_bars)
+                self.stop_loss_streak = 0
+        else:
+            self.cooldown = self.cooldown_bars
+            self.stop_loss_streak = 0
         return self.sell(price, reason, tagged_metadata)
 
     def _close_short(self, price: float, reason: str, metadata: Dict[str, Any]):
@@ -618,16 +647,33 @@ class AIHybridStrategy(StrategyBase):
         self.highest_since_entry = None
         self.lowest_since_entry = None
         self.bars_in_pos = 0
-        self.cooldown = self.cooldown_bars
+        if reason.startswith("STOP_LOSS"):
+            self.stop_loss_streak += 1
+            self.cooldown = max(self.cooldown_bars, self.sl_cooldown_bars)
+            if (
+                self.max_consecutive_stop_losses > 0
+                and self.stop_loss_streak >= self.max_consecutive_stop_losses
+                and self.sl_pause_bars > 0
+            ):
+                self.pause_bars = max(self.pause_bars, self.sl_pause_bars)
+                self.stop_loss_streak = 0
+        else:
+            self.cooldown = self.cooldown_bars
+            self.stop_loss_streak = 0
         return self.buy(price, reason, tagged_metadata)
 
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
         if not self.allow_new_candle(candle):
             return None
 
+        if self.pause_bars > 0:
+            self.pause_bars -= 1
+            return None
+
         self.bar_count += 1
         if self.cooldown > 0:
             self.cooldown -= 1
+            return None
 
         ema_fast = self.ema_fast.update(candle.close)
         ema_slow = self.ema_slow.update(candle.close)
@@ -753,7 +799,7 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         order_type=section.get("order_type", "LIMIT"),
         order_qty=float(section.get("order_qty", 10)),
         limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
-        enable_intrabar_risk_exit=bool(section.get("enable_intrabar_risk_exit", True)),
+        enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", True)),
     )
 
 
@@ -783,6 +829,18 @@ async def run():
         raise ValueError("stop_loss_pct must be >= 0")
     if strategy.trailing_stop_pct < 0:
         raise ValueError("trailing_stop_pct must be >= 0")
+
+    if strategy.cooldown_bars < 0:
+        raise ValueError("cooldown_bars must be >= 0")
+
+    if strategy.sl_cooldown_bars < 0:
+        raise ValueError("sl_cooldown_bars must be >= 0")
+
+    if strategy.max_consecutive_stop_losses < 0:
+        raise ValueError("max_consecutive_stop_losses must be >= 0")
+
+    if strategy.sl_pause_bars < 0:
+        raise ValueError("sl_pause_bars must be >= 0")
 
     runner = StrategyRunner(strategy=strategy, runtime=runtime)
     await runner.run()

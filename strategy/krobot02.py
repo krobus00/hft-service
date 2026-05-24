@@ -4,7 +4,7 @@ from typing import Optional
 
 import uvloop
 
-from core.common import load_full_config, pct_to_frac
+from core.common import cfg_value, load_full_config, pct_to_frac
 from core.framework import StrategyBase, StrategyRunner
 from core.indicators import EMA, RollingVWAP
 from core.models import Candle, RuntimeConfig, StrategyConfig
@@ -43,6 +43,8 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		"vwap",
 		"vol_mean",
 		"cooldown",
+		"pause_bars",
+		"stop_loss_streak",
 		"position_side",
 		"entry_price",
 		"highest_since_entry",
@@ -52,8 +54,12 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		"volume_window",
 		"volume_mult",
 		"cooldown_bars",
+		"sl_cooldown_bars",
+		"max_consecutive_stop_losses",
+		"sl_pause_bars",
 		"take_profit_pct",
 		"stop_loss_pct",
+		"trailing_stop_pct",
 		"warmup_min",
 	)
 
@@ -69,31 +75,66 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		self.vol_mean = RollingMean(self.volume_window)
 
 		self.cooldown = 0
+		self.pause_bars = 0
+		self.stop_loss_streak = 0
 		self.position_side: Optional[str] = None
 		self.entry_price: Optional[float] = None
 		self.highest_since_entry: Optional[float] = None
 		self.lowest_since_entry: Optional[float] = None
 
 		self.volume_mult = float(section.get("volume_mult", 1.15))
-		self.cooldown_bars = int(section.get("cooldown_bars", 1))
-		self.take_profit_pct = float(section.get("take_profit_pct", section.get("tp_pct", 0.4)))
-		self.stop_loss_pct = float(section.get("stop_loss_pct", section.get("sl_pct", 0.25)))
+		self.cooldown_bars = int(cfg_value(section, GLOBAL_CONFIG, "cooldown_bars", 1))
+		self.sl_cooldown_bars = int(
+			cfg_value(
+				section,
+				GLOBAL_CONFIG,
+				"sl_cooldown_bars",
+				cfg_value(section, GLOBAL_CONFIG, "stop_loss_cooldown_bars", 3),
+			)
+		)
+		self.max_consecutive_stop_losses = int(cfg_value(section, GLOBAL_CONFIG, "max_consecutive_stop_losses", 2))
+		self.sl_pause_bars = int(cfg_value(section, GLOBAL_CONFIG, "sl_pause_bars", 10))
+		self.take_profit_pct = float(cfg_value(section, GLOBAL_CONFIG, "take_profit_pct", section.get("tp_pct", 0.4)))
+		self.stop_loss_pct = float(cfg_value(section, GLOBAL_CONFIG, "stop_loss_pct", section.get("sl_pct", 0.25)))
+		self.trailing_stop_pct = float(
+			cfg_value(section, GLOBAL_CONFIG, "trailing_stop_pct", section.get("ts_pct", 0.0))
+		)
 
 		self.warmup_min = max(self.ema_period, self.vwap_window, self.volume_window)
 
-	def _reset_position(self) -> None:
+	def _reset_position(self, exit_type: str = "") -> None:
 		self.position_side = None
 		self.entry_price = None
 		self.highest_since_entry = None
 		self.lowest_since_entry = None
+
+		normalized_exit = str(exit_type or "").strip().upper()
+		if normalized_exit == "STOP_LOSS":
+			self.stop_loss_streak += 1
+			self.cooldown = max(self.cooldown_bars, self.sl_cooldown_bars)
+			if (
+				self.max_consecutive_stop_losses > 0
+				and self.stop_loss_streak >= self.max_consecutive_stop_losses
+				and self.sl_pause_bars > 0
+			):
+				self.pause_bars = max(self.pause_bars, self.sl_pause_bars)
+				self.stop_loss_streak = 0
+			return
+
 		self.cooldown = self.cooldown_bars
+		self.stop_loss_streak = 0
 
 	def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
 		if not self.allow_new_candle(candle):
 			return None
 
+		if self.pause_bars > 0:
+			self.pause_bars -= 1
+			return None
+
 		if self.cooldown > 0:
 			self.cooldown -= 1
+			return None
 
 		ema_px = self.ema.update(candle.close)
 		vwap_px = self.vwap.update(candle.close, candle.quote_volume)
@@ -121,12 +162,14 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.highest_since_entry = max(self.highest_since_entry or high_px, high_px)
 			sl_px = self.entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
 			tp_px = self.entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
+			trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
 
 			metadata.update(
 				{
 					"entry_price": round(self.entry_price, 8),
 					"tp_px": round(tp_px, 8),
 					"sl_px": round(sl_px, 8),
+					"trail_px": round(trail_px, 8),
 				}
 			)
 
@@ -134,26 +177,35 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 				metadata["trade_condition"] = "STOP_LOSS"
 				metadata["order_reason"] = "STOP_LOSS_LONG"
 				metadata["exit_type"] = "STOP_LOSS"
-				self._reset_position()
+				self._reset_position("STOP_LOSS")
 				return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
 
 			if self.take_profit_pct > 0 and high_px >= tp_px:
 				metadata["trade_condition"] = "TAKE_PROFIT"
 				metadata["order_reason"] = "TAKE_PROFIT_LONG"
 				metadata["exit_type"] = "TAKE_PROFIT"
-				self._reset_position()
+				self._reset_position("TAKE_PROFIT")
 				return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
+
+			if self.trailing_stop_pct > 0 and low_px <= trail_px:
+				metadata["trade_condition"] = "TRAILING_STOP"
+				metadata["order_reason"] = "TRAILING_STOP_LONG"
+				metadata["exit_type"] = "TRAILING_STOP"
+				self._reset_position("TRAILING_STOP")
+				return self.sell(candle.close, "TRAILING_STOP_LONG", metadata)
 
 		if self.position_side == "SHORT" and self.entry_price is not None:
 			self.lowest_since_entry = min(self.lowest_since_entry or low_px, low_px)
 			sl_px = self.entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
 			tp_px = self.entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
+			trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
 
 			metadata.update(
 				{
 					"entry_price": round(self.entry_price, 8),
 					"tp_px": round(tp_px, 8),
 					"sl_px": round(sl_px, 8),
+					"trail_px": round(trail_px, 8),
 				}
 			)
 
@@ -161,15 +213,22 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 				metadata["trade_condition"] = "STOP_LOSS"
 				metadata["order_reason"] = "STOP_LOSS_SHORT"
 				metadata["exit_type"] = "STOP_LOSS"
-				self._reset_position()
+				self._reset_position("STOP_LOSS")
 				return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
 
 			if self.take_profit_pct > 0 and low_px <= tp_px:
 				metadata["trade_condition"] = "TAKE_PROFIT"
 				metadata["order_reason"] = "TAKE_PROFIT_SHORT"
 				metadata["exit_type"] = "TAKE_PROFIT"
-				self._reset_position()
+				self._reset_position("TAKE_PROFIT")
 				return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
+
+			if self.trailing_stop_pct > 0 and high_px >= trail_px:
+				metadata["trade_condition"] = "TRAILING_STOP"
+				metadata["order_reason"] = "TRAILING_STOP_SHORT"
+				metadata["exit_type"] = "TRAILING_STOP"
+				self._reset_position("TRAILING_STOP")
+				return self.buy(candle.close, "TRAILING_STOP_SHORT", metadata)
 
 		if self.cooldown > 0:
 			return None
@@ -226,6 +285,7 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 		order_type=section.get("order_type", "LIMIT"),
 		order_qty=float(section.get("order_qty", 10)),
 		limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
+		enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", False)),
 	)
 
 
@@ -251,6 +311,21 @@ async def run():
 
 	if strategy.stop_loss_pct < 0:
 		raise ValueError("stop_loss_pct must be >= 0")
+
+	if strategy.trailing_stop_pct < 0:
+		raise ValueError("trailing_stop_pct must be >= 0")
+
+	if strategy.cooldown_bars < 0:
+		raise ValueError("cooldown_bars must be >= 0")
+
+	if strategy.sl_cooldown_bars < 0:
+		raise ValueError("sl_cooldown_bars must be >= 0")
+
+	if strategy.max_consecutive_stop_losses < 0:
+		raise ValueError("max_consecutive_stop_losses must be >= 0")
+
+	if strategy.sl_pause_bars < 0:
+		raise ValueError("sl_pause_bars must be >= 0")
 
 	if strategy.volume_mult <= 0:
 		raise ValueError("volume_mult must be > 0")

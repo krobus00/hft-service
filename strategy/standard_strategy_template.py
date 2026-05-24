@@ -2,7 +2,7 @@ import asyncio
 
 import uvloop
 
-from core.common import load_full_config
+from core.common import cfg_value, load_full_config
 from core.framework import StrategyBase, StrategyRunner
 from core.models import Candle, RuntimeConfig, StrategyConfig
 
@@ -18,10 +18,14 @@ class TemplateStrategy(StrategyBase):
 
     def __init__(self, strategy_config: StrategyConfig, section: dict):
         super().__init__(strategy_config)
-        self.cooldown = int(section.get("cooldown_bars", 0))
+        self.cooldown = int(cfg_value(section, GLOBAL_CONFIG, "cooldown_bars", 0))
 
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
         if not self.allow_new_candle(candle):
+            return None
+
+        if self.cooldown > 0:
+            self.cooldown -= 1
             return None
 
         # Update reusable indicators here during both warmup and live data.
@@ -30,6 +34,7 @@ class TemplateStrategy(StrategyBase):
 
         # Implement real entry/exit rules here.
         # return self.buy(candle.close, "ENTER_LONG", {"example": 1})
+        # self.cooldown = int(cfg_value(SECTION, GLOBAL_CONFIG, "cooldown_bars", 0))
         # return self.sell(candle.close, "EXIT_LONG", {"example": 1})
         return None
 
@@ -54,6 +59,7 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         order_type=section.get("order_type", "LIMIT"),
         order_qty=float(section.get("order_qty", 10)),
         limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
+        enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", False)),
     )
 
 
