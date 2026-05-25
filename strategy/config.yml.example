@@ -1,8 +1,9 @@
 global:
   nats_url: nats://localhost:4222
   db_dsn: postgres://root:root@localhost:5432/market_data?sslmode=disable
-  anthropic_base_url: https://api.minimax.io/anthropic
-  anthropic_api_key: YOUR_API_KEY
+  proxy_host: https://llm.proxy
+  api_key: YOUR_API_KEY
+  max_tokens: 1200
   risk_controls:
     cooldown_bars: 2
     sl_cooldown_bars: 3

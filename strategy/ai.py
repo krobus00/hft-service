@@ -1,10 +1,12 @@
 import asyncio
 from collections import deque
+from contextlib import suppress
 import json
 import os
 from typing import Any, Dict, Optional, Tuple
 
-import anthropic
+import httpx
+from openai import OpenAI
 import uvloop
 
 from core.common import cfg_value, load_full_config, pct_to_frac
@@ -34,9 +36,11 @@ class AIHybridStrategy(StrategyBase):
         "cooldown",
         "bar_count",
         "ai_client",
+        "http_client",
         "base_url",
         "use_ai",
         "model_name",
+        "max_tokens",
         "ai_interval_bars",
         "entry_confidence",
         "override_confidence",
@@ -98,7 +102,8 @@ class AIHybridStrategy(StrategyBase):
         self.bar_count = 0
 
         self.use_ai = bool(section.get("use_ai", True))
-        self.model_name = section.get("ai_model", "MiniMax-M2.7")
+        self.model_name = section.get("ai_model", "gpt-4o-mini")
+        self.max_tokens = int(GLOBAL_CONFIG.get("max_tokens", 1200))
         self.ai_interval_bars = max(1, int(section.get("ai_interval_bars", 3)))
         self.entry_confidence = float(section.get("entry_confidence", 0.62))
         self.override_confidence = float(section.get("override_confidence", 0.75))
@@ -140,20 +145,38 @@ class AIHybridStrategy(StrategyBase):
         self.intrabar_risk_guard = False
 
         api_key = (
-            section.get("anthropic_api_key")
+            section.get("api_key")
+            or GLOBAL_CONFIG.get("api_key")
+            or os.getenv("API_KEY")
+            or section.get("openai_api_key")
+            or GLOBAL_CONFIG.get("openai_api_key")
+            or os.getenv("OPENAI_API_KEY")
+            or section.get("anthropic_api_key")
             or GLOBAL_CONFIG.get("anthropic_api_key")
             or os.getenv("ANTHROPIC_API_KEY")
         )
         self.base_url = (
-            section.get("anthropic_base_url")
+            section.get("proxy_host")
+            or GLOBAL_CONFIG.get("proxy_host")
+            or os.getenv("PROXY_HOST")
+            or section.get("openai_base_url")
+            or GLOBAL_CONFIG.get("openai_base_url")
+            or os.getenv("OPENAI_BASE_URL")
+            or section.get("anthropic_base_url")
             or GLOBAL_CONFIG.get("anthropic_base_url")
             or os.getenv("ANTHROPIC_BASE_URL")
+            or "https://llm.proxy"
         )
         client_kwargs = {"api_key": api_key}
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
 
-        self.ai_client = anthropic.Anthropic(**client_kwargs) if self.use_ai and api_key else None
+        self.http_client: Optional[httpx.Client] = None
+        if self.use_ai and api_key:
+            self.http_client = httpx.Client()
+            self.ai_client = OpenAI(http_client=self.http_client, **client_kwargs)
+        else:
+            self.ai_client = None
 
     def _local_signal(self, candle: Candle, ema_fast: float, ema_slow: float, vwap_px: float, macd_hist: float, atr: float):
         trend_up = ema_fast > ema_slow and candle.close > ema_slow
@@ -193,27 +216,45 @@ class AIHybridStrategy(StrategyBase):
         return "HOLD", max(long_score, short_score)
 
     @staticmethod
-    def _extract_text(message) -> str:
-        texts = []
-        for block in message.content or []:
-            block_type = getattr(block, "type", None)
-            block_text = getattr(block, "text", None)
-            if isinstance(block, dict):
-                block_type = block.get("type")
-                block_text = block.get("text")
-            if block_type == "text" and block_text:
-                texts.append(str(block_text))
-        return "\n".join(texts).strip()
+    def _extract_text(response) -> str:
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            output_text = getattr(response, "output_text", None)
+            if isinstance(output_text, str):
+                return output_text.strip()
+            return ""
 
-    @staticmethod
-    def _extract_block_types(message) -> str:
-        block_types = []
-        for block in message.content or []:
-            block_type = getattr(block, "type", None)
-            if isinstance(block, dict):
-                block_type = block.get("type")
-            block_types.append(str(block_type or "unknown"))
-        return ",".join(block_types) if block_types else "none"
+        first_choice = choices[0]
+        direct_text = getattr(first_choice, "text", None)
+        if isinstance(first_choice, dict):
+            direct_text = first_choice.get("text", direct_text)
+        if isinstance(direct_text, str) and direct_text.strip():
+            return direct_text.strip()
+
+        message = getattr(first_choice, "message", None)
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message")
+
+        content = getattr(message, "content", None)
+        if isinstance(message, dict):
+            content = message.get("content")
+
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            texts = []
+            for part in content:
+                part_type = getattr(part, "type", None)
+                part_text = getattr(part, "text", None)
+                if isinstance(part, dict):
+                    part_type = part.get("type")
+                    part_text = part.get("text")
+                if part_type in {"text", "output_text"} and part_text:
+                    texts.append(str(part_text))
+                elif isinstance(part, str) and part.strip():
+                    texts.append(part.strip())
+            return "\n".join(texts).strip()
+        return ""
 
     @staticmethod
     def _extract_json(raw_text: str) -> Dict[str, Any]:
@@ -247,7 +288,10 @@ class AIHybridStrategy(StrategyBase):
         if self.intrabar_risk_guard:
             raise RuntimeError("LLM call is blocked during intrabar risk checks")
         if self.ai_client is None:
-            raise RuntimeError("AI client is not initialized. Set anthropic_api_key or ANTHROPIC_API_KEY.")
+            raise RuntimeError("AI client is not initialized. Set api_key or API_KEY.")
+
+        payload_symbol = str(payload.get("symbol", self.config.symbol) or self.config.symbol)
+        payload_timeframe = str(payload.get("timeframe", self.config.interval) or self.config.interval)
 
         system_prompt = (
             "You are an advanced quantitative crypto trading assistant.\n\n"
@@ -267,7 +311,7 @@ class AIHybridStrategy(StrategyBase):
         user_payload_text = json.dumps(payload, separators=(",", ":"))
         print(
             (
-                f"[AI_REQUEST] symbol={self.config.symbol} interval={self.config.interval} "
+                f"[AI_REQUEST] symbol={payload_symbol} interval={payload_timeframe} "
                 f"model={self.model_name} "
                 f"system_prompt={self._truncate_for_log(system_prompt)} "
                 f"payload={self._truncate_for_log(user_payload_text)}"
@@ -276,33 +320,40 @@ class AIHybridStrategy(StrategyBase):
         )
 
         try:
-            message = self.ai_client.messages.create(
+            response = self.ai_client.chat.completions.create(
                 model=self.model_name,
-                max_tokens=1200,
-                system=system_prompt,
+                max_tokens=max(1, self.max_tokens),
                 messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
                     {
                         "role": "user",
                         "content": user_payload_text,
                     }
                 ],
+                temperature=0.2,
             )
 
-            raw_text = self._extract_text(message)
-            stop_reason = getattr(message, "stop_reason", None)
-            block_types = self._extract_block_types(message)
+            raw_text = self._extract_text(response)
+            finish_reason = None
+            choices = getattr(response, "choices", None) or []
+            if choices:
+                first_choice = choices[0]
+                finish_reason = getattr(first_choice, "finish_reason", None)
+                if isinstance(first_choice, dict):
+                    finish_reason = first_choice.get("finish_reason")
             print(
                 (
-                    f"[AI_RESPONSE_RAW] symbol={self.config.symbol} interval={self.config.interval} "
-                    f"model={self.model_name} stop_reason={stop_reason} block_types={block_types} "
+                    f"[AI_RESPONSE_RAW] symbol={payload_symbol} interval={payload_timeframe} "
+                    f"model={self.model_name} finish_reason={finish_reason} "
                     f"response={self._truncate_for_log(raw_text)}"
                 ),
                 flush=True,
             )
             if not raw_text:
-                raise RuntimeError(
-                    f"No text block in response (stop_reason={stop_reason}, block_types={block_types})"
-                )
+                raise RuntimeError(f"No text in response (finish_reason={finish_reason})")
             parsed = self._extract_json(raw_text)
 
             action = str(parsed.get("action", "HOLD")).upper()
@@ -315,7 +366,7 @@ class AIHybridStrategy(StrategyBase):
             reason = " ".join(str(parsed.get("reason", "AI_DECISION")).split())[:255]
             print(
                 (
-                    f"[AI_RESPONSE_PARSED] symbol={self.config.symbol} interval={self.config.interval} "
+                    f"[AI_RESPONSE_PARSED] symbol={payload_symbol} interval={payload_timeframe} "
                     f"model={self.model_name} action={action} confidence={confidence:.4f} "
                     f"reason={reason}"
                 ),
@@ -325,7 +376,7 @@ class AIHybridStrategy(StrategyBase):
         except Exception as exc:
             print(
                 (
-                    f"[AI_ERROR] symbol={self.config.symbol} interval={self.config.interval} "
+                    f"[AI_ERROR] symbol={payload_symbol} interval={payload_timeframe} "
                     f"model={self.model_name} error={type(exc).__name__}:{exc}"
                 ),
                 flush=True,
@@ -388,10 +439,12 @@ class AIHybridStrategy(StrategyBase):
         rsi: Optional[float],
     ) -> Dict[str, Any]:
         distance_from_ema = ((candle.close - ema_slow) / ema_slow * 100.0) if ema_slow else 0.0
+        symbol = str(candle.symbol or self.config.symbol or "").strip().upper() or str(self.config.symbol)
+        timeframe = str(candle.interval or self.config.interval or "").strip() or str(self.config.interval)
 
         payload: Dict[str, Any] = {
-            "symbol": self.config.symbol,
-            "timeframe": self.config.interval,
+            "symbol": symbol,
+            "timeframe": timeframe,
             "trend": {
                 "ema_fast": round(ema_fast, 8),
                 "ema_slow": round(ema_slow, 8),
@@ -470,7 +523,7 @@ class AIHybridStrategy(StrategyBase):
 
     def _test_llm_on_init(self) -> None:
         if self.ai_client is None:
-            raise RuntimeError("AI client is not initialized. Set anthropic_api_key or ANTHROPIC_API_KEY.")
+            raise RuntimeError("AI client is not initialized. Set api_key or API_KEY.")
 
         system_prompt = "You are a health check endpoint. Reply with plain text: OK"
         test_payload = {
@@ -489,19 +542,41 @@ class AIHybridStrategy(StrategyBase):
         )
 
         try:
-            message = self.ai_client.messages.create(
+            init_max_tokens = max(16, min(max(1, self.max_tokens), 64))
+            response = self.ai_client.chat.completions.create(
                 model=self.model_name,
-                max_tokens=64,
-                system=system_prompt,
+                max_tokens=init_max_tokens,
                 messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
                     {
                         "role": "user",
                         "content": test_payload_text,
                     }
                 ],
+                temperature=0,
             )
-            raw_text = self._extract_text(message)
+            raw_text = self._extract_text(response)
+            finish_reason = None
+            choices = getattr(response, "choices", None) or []
+            if choices:
+                first_choice = choices[0]
+                finish_reason = getattr(first_choice, "finish_reason", None)
+                if isinstance(first_choice, dict):
+                    finish_reason = first_choice.get("finish_reason")
             if not raw_text:
+                if choices:
+                    print(
+                        (
+                            f"[AI_INIT_TEST_RESPONSE_EMPTY] symbol={self.config.symbol} interval={self.config.interval} "
+                            f"model={self.model_name} finish_reason={finish_reason} "
+                            "warning=empty_text_with_nonempty_choices"
+                        ),
+                        flush=True,
+                    )
+                    return
                 raise RuntimeError("empty response from LLM init test")
 
             print(
@@ -719,7 +794,8 @@ class AIHybridStrategy(StrategyBase):
 
         print(
             (
-                f"[AI_DECISION] symbol={self.config.symbol} interval={self.config.interval} "
+                f"[AI_DECISION] symbol={candle.symbol or self.config.symbol} "
+                f"interval={candle.interval or self.config.interval} "
                 f"close={candle.close:.6f} ai={ai_action}:{ai_confidence:.4f} "
                 f"final={final_action}:{final_confidence:.4f} "
                 f"queried={queried} reason={ai_reason}"
@@ -820,7 +896,7 @@ async def run():
 
     strategy = AIHybridStrategy(build_strategy_config(AI_CONFIG), AI_CONFIG)
     if strategy.ai_client is None:
-        raise ValueError("LLM is required. Set anthropic_api_key or ANTHROPIC_API_KEY.")
+        raise ValueError("LLM is required. Set api_key or API_KEY.")
     strategy._test_llm_on_init()
 
     if strategy.take_profit_pct < 0:
@@ -843,7 +919,15 @@ async def run():
         raise ValueError("sl_pause_bars must be >= 0")
 
     runner = StrategyRunner(strategy=strategy, runtime=runtime)
-    await runner.run()
+    try:
+        await runner.run()
+    finally:
+        if strategy.ai_client is not None:
+            with suppress(Exception):
+                strategy.ai_client.close()
+        if strategy.http_client is not None:
+            with suppress(Exception):
+                strategy.http_client.close()
 
 
 if __name__ == "__main__":
