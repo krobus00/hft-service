@@ -3,7 +3,7 @@ STRATEGY_FILES ?= $(basename $(notdir $(wildcard strategy/*.py)))
 
 .PHONY: run-strategy rerun-all-strategy
 run-strategy:
-	docker run --rm -d \
+	@docker run --rm -d \
 	  --name $(STRATEGY_FILE)-runner \
 	  -v $(CURDIR)/strategy:/app \
 	  -w /app \
@@ -21,3 +21,9 @@ rerun-all-strategy:
 	    python-strategy:latest \
 	    bash -c "python $$strategy.py"; \
 	done
+
+build-strategy:
+	@docker build \
+		-t python-strategy:latest \
+		-f tools/python-strategy/Dockerfile \
+		. --no-cache
