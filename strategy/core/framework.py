@@ -506,6 +506,7 @@ class StrategyRunner:
         active_pairs: Dict[str, Dict[str, Any]] = {}
         refresh_interval_sec = 10
         no_pairs_logged = False
+        last_active_summary = ""
 
         def build_handler(pair_key: str):
             async def handler(msg):
@@ -633,7 +634,7 @@ class StrategyRunner:
             return handler
 
         async def reconcile_pairs() -> None:
-            nonlocal no_pairs_logged
+            nonlocal no_pairs_logged, last_active_summary
 
             try:
                 desired_pairs = await self.load_strategy_targets_from_order_configs()
@@ -649,6 +650,7 @@ class StrategyRunner:
             }
             remove_keys = sorted((active_keys - desired_keys) | changed_keys)
             add_keys = sorted((desired_keys - active_keys) | changed_keys)
+            has_changes = bool(remove_keys or add_keys)
 
             for key in remove_keys:
                 pair_ctx = active_pairs.pop(key, None)
@@ -719,13 +721,16 @@ class StrategyRunner:
             if active_pairs:
                 no_pairs_logged = False
                 active_summary = ",".join(sorted(active_pairs.keys()))
-                print(f"{self.strategy.config.name} strategy running for pairs={active_summary}", flush=True)
+                if has_changes or active_summary != last_active_summary:
+                    print(f"{self.strategy.config.name} strategy running for pairs={active_summary}", flush=True)
+                    last_active_summary = active_summary
             elif not no_pairs_logged:
                 print(
                     f"{self.strategy.config.name} no strategy_order_configs rows, waiting and refreshing every {refresh_interval_sec}s",
                     flush=True,
                 )
                 no_pairs_logged = True
+                last_active_summary = ""
 
         while True:
             if nc.is_closed:
