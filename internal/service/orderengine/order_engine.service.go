@@ -353,14 +353,7 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 		strategyName = strategyID
 	}
 
-	price := order.Price.String()
-	if orderHistory != nil {
-		if orderHistory.AvgFillPrice != nil {
-			price = orderHistory.AvgFillPrice.String()
-		} else if orderHistory.Price != nil {
-			price = orderHistory.Price.String()
-		}
-	}
+	price := resolveNotificationPrice(order, orderHistory)
 
 	entryPrice := strings.TrimSpace(order.EntryPrice)
 	exitPrice := strings.TrimSpace(order.ExitPrice)
@@ -397,6 +390,48 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 	}
 
 	return nil
+}
+
+func resolveNotificationPrice(order entity.OrderRequest, orderHistory *entity.OrderHistory) string {
+	if orderHistory != nil {
+		if orderHistory.AvgFillPrice != nil && orderHistory.AvgFillPrice.GreaterThan(decimal.Zero) {
+			return orderHistory.AvgFillPrice.String()
+		}
+
+		if orderHistory.Price != nil && orderHistory.Price.GreaterThan(decimal.Zero) {
+			return orderHistory.Price.String()
+		}
+	}
+
+	if order.Price.GreaterThan(decimal.Zero) {
+		return order.Price.String()
+	}
+
+	if fallback := firstPositiveDecimalString(order.ExitPrice, order.EntryPrice); fallback != "" {
+		return fallback
+	}
+
+	return ""
+}
+
+func firstPositiveDecimalString(values ...string) string {
+	for _, raw := range values {
+		candidate := strings.TrimSpace(raw)
+		if candidate == "" {
+			continue
+		}
+
+		v, err := decimal.NewFromString(candidate)
+		if err != nil {
+			continue
+		}
+
+		if v.GreaterThan(decimal.Zero) {
+			return v.String()
+		}
+	}
+
+	return ""
 }
 
 func normalizeExitType(rawExitType, tradeCondition string) string {
