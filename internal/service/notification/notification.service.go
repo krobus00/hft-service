@@ -125,7 +125,7 @@ func (s *Service) sendDiscordAlert(ctx context.Context, payload entity.OrderNoti
 		"embeds": []map[string]any{
 			{
 				"title":       fmt.Sprintf("[%s] New Order", fallback(payload.StrategyName, payload.StrategyID)),
-				"description": "New order notification received",
+				"description": fmt.Sprintf("[%s] %s @%s", fallback(payload.Symbol, "-"), side, fallback(payload.Price, "-")),
 				"color":       embedColor,
 				"timestamp":   time.Now().UTC().Format(time.RFC3339),
 				"fields": []map[string]any{
