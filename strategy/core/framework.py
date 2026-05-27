@@ -99,8 +99,17 @@ class StrategyRunner:
         self.runtime = runtime
 
     @staticmethod
-    def _state_key(symbol: str, interval: str) -> str:
-        return f"{str(symbol or '').strip().upper()}|{str(interval or '').strip()}"
+    def _state_key(strategy: str, exchange: str, symbol: str, interval: str) -> str:
+        return (
+            f"{str(strategy or '').strip()}|"
+            f"{str(exchange or '').strip().upper()}|"
+            f"{str(symbol or '').strip().upper()}|"
+            f"{str(interval or '').strip()}"
+        )
+
+    @staticmethod
+    def _pair_key(strategy: str, exchange: str, symbol: str, interval: str) -> str:
+        return StrategyRunner._state_key(strategy, exchange, symbol, interval)
 
     @staticmethod
     def infer_trade_condition(reason: str, metadata: Optional[Dict[str, Any]] = None) -> str:
@@ -248,37 +257,82 @@ class StrategyRunner:
         normalized_exchange = str(exchange or "").strip().upper()
         return f"KLINE.{normalized_exchange}.>"
 
-    async def load_symbols_from_subscriptions(self) -> List[Dict[str, str]]:
+    @staticmethod
+    def _order_config_key(exchange: str, symbol: str, interval: str) -> str:
+        return f"{str(exchange or '').strip().upper()}|{str(symbol or '').strip().upper()}|{str(interval or '').strip()}"
+
+    def _strategy_lookup_keys(self) -> List[str]:
+        keys: List[str] = []
+        for candidate in (self.runtime.strategy_id, self.strategy.config.name, self.runtime.source):
+            value = str(candidate or "").strip()
+            if not value:
+                continue
+            if value in keys:
+                continue
+            keys.append(value)
+        return keys
+
+    async def load_strategy_targets_from_order_configs(self) -> Dict[str, Dict[str, Any]]:
+        strategy_keys = self._strategy_lookup_keys()
+        if not strategy_keys:
+            return {}
+
         conn = await asyncpg.connect(self.runtime.db_dsn)
         try:
             rows = await conn.fetch(
                 """
-                SELECT DISTINCT exchange, market_type, symbol, interval
-                FROM kline_subscriptions
-                ORDER BY exchange ASC, market_type ASC, symbol ASC
+                SELECT
+                    strategy,
+                    exchange,
+                    symbol,
+                    interval,
+                    need_notification,
+                    is_paper_trading,
+                    order_type,
+                    order_qty,
+                    limit_slippage_pct
+                FROM strategy_order_configs
+                WHERE strategy = ANY($1::text[])
                 """,
+                strategy_keys,
             )
         finally:
             await conn.close()
 
-        targets: List[Dict[str, str]] = []
+        targets: Dict[str, Dict[str, Any]] = {}
+
         for row in rows:
-            symbol = str(row["symbol"]).strip().upper()
-            interval = str(row["interval"]).strip() or str(self.strategy.config.interval or "").strip()
-            exchange_raw = str(row["exchange"]).strip()
-            exchange = exchange_raw.upper()
-            market_type = str(row["market_type"]).strip().lower()
+            row_strategy = str(row["strategy"] or "").strip()
+            exchange = str(row["exchange"] or "").strip().upper()
+            symbol = str(row["symbol"] or "").strip().upper()
+            interval = str(row["interval"] or "").strip() or str(self.strategy.config.interval or "").strip()
             if not symbol:
                 continue
             if not exchange:
                 continue
-            if not market_type:
+            if not interval:
                 continue
-            targets.append({"exchange": exchange, "market_type": market_type, "symbol": symbol, "interval": interval})
+            if not row_strategy:
+                continue
 
-        if targets:
-            return targets
-        return []
+            pair_key = self._pair_key(row_strategy, exchange, symbol, interval)
+            targets[pair_key] = {
+                "strategy": row_strategy,
+                "exchange": exchange,
+                "market_type": "spot",
+                "symbol": symbol,
+                "interval": interval,
+                "order_config": {
+                    "strategy": row_strategy,
+                    "order_type": str(row["order_type"] or "").strip().upper() or self.runtime.order_type,
+                    "order_qty": float(row["order_qty"]),
+                    "limit_slippage_pct": float(row["limit_slippage_pct"]),
+                    "need_notification": bool(row["need_notification"]),
+                    "is_paper_trading": bool(row["is_paper_trading"]),
+                },
+            }
+
+        return targets
 
     def build_order_payload(
         self,
@@ -290,14 +344,23 @@ class StrategyRunner:
         symbol: str,
         interval: str,
         metadata: Optional[Dict[str, Any]] = None,
+        order_config: Optional[Dict[str, Any]] = None,
     ) -> dict:
         metadata = metadata or {}
+        order_config = order_config or {}
+
+        order_type = str(order_config.get("order_type", self.runtime.order_type)).strip().upper() or self.runtime.order_type
+        order_qty = float(order_config.get("order_qty", self.runtime.order_qty))
+        limit_slippage_pct = float(order_config.get("limit_slippage_pct", self.runtime.limit_slippage_pct))
+        need_notification = bool(order_config.get("need_notification", self.runtime.need_notification))
+        is_paper_trading = bool(order_config.get("is_paper_trading", self.runtime.is_paper_trading))
+
         px = float(price)
-        if self.runtime.order_type == "LIMIT":
+        if order_type == "LIMIT":
             if side == "BUY":
-                px = price * (1.0 + pct_to_frac(self.runtime.limit_slippage_pct))
+                px = price * (1.0 + pct_to_frac(limit_slippage_pct))
             else:
-                px = price * (1.0 - pct_to_frac(self.runtime.limit_slippage_pct))
+                px = price * (1.0 - pct_to_frac(limit_slippage_pct))
 
         trade_condition = self.infer_trade_condition(reason, metadata)
         order_reason = self.infer_order_reason(reason, metadata)
@@ -319,10 +382,10 @@ class StrategyRunner:
                 "market_type": market_type,
                 "position_side": self.runtime.position_side,
                 "symbol": symbol,
-                "type": self.runtime.order_type,
+                "type": order_type,
                 "side": side,
                 "price": fmt_num(px),
-                "quantity": fmt_num(float(self.runtime.order_qty)),
+                "quantity": fmt_num(order_qty),
                 "requested_at": now_ms(),
                 "expired_at": None,
                 "source": self.runtime.source,
@@ -335,8 +398,8 @@ class StrategyRunner:
                 "trade_condition": trade_condition,
                 "order_reason": order_reason,
                 "exit_type": exit_type,
-                "need_notification": self.runtime.need_notification,
-                "is_paper_trading": self.runtime.is_paper_trading,
+                "need_notification": need_notification,
+                "is_paper_trading": is_paper_trading,
             },
         }
 
@@ -397,32 +460,9 @@ class StrategyRunner:
             flush=True,
         )
 
-        try:
-            targets = await self.load_symbols_from_subscriptions()
-        except Exception as exc:
-            raise RuntimeError(f"failed loading symbols from kline_subscriptions: {exc}") from exc
-
-        if not targets:
-            raise RuntimeError("No matching rows found in kline_subscriptions for strategy interval")
-
         initial_state = self.strategy.snapshot_state()
         state_store: Dict[str, Any] = {}
         entry_price_store: Dict[str, float] = {}
-
-        try:
-            for target in targets:
-                state_key = self._state_key(target["symbol"], target["interval"])
-                previous = state_store.get(state_key)
-                self.strategy.restore_state(previous if previous is not None else initial_state)
-                await self.warmup_from_postgres(
-                    target["exchange"],
-                    target["market_type"],
-                    target["symbol"],
-                    target["interval"],
-                )
-                state_store[state_key] = self.strategy.snapshot_state()
-        except Exception as exc:
-            print(f"Warmup skipped due to DB error: {exc}", flush=True)
 
         nc = NATS()
 
@@ -453,17 +493,26 @@ class StrategyRunner:
         )
         js = nc.jetstream()
         state_lock = asyncio.Lock()
+        active_pairs: Dict[str, Dict[str, Any]] = {}
+        refresh_interval_sec = 10
+        no_pairs_logged = False
 
-        def build_handler(expected_exchange: str, expected_market_type: str, symbol_intervals: Dict[str, str]):
-            normalized_exchange = str(expected_exchange).strip().upper()
-            normalized_market_type = str(expected_market_type).strip().lower()
-            normalized_symbol_intervals = {
-                str(symbol).strip().upper(): str(interval).strip() for symbol, interval in symbol_intervals.items()
-            }
-
+        def build_handler(pair_key: str):
             async def handler(msg):
                 try:
                     async with state_lock:
+                        pair_ctx = active_pairs.get(pair_key)
+                        if pair_ctx is None:
+                            await msg.ack()
+                            return
+
+                        target = pair_ctx["target"]
+                        expected_strategy = str(target["strategy"]).strip()
+                        expected_exchange = str(target["exchange"]).strip().upper()
+                        expected_symbol = str(target["symbol"]).strip().upper()
+                        expected_interval = str(target["interval"]).strip()
+                        expected_market_type = str(target.get("market_type", "spot") or "spot").strip().lower()
+
                         payload = orjson.loads(msg.data)
                         data = payload.get("data", {})
 
@@ -472,18 +521,15 @@ class StrategyRunner:
                         incoming_market_type = str(data.get("MarketType", "")).strip().lower()
                         is_closed = bool(data.get("IsClosed"))
 
-                        if incoming_market_type and incoming_market_type != normalized_market_type:
-                            await msg.ack()
-                            return
-
-                        expected_interval = normalized_symbol_intervals.get(incoming_symbol)
-                        if not expected_interval:
+                        if incoming_symbol != expected_symbol:
                             await msg.ack()
                             return
 
                         if incoming_interval != expected_interval:
                             await msg.ack()
                             return
+
+                        effective_market_type = incoming_market_type or expected_market_type
 
                         candle = Candle(
                             close_time_ms=parse_iso_to_ms(data["CloseTime"]),
@@ -497,7 +543,12 @@ class StrategyRunner:
                             trade_count=int(data.get("TradeCount", 0) or 0),
                         )
 
-                        state_key = self._state_key(candle.symbol, candle.interval)
+                        state_key = self._state_key(
+                            expected_strategy,
+                            expected_exchange,
+                            candle.symbol,
+                            candle.interval,
+                        )
                         previous_snapshot = state_store.get(state_key)
                         self.strategy.restore_state(previous_snapshot if previous_snapshot is not None else initial_state)
 
@@ -530,11 +581,12 @@ class StrategyRunner:
                                     signal.side,
                                     signal.price,
                                     signal.reason,
-                                    exchange=normalized_exchange,
-                                    market_type=normalized_market_type,
+                                    exchange=expected_exchange,
+                                    market_type=effective_market_type,
                                     symbol=candle.symbol,
                                     interval=candle.interval,
                                     metadata=signal_metadata,
+                                    order_config=target.get("order_config"),
                                 )
                                 out_bytes = orjson.dumps(out)
                                 print(
@@ -566,41 +618,101 @@ class StrategyRunner:
 
             return handler
 
-        grouped_targets: Dict[str, Dict[str, Any]] = {}
-        for target in targets:
-            exchange = target["exchange"]
-            market_type = target["market_type"]
-            symbol = target["symbol"]
-            interval = target["interval"]
-            group_key = f"{exchange}|{market_type}"
-            group = grouped_targets.get(group_key)
-            if group is None:
-                group = {
-                    "exchange": exchange,
-                    "market_type": market_type,
-                    "symbol_intervals": {},
+        async def reconcile_pairs() -> None:
+            nonlocal no_pairs_logged
+
+            try:
+                desired_pairs = await self.load_strategy_targets_from_order_configs()
+            except Exception as exc:
+                print(f"Failed loading strategy_order_configs: {exc}", flush=True)
+                return
+
+            active_keys = set(active_pairs.keys())
+            desired_keys = set(desired_pairs.keys())
+
+            changed_keys = {
+                key for key in (active_keys & desired_keys) if active_pairs[key]["target"] != desired_pairs[key]
+            }
+            remove_keys = sorted((active_keys - desired_keys) | changed_keys)
+            add_keys = sorted((desired_keys - active_keys) | changed_keys)
+
+            for key in remove_keys:
+                pair_ctx = active_pairs.pop(key, None)
+                if pair_ctx is None:
+                    continue
+
+                target = pair_ctx["target"]
+                sub = pair_ctx.get("subscription")
+                if sub is not None:
+                    try:
+                        await sub.unsubscribe()
+                    except Exception as exc:
+                        print(f"unsubscribe error for pair={key}: {exc}", flush=True)
+
+                state_key = self._state_key(
+                    target["strategy"],
+                    target["exchange"],
+                    target["symbol"],
+                    target["interval"],
+                )
+                state_store.pop(state_key, None)
+                entry_price_store.pop(state_key, None)
+                print(f"Removed pair={key}", flush=True)
+
+            for key in add_keys:
+                target = desired_pairs[key]
+                state_key = self._state_key(
+                    target["strategy"],
+                    target["exchange"],
+                    target["symbol"],
+                    target["interval"],
+                )
+
+                try:
+                    async with state_lock:
+                        previous = state_store.get(state_key)
+                        self.strategy.restore_state(previous if previous is not None else initial_state)
+                        await self.warmup_from_postgres(
+                            target["exchange"],
+                            target["market_type"],
+                            target["symbol"],
+                            target["interval"],
+                        )
+                        state_store[state_key] = self.strategy.snapshot_state()
+                except Exception as exc:
+                    print(f"Warmup skipped for pair={key} due to DB error: {exc}", flush=True)
+
+                subject = self._resolve_subject_for_exchange(target["exchange"])
+                queue_scope = f"{target['strategy']}_{target['symbol']}_{target['interval']}"
+                queue_name = self._resolve_queue_name(target["exchange"], target["market_type"], queue_scope)
+                sub = await js.subscribe(
+                    subject,
+                    manual_ack=True,
+                    queue=queue_name,
+                    cb=build_handler(key),
+                )
+                active_pairs[key] = {
+                    "target": target,
+                    "subscription": sub,
                 }
-                grouped_targets[group_key] = group
-            group["symbol_intervals"][symbol] = interval
+                print(
+                    f"Subscribed pair={key} subject={subject} queue={queue_name}",
+                    flush=True,
+                )
 
-        for group in grouped_targets.values():
-            exchange = group["exchange"]
-            market_type = group["market_type"]
-            symbol_intervals = group["symbol_intervals"]
-            subject = self._resolve_subject_for_exchange(exchange)
-            queue_name = self._resolve_queue_name(exchange, market_type, "ALL")
-            await js.subscribe(
-                subject,
-                manual_ack=True,
-                queue=queue_name,
-                cb=build_handler(exchange, market_type, symbol_intervals),
-            )
-            symbols_summary = ",".join(f"{s}:{i}" for s, i in sorted(symbol_intervals.items()))
-            print(f"Subscribed subject={subject} queue={queue_name} symbols={symbols_summary}", flush=True)
+            if active_pairs:
+                no_pairs_logged = False
+                active_summary = ",".join(sorted(active_pairs.keys()))
+                print(f"{self.strategy.config.name} strategy running for pairs={active_summary}", flush=True)
+            elif not no_pairs_logged:
+                print(
+                    f"{self.strategy.config.name} no strategy_order_configs rows, waiting and refreshing every {refresh_interval_sec}s",
+                    flush=True,
+                )
+                no_pairs_logged = True
 
-        symbols_for_log = ",".join(f"{t['exchange']}:{t['market_type']}:{t['symbol']}:{t['interval']}" for t in targets)
-        print(f"{self.strategy.config.name} strategy running for symbols={symbols_for_log}", flush=True)
         while True:
             if nc.is_closed:
                 raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
-            await asyncio.sleep(1)
+            await reconcile_pairs()
+            await asyncio.sleep(refresh_interval_sec)

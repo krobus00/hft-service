@@ -68,9 +68,20 @@ class AIHybridStrategy(StrategyBase):
         "recent_returns_pct",
         "recent_macd_hist",
         "recent_atr_pct",
+        "recent_klines",
+        "previous_trade_conditions",
         "last_ai_action",
         "last_ai_confidence",
         "last_ai_reason",
+        "ai_keep_position_on_tp",
+        "ai_suggested_sl_pct",
+        "ai_suggested_trailing_stop_pct",
+        "ai_suggested_tp_pct",
+        "active_take_profit_pct",
+        "active_stop_loss_pct",
+        "active_trailing_stop_pct",
+        "tp_anchor_price",
+        "tp_ladder_steps",
         "intrabar_risk_guard",
     )
 
@@ -139,9 +150,20 @@ class AIHybridStrategy(StrategyBase):
         self.recent_returns_pct = deque(maxlen=5)
         self.recent_macd_hist = deque(maxlen=5)
         self.recent_atr_pct = deque(maxlen=5)
+        self.recent_klines = deque(maxlen=24)
+        self.previous_trade_conditions = deque(maxlen=5)
         self.last_ai_action = "HOLD"
         self.last_ai_confidence = 0.0
         self.last_ai_reason = "INIT"
+        self.ai_keep_position_on_tp = False
+        self.ai_suggested_sl_pct: Optional[float] = None
+        self.ai_suggested_trailing_stop_pct: Optional[float] = None
+        self.ai_suggested_tp_pct: Optional[float] = None
+        self.active_take_profit_pct = self.take_profit_pct
+        self.active_stop_loss_pct = self.stop_loss_pct
+        self.active_trailing_stop_pct = self.trailing_stop_pct
+        self.tp_anchor_price: Optional[float] = None
+        self.tp_ladder_steps = 0
         self.intrabar_risk_guard = False
 
         api_key = (
@@ -284,7 +306,125 @@ class AIHybridStrategy(StrategyBase):
             "max": max(arr),
         }
 
-    def _ai_signal(self, payload: Dict[str, Any]) -> Tuple[str, float, str]:
+    @staticmethod
+    def _normalize_pct(raw: Any) -> Optional[float]:
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except Exception:
+            return None
+        if value < 0:
+            return None
+        return value
+
+    @staticmethod
+    def _normalize_bool(raw: Any, default: bool = False) -> bool:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return default
+
+    @staticmethod
+    def _macd_condition(macd_hist: float) -> str:
+        if macd_hist > 0:
+            return "bullish"
+        if macd_hist < 0:
+            return "bearish"
+        return "neutral"
+
+    @staticmethod
+    def _vwap_condition(vwap_gap_pct: float) -> str:
+        if vwap_gap_pct > 0:
+            return "above_vwap"
+        if vwap_gap_pct < 0:
+            return "below_vwap"
+        return "at_vwap"
+
+    @staticmethod
+    def _atr_condition(atr_pct: float) -> str:
+        if atr_pct <= 0:
+            return "flat"
+        if atr_pct < 1.8:
+            return "normal"
+        return "high"
+
+    def _build_kline_snapshot(
+        self,
+        candle: Candle,
+        open_price: Optional[float] = None,
+        macd_line: Optional[float] = None,
+        macd_signal: Optional[float] = None,
+        macd_hist: Optional[float] = None,
+        vwap_px: Optional[float] = None,
+        vwap_gap_pct: Optional[float] = None,
+        atr_pct: Optional[float] = None,
+        atr: Optional[float] = None,
+        rsi: Optional[float] = None,
+        distance_from_ema: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        high = candle.high if candle.high is not None else candle.close
+        low = candle.low if candle.low is not None else candle.close
+        opened = open_price if open_price is not None else candle.close
+        snapshot = {
+            "t": int(max(0, int(candle.close_time_ms)) // 1000),
+            "o": round(opened, 8),
+            "h": round(high, 8),
+            "l": round(low, 8),
+            "c": round(candle.close, 8),
+            "v": round(candle.quote_volume, 8),
+        }
+        if (
+            macd_line is not None
+            and macd_signal is not None
+            and macd_hist is not None
+            and vwap_px is not None
+            and vwap_gap_pct is not None
+            and atr_pct is not None
+        ):
+            snapshot["condition"] = {
+                "macd": self._macd_condition(macd_hist),
+                "vwap": self._vwap_condition(vwap_gap_pct),
+                "atr": self._atr_condition(atr_pct),
+            }
+            snapshot["metrics"] = {
+                "macd": {
+                    "line": round(macd_line, 8),
+                    "signal": round(macd_signal, 8),
+                    "hist": round(macd_hist, 8),
+                },
+                "vwap": {
+                    "value": round(vwap_px, 8),
+                    "gap_pct": round(vwap_gap_pct, 6),
+                },
+                "atr": round(atr, 8) if atr is not None else None,
+                "atr_pct": round(atr_pct, 6),
+                "rsi": round(rsi, 4) if rsi is not None else None,
+                "distance_from_ema": round(distance_from_ema, 6) if distance_from_ema is not None else None,
+            }
+        return snapshot
+
+    def _build_previous_trade_condition_snapshot(self) -> Dict[str, Any]:
+        return {
+            "prev_close": round(self.prev_close, 8) if self.prev_close is not None else None,
+            "prev_macd_hist": round(self.prev_macd_hist, 8) if self.prev_macd_hist is not None else None,
+            "prev_ema_spread_pct": round(self.prev_ema_spread_pct, 6) if self.prev_ema_spread_pct is not None else None,
+            "prev_vwap_gap_pct": round(self.prev_vwap_gap_pct, 6) if self.prev_vwap_gap_pct is not None else None,
+            "prev_atr_pct": round(self.prev_atr_pct, 6) if self.prev_atr_pct is not None else None,
+            "recent_returns_pct": self._window_stats(self.recent_returns_pct),
+            "recent_macd_hist": self._window_stats(self.recent_macd_hist),
+            "recent_atr_pct": self._window_stats(self.recent_atr_pct),
+            "last_ai": {
+                "action": self.last_ai_action,
+                "confidence": round(self.last_ai_confidence, 4),
+                "reason": self.last_ai_reason,
+            },
+        }
+
+    def _ai_signal(self, payload: Dict[str, Any]) -> Tuple[str, float, str, Dict[str, Any]]:
         if self.intrabar_risk_guard:
             raise RuntimeError("LLM call is blocked during intrabar risk checks")
         if self.ai_client is None:
@@ -296,14 +436,22 @@ class AIHybridStrategy(StrategyBase):
         system_prompt = (
             "You are an advanced quantitative crypto trading assistant.\n\n"
             "Make a trading decision based ONLY on the provided data.\n\n"
+            "Kline feature mapping (use this grouping when reasoning):\n"
+            "- momentum: rsi, macd.line, macd.signal, macd.hist\n"
+            "- volatility: atr, atr_pct\n"
+            "- price_action: o, h, l, c, v, vwap.value, vwap.gap_pct, distance_from_ema\n\n"
             "Rules:\n"
             "- Respect risk_rules strictly\n"
             "- Do NOT chase overextended moves\n"
             "- Prefer HOLD over bad trades\n"
             "- If already in position, decide whether to HOLD or EXIT using side action"
-            " (SELL exits BUY/LONG, BUY exits SELL/SHORT).\n\n"
+            " (SELL exits BUY/LONG, BUY exits SELL/SHORT).\n"
+            "- When in position and TP is already reached, if confidence is high and trend still supports position,"
+            " keep position, move SL to previous TP, and set next TP = previous TP plus TP percentage.\n"
+            "- Provide adaptive SL and trailing stop suggestions when confidence is high.\n\n"
             "Respond in JSON:\n"
-            "{\"action\":\"BUY | SELL | HOLD\",\"confidence\":0..1,\"reason\":\"short explanation (max 255 chars)\"}\n"
+            "{\"action\":\"BUY | SELL | HOLD | EXIT\",\"confidence\":0..1,\"reason\":\"short explanation (max 255 chars)\","
+            "\"risk_control\":{\"keep_position_on_tp\":true|false,\"suggested_sl_pct\":number>=0,\"suggested_trailing_stop_pct\":number>=0,\"suggested_tp_pct\":number>=0}}\n"
             "The reason must be concise and MUST NOT exceed 255 characters.\n"
             "Return ONLY valid JSON."
         )
@@ -364,15 +512,36 @@ class AIHybridStrategy(StrategyBase):
             confidence = max(0.0, min(1.0, confidence))
 
             reason = " ".join(str(parsed.get("reason", "AI_DECISION")).split())[:255]
+
+            risk_control = parsed.get("risk_control")
+            if not isinstance(risk_control, dict):
+                risk_control = {}
+
+            keep_position_on_tp = self._normalize_bool(risk_control.get("keep_position_on_tp"), default=False)
+            suggested_sl_pct = self._normalize_pct(risk_control.get("suggested_sl_pct"))
+            suggested_trailing_stop_pct = self._normalize_pct(risk_control.get("suggested_trailing_stop_pct"))
+            suggested_tp_pct = self._normalize_pct(risk_control.get("suggested_tp_pct"))
+
+            self.ai_keep_position_on_tp = keep_position_on_tp
+            self.ai_suggested_sl_pct = suggested_sl_pct
+            self.ai_suggested_trailing_stop_pct = suggested_trailing_stop_pct
+            self.ai_suggested_tp_pct = suggested_tp_pct
+
+            risk_feedback = {
+                "keep_position_on_tp": keep_position_on_tp,
+                "suggested_sl_pct": suggested_sl_pct,
+                "suggested_trailing_stop_pct": suggested_trailing_stop_pct,
+                "suggested_tp_pct": suggested_tp_pct,
+            }
             print(
                 (
                     f"[AI_RESPONSE_PARSED] symbol={payload_symbol} interval={payload_timeframe} "
                     f"model={self.model_name} action={action} confidence={confidence:.4f} "
-                    f"reason={reason}"
+                    f"reason={reason} risk_control={risk_feedback}"
                 ),
                 flush=True,
             )
-            return action, confidence, reason
+            return action, confidence, reason, risk_feedback
         except Exception as exc:
             print(
                 (
@@ -434,55 +603,59 @@ class AIHybridStrategy(StrategyBase):
         candle: Candle,
         ema_fast: float,
         ema_slow: float,
+        macd_line: float,
+        macd_signal: float,
         macd_hist: float,
+        vwap_px: float,
         atr: float,
         rsi: Optional[float],
     ) -> Dict[str, Any]:
         distance_from_ema = ((candle.close - ema_slow) / ema_slow * 100.0) if ema_slow else 0.0
+        vwap_gap_pct = (candle.close - vwap_px) / vwap_px * 100.0 if vwap_px else 0.0
+        atr_pct = atr / candle.close * 100.0 if candle.close else 0.0
         symbol = str(candle.symbol or self.config.symbol or "").strip().upper() or str(self.config.symbol)
         timeframe = str(candle.interval or self.config.interval or "").strip() or str(self.config.interval)
+        current_open = self.prev_close if self.prev_close is not None else candle.close
+
+        kline = list(self.recent_klines)
+        kline.append(
+            self._build_kline_snapshot(
+                candle,
+                open_price=current_open,
+                macd_line=macd_line,
+                macd_signal=macd_signal,
+                macd_hist=macd_hist,
+                vwap_px=vwap_px,
+                vwap_gap_pct=vwap_gap_pct,
+                atr_pct=atr_pct,
+                atr=atr,
+                rsi=rsi,
+                distance_from_ema=distance_from_ema,
+            )
+        )
+        if len(kline) > 24:
+            kline = kline[-24:]
+
+        previous_trade_condition = list(self.previous_trade_conditions)
+        previous_trade_condition.append(self._build_previous_trade_condition_snapshot())
+        if len(previous_trade_condition) > 5:
+            previous_trade_condition = previous_trade_condition[-5:]
 
         payload: Dict[str, Any] = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "kline": kline,
             "trend": {
                 "ema_fast": round(ema_fast, 8),
                 "ema_slow": round(ema_slow, 8),
                 "trend": self._trend_label(ema_fast, ema_slow),
-            },
-            "momentum": {
-                "rsi": round(rsi if rsi is not None else 50.0, 4),
-                "macd_hist": round(macd_hist, 8),
-            },
-            "volatility": {
-                "atr": round(atr, 8),
-            },
-            "price_action": {
-                "last_price": round(candle.close, 8),
-                "distance_from_ema": round(distance_from_ema, 6),
             },
             "risk_rules": {
                 "max_loss": -abs(round(self.stop_loss_pct, 6)),
                 "target_profit": abs(round(self.take_profit_pct, 6)),
                 "max_positions": max(1, self.max_positions),
             },
-            "previous_trade_condition": {
-                "prev_close": round(self.prev_close, 8) if self.prev_close is not None else None,
-                "prev_macd_hist": round(self.prev_macd_hist, 8) if self.prev_macd_hist is not None else None,
-                "prev_ema_spread_pct": round(self.prev_ema_spread_pct, 6)
-                if self.prev_ema_spread_pct is not None
-                else None,
-                "prev_vwap_gap_pct": round(self.prev_vwap_gap_pct, 6) if self.prev_vwap_gap_pct is not None else None,
-                "prev_atr_pct": round(self.prev_atr_pct, 6) if self.prev_atr_pct is not None else None,
-                "recent_returns_pct": self._window_stats(self.recent_returns_pct),
-                "recent_macd_hist": self._window_stats(self.recent_macd_hist),
-                "recent_atr_pct": self._window_stats(self.recent_atr_pct),
-                "last_ai": {
-                    "action": self.last_ai_action,
-                    "confidence": round(self.last_ai_confidence, 4),
-                    "reason": self.last_ai_reason,
-                },
-            },
+            "previous_trade_condition": previous_trade_condition,
         }
 
         if self.position_side in {"LONG", "SHORT"} and self.entry_price is not None and self.entry_price != 0:
@@ -506,12 +679,19 @@ class AIHybridStrategy(StrategyBase):
     def _update_bar_state(
         self,
         candle: Candle,
+        macd_line: float,
+        macd_signal: float,
         macd_hist: float,
+        vwap_px: float,
+        atr: float,
+        rsi: Optional[float],
+        distance_from_ema: float,
         ema_spread_pct: float,
         vwap_gap_pct: float,
         atr_pct: float,
         ret_1_pct: float,
     ) -> None:
+        previous_close = self.prev_close
         self.prev_close = candle.close
         self.prev_macd_hist = macd_hist
         self.prev_ema_spread_pct = ema_spread_pct
@@ -520,6 +700,22 @@ class AIHybridStrategy(StrategyBase):
         self.recent_returns_pct.append(ret_1_pct)
         self.recent_macd_hist.append(macd_hist)
         self.recent_atr_pct.append(atr_pct)
+        self.recent_klines.append(
+            self._build_kline_snapshot(
+                candle,
+                open_price=previous_close or candle.close,
+                macd_line=macd_line,
+                macd_signal=macd_signal,
+                macd_hist=macd_hist,
+                vwap_px=vwap_px,
+                vwap_gap_pct=vwap_gap_pct,
+                atr_pct=atr_pct,
+                atr=atr,
+                rsi=rsi,
+                distance_from_ema=distance_from_ema,
+            )
+        )
+        self.previous_trade_conditions.append(self._build_previous_trade_condition_snapshot())
 
     def _test_llm_on_init(self) -> None:
         if self.ai_client is None:
@@ -604,12 +800,38 @@ class AIHybridStrategy(StrategyBase):
             high_px = candle.high if candle.high is not None else candle.close
             low_px = candle.low if candle.low is not None else candle.close
             self.highest_since_entry = max(self.highest_since_entry or high_px, high_px)
+            entry_price = float(self.entry_price)
 
-            tp_px = self.entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
-            sl_px = self.entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
-            trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
+            if self.tp_anchor_price is None:
+                self.tp_anchor_price = entry_price
+
+            tp_base = float(self.tp_anchor_price)
+            tp_step_pct = max(0.0, float(self.active_take_profit_pct))
+            if tp_step_pct > 0:
+                tp_px = tp_base * (1.0 + pct_to_frac(tp_step_pct))
+            else:
+                tp_px = entry_price
+
+            sl_px = entry_price * (1.0 - pct_to_frac(max(0.0, float(self.active_stop_loss_pct))))
+            trail_px = (self.highest_since_entry or high_px) * (
+                1.0 - pct_to_frac(max(0.0, float(self.active_trailing_stop_pct)))
+            )
+            sl_px = max(sl_px, trail_px)
 
             if high_px >= tp_px:
+                can_roll_tp = (
+                    bool(metadata.get("tp_roll_eligible"))
+                    and tp_step_pct > 0
+                )
+                if can_roll_tp:
+                    self.tp_anchor_price = tp_px
+                    self.tp_ladder_steps += 1
+                    self.active_stop_loss_pct = 0.0
+                    metadata["tp_roll"] = True
+                    metadata["tp_roll_anchor"] = round(tp_px, 8)
+                    metadata["tp_roll_steps"] = self.tp_ladder_steps
+                    metadata["trade_condition"] = "HOLD"
+                    return None
                 return self._close_long(candle.close, "TAKE_PROFIT_LONG", metadata)
             if low_px <= sl_px:
                 return self._close_long(candle.close, "STOP_LOSS_LONG", metadata)
@@ -625,12 +847,38 @@ class AIHybridStrategy(StrategyBase):
             high_px = candle.high if candle.high is not None else candle.close
             low_px = candle.low if candle.low is not None else candle.close
             self.lowest_since_entry = min(self.lowest_since_entry or low_px, low_px)
+            entry_price = float(self.entry_price)
 
-            tp_px = self.entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
-            sl_px = self.entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
-            trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
+            if self.tp_anchor_price is None:
+                self.tp_anchor_price = entry_price
+
+            tp_base = float(self.tp_anchor_price)
+            tp_step_pct = max(0.0, float(self.active_take_profit_pct))
+            if tp_step_pct > 0:
+                tp_px = tp_base * (1.0 - pct_to_frac(tp_step_pct))
+            else:
+                tp_px = entry_price
+
+            sl_px = entry_price * (1.0 + pct_to_frac(max(0.0, float(self.active_stop_loss_pct))))
+            trail_px = (self.lowest_since_entry or low_px) * (
+                1.0 + pct_to_frac(max(0.0, float(self.active_trailing_stop_pct)))
+            )
+            sl_px = min(sl_px, trail_px)
 
             if low_px <= tp_px:
+                can_roll_tp = (
+                    bool(metadata.get("tp_roll_eligible"))
+                    and tp_step_pct > 0
+                )
+                if can_roll_tp:
+                    self.tp_anchor_price = tp_px
+                    self.tp_ladder_steps += 1
+                    self.active_stop_loss_pct = 0.0
+                    metadata["tp_roll"] = True
+                    metadata["tp_roll_anchor"] = round(tp_px, 8)
+                    metadata["tp_roll_steps"] = self.tp_ladder_steps
+                    metadata["trade_condition"] = "HOLD"
+                    return None
                 return self._close_short(candle.close, "TAKE_PROFIT_SHORT", metadata)
             if high_px >= sl_px:
                 return self._close_short(candle.close, "STOP_LOSS_SHORT", metadata)
@@ -681,6 +929,11 @@ class AIHybridStrategy(StrategyBase):
         self.entry_price = None
         self.highest_since_entry = None
         self.lowest_since_entry = None
+        self.tp_anchor_price = None
+        self.tp_ladder_steps = 0
+        self.active_take_profit_pct = self.take_profit_pct
+        self.active_stop_loss_pct = self.stop_loss_pct
+        self.active_trailing_stop_pct = self.trailing_stop_pct
         self.bars_in_pos = 0
         if reason.startswith("STOP_LOSS"):
             self.stop_loss_streak += 1
@@ -721,6 +974,11 @@ class AIHybridStrategy(StrategyBase):
         self.entry_price = None
         self.highest_since_entry = None
         self.lowest_since_entry = None
+        self.tp_anchor_price = None
+        self.tp_ladder_steps = 0
+        self.active_take_profit_pct = self.take_profit_pct
+        self.active_stop_loss_pct = self.stop_loss_pct
+        self.active_trailing_stop_pct = self.trailing_stop_pct
         self.bars_in_pos = 0
         if reason.startswith("STOP_LOSS"):
             self.stop_loss_streak += 1
@@ -766,16 +1024,30 @@ class AIHybridStrategy(StrategyBase):
         ema_spread_pct = (ema_fast - ema_slow) / ema_slow * 100.0 if ema_slow != 0 else 0.0
         vwap_gap_pct = (candle.close - vwap_px) / vwap_px * 100.0 if vwap_px != 0 else 0.0
         atr_pct = atr / candle.close * 100.0 if candle.close != 0 else 0.0
+        distance_from_ema = (candle.close - ema_slow) / ema_slow * 100.0 if ema_slow != 0 else 0.0
         ret_1_pct = ((candle.close - self.prev_close) / self.prev_close * 100.0) if self.prev_close else 0.0
         rsi = self._update_rsi(candle.close)
 
         if is_warmup:
-            self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)
+            self._update_bar_state(
+                candle,
+                macd_line,
+                signal_line,
+                macd_hist,
+                vwap_px,
+                atr,
+                rsi,
+                distance_from_ema,
+                ema_spread_pct,
+                vwap_gap_pct,
+                atr_pct,
+                ret_1_pct,
+            )
             return None
 
-        ai_payload = self._build_ai_payload(candle, ema_fast, ema_slow, macd_hist, atr, rsi)
+        ai_payload = self._build_ai_payload(candle, ema_fast, ema_slow, macd_line, signal_line, macd_hist, vwap_px, atr, rsi)
 
-        ai_action, ai_confidence, ai_reason = self._ai_signal(ai_payload)
+        ai_action, ai_confidence, ai_reason, risk_feedback = self._ai_signal(ai_payload)
         queried = True
 
         if ai_action == "EXIT":
@@ -791,6 +1063,25 @@ class AIHybridStrategy(StrategyBase):
         self.last_ai_action = ai_action
         self.last_ai_confidence = ai_confidence
         self.last_ai_reason = ai_reason
+
+        trend_state = str(ai_payload.get("trend", {}).get("trend", "")).strip().lower()
+        trend_same = (
+            (self.position_side == "LONG" and trend_state == "bullish")
+            or (self.position_side == "SHORT" and trend_state == "bearish")
+        )
+
+        if self.position_side in {"LONG", "SHORT"} and ai_confidence >= self.override_confidence:
+            sl_pct = risk_feedback.get("suggested_sl_pct")
+            if sl_pct is not None:
+                self.active_stop_loss_pct = float(sl_pct)
+
+            trailing_pct = risk_feedback.get("suggested_trailing_stop_pct")
+            if trailing_pct is not None:
+                self.active_trailing_stop_pct = float(trailing_pct)
+
+            tp_pct = risk_feedback.get("suggested_tp_pct")
+            if tp_pct is not None:
+                self.active_take_profit_pct = float(tp_pct)
 
         print(
             (
@@ -809,7 +1100,14 @@ class AIHybridStrategy(StrategyBase):
             "ai_action": ai_action,
             "ai_confidence": round(ai_confidence, 4),
             "ai_reason": ai_reason,
-            "previous_trade_condition": ai_payload.get("previous_trade_condition", {}),
+            "ai_risk_feedback": risk_feedback,
+            "tp_roll_eligible": bool(self.ai_keep_position_on_tp and ai_confidence >= self.override_confidence and trend_same),
+            "trend_same": trend_same,
+            "active_take_profit_pct": round(self.active_take_profit_pct, 6),
+            "active_stop_loss_pct": round(self.active_stop_loss_pct, 6),
+            "active_trailing_stop_pct": round(self.active_trailing_stop_pct, 6),
+            "tp_ladder_steps": self.tp_ladder_steps,
+            "previous_trade_condition": ai_payload.get("previous_trade_condition", []),
             "ema_fast": round(ema_fast, 8),
             "ema_slow": round(ema_slow, 8),
             "vwap": round(vwap_px, 8),
@@ -833,6 +1131,18 @@ class AIHybridStrategy(StrategyBase):
                     self.entry_price = candle.close
                     self.highest_since_entry = candle.close
                     self.lowest_since_entry = candle.close
+                    self.tp_anchor_price = candle.close
+                    self.tp_ladder_steps = 0
+                    self.active_take_profit_pct = self.take_profit_pct
+                    self.active_stop_loss_pct = self.stop_loss_pct
+                    self.active_trailing_stop_pct = self.trailing_stop_pct
+                    if ai_confidence >= self.override_confidence:
+                        if self.ai_suggested_tp_pct is not None:
+                            self.active_take_profit_pct = float(self.ai_suggested_tp_pct)
+                        if self.ai_suggested_sl_pct is not None:
+                            self.active_stop_loss_pct = float(self.ai_suggested_sl_pct)
+                        if self.ai_suggested_trailing_stop_pct is not None:
+                            self.active_trailing_stop_pct = float(self.ai_suggested_trailing_stop_pct)
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
@@ -844,6 +1154,18 @@ class AIHybridStrategy(StrategyBase):
                     self.entry_price = candle.close
                     self.highest_since_entry = candle.close
                     self.lowest_since_entry = candle.close
+                    self.tp_anchor_price = candle.close
+                    self.tp_ladder_steps = 0
+                    self.active_take_profit_pct = self.take_profit_pct
+                    self.active_stop_loss_pct = self.stop_loss_pct
+                    self.active_trailing_stop_pct = self.trailing_stop_pct
+                    if ai_confidence >= self.override_confidence:
+                        if self.ai_suggested_tp_pct is not None:
+                            self.active_take_profit_pct = float(self.ai_suggested_tp_pct)
+                        if self.ai_suggested_sl_pct is not None:
+                            self.active_stop_loss_pct = float(self.ai_suggested_sl_pct)
+                        if self.ai_suggested_trailing_stop_pct is not None:
+                            self.active_trailing_stop_pct = float(self.ai_suggested_trailing_stop_pct)
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
@@ -851,7 +1173,20 @@ class AIHybridStrategy(StrategyBase):
                     metadata["exit_type"] = ""
                     signal = self.sell(candle.close, "ENTER_SHORT_AI", metadata)
 
-        self._update_bar_state(candle, macd_hist, ema_spread_pct, vwap_gap_pct, atr_pct, ret_1_pct)
+        self._update_bar_state(
+            candle,
+            macd_line,
+            signal_line,
+            macd_hist,
+            vwap_px,
+            atr,
+            rsi,
+            distance_from_ema,
+            ema_spread_pct,
+            vwap_gap_pct,
+            atr_pct,
+            ret_1_pct,
+        )
         return signal
 
 
