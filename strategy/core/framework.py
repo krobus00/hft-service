@@ -99,17 +99,18 @@ class StrategyRunner:
         self.runtime = runtime
 
     @staticmethod
-    def _state_key(strategy: str, exchange: str, symbol: str, interval: str) -> str:
+    def _state_key(strategy: str, exchange: str, symbol: str, market_type: str, interval: str) -> str:
         return (
             f"{str(strategy or '').strip()}|"
             f"{str(exchange or '').strip().upper()}|"
             f"{str(symbol or '').strip().upper()}|"
+            f"{str(market_type or '').strip().lower()}|"
             f"{str(interval or '').strip()}"
         )
 
     @staticmethod
-    def _pair_key(strategy: str, exchange: str, symbol: str, interval: str) -> str:
-        return StrategyRunner._state_key(strategy, exchange, symbol, interval)
+    def _pair_key(strategy: str, exchange: str, symbol: str, market_type: str, interval: str) -> str:
+        return StrategyRunner._state_key(strategy, exchange, symbol, market_type, interval)
 
     @staticmethod
     def infer_trade_condition(reason: str, metadata: Optional[Dict[str, Any]] = None) -> str:
@@ -258,8 +259,13 @@ class StrategyRunner:
         return f"KLINE.{normalized_exchange}.>"
 
     @staticmethod
-    def _order_config_key(exchange: str, symbol: str, interval: str) -> str:
-        return f"{str(exchange or '').strip().upper()}|{str(symbol or '').strip().upper()}|{str(interval or '').strip()}"
+    def _order_config_key(exchange: str, symbol: str, market_type: str, interval: str) -> str:
+        return (
+            f"{str(exchange or '').strip().upper()}|"
+            f"{str(symbol or '').strip().upper()}|"
+            f"{str(market_type or '').strip().lower()}|"
+            f"{str(interval or '').strip()}"
+        )
 
     def _strategy_lookup_keys(self) -> List[str]:
         keys: List[str] = []
@@ -285,6 +291,7 @@ class StrategyRunner:
                     strategy,
                     exchange,
                     symbol,
+                    market_type,
                     interval,
                     need_notification,
                     is_paper_trading,
@@ -305,21 +312,24 @@ class StrategyRunner:
             row_strategy = str(row["strategy"] or "").strip()
             exchange = str(row["exchange"] or "").strip().upper()
             symbol = str(row["symbol"] or "").strip().upper()
+            market_type = str(row["market_type"] or "spot").strip().lower() or "spot"
             interval = str(row["interval"] or "").strip() or str(self.strategy.config.interval or "").strip()
             if not symbol:
                 continue
             if not exchange:
+                continue
+            if not market_type:
                 continue
             if not interval:
                 continue
             if not row_strategy:
                 continue
 
-            pair_key = self._pair_key(row_strategy, exchange, symbol, interval)
+            pair_key = self._pair_key(row_strategy, exchange, symbol, market_type, interval)
             targets[pair_key] = {
                 "strategy": row_strategy,
                 "exchange": exchange,
-                "market_type": "spot",
+                "market_type": market_type,
                 "symbol": symbol,
                 "interval": interval,
                 "order_config": {
@@ -530,6 +540,9 @@ class StrategyRunner:
                             return
 
                         effective_market_type = incoming_market_type or expected_market_type
+                        if effective_market_type != expected_market_type:
+                            await msg.ack()
+                            return
 
                         candle = Candle(
                             close_time_ms=parse_iso_to_ms(data["CloseTime"]),
@@ -547,6 +560,7 @@ class StrategyRunner:
                             expected_strategy,
                             expected_exchange,
                             candle.symbol,
+                            expected_market_type,
                             candle.interval,
                         )
                         previous_snapshot = state_store.get(state_key)
@@ -653,6 +667,7 @@ class StrategyRunner:
                     target["strategy"],
                     target["exchange"],
                     target["symbol"],
+                    target["market_type"],
                     target["interval"],
                 )
                 state_store.pop(state_key, None)
@@ -665,6 +680,7 @@ class StrategyRunner:
                     target["strategy"],
                     target["exchange"],
                     target["symbol"],
+                    target["market_type"],
                     target["interval"],
                 )
 
@@ -683,7 +699,7 @@ class StrategyRunner:
                     print(f"Warmup skipped for pair={key} due to DB error: {exc}", flush=True)
 
                 subject = self._resolve_subject_for_exchange(target["exchange"])
-                queue_scope = f"{target['strategy']}_{target['symbol']}_{target['interval']}"
+                queue_scope = f"{target['strategy']}_{target['symbol']}_{target['market_type']}_{target['interval']}"
                 queue_name = self._resolve_queue_name(target["exchange"], target["market_type"], queue_scope)
                 sub = await js.subscribe(
                     subject,
