@@ -1,5 +1,5 @@
 STRATEGY_FILE ?= krobot01
-STRATEGY_FILES ?= $(basename $(notdir $(wildcard strategy/*.py)))
+STRATEGY_FILES ?= $(filter-out standard_strategy_template,$(basename $(notdir $(wildcard strategy/*.py))))
 
 .PHONY: run-strategy rerun-all-strategy
 run-strategy:
