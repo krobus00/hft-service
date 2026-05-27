@@ -290,12 +290,6 @@ class AIHybridStrategy(StrategyBase):
         return json.loads(text)
 
     @staticmethod
-    def _truncate_for_log(value: str, max_len: int = 1200) -> str:
-        if len(value) <= max_len:
-            return value
-        return f"{value[:max_len]}...<truncated:{len(value) - max_len}>"
-
-    @staticmethod
     def _window_stats(values: deque) -> Dict[str, float]:
         if not values:
             return {"mean": 0.0, "min": 0.0, "max": 0.0}
@@ -461,8 +455,8 @@ class AIHybridStrategy(StrategyBase):
             (
                 f"[AI_REQUEST] symbol={payload_symbol} interval={payload_timeframe} "
                 f"model={self.model_name} "
-                f"system_prompt={self._truncate_for_log(system_prompt)} "
-                f"payload={self._truncate_for_log(user_payload_text)}"
+                f"system_prompt={system_prompt} "
+                f"payload={user_payload_text}"
             ),
             flush=True,
         )
@@ -496,7 +490,7 @@ class AIHybridStrategy(StrategyBase):
                 (
                     f"[AI_RESPONSE_RAW] symbol={payload_symbol} interval={payload_timeframe} "
                     f"model={self.model_name} finish_reason={finish_reason} "
-                    f"response={self._truncate_for_log(raw_text)}"
+                    f"response={raw_text}"
                 ),
                 flush=True,
             )
@@ -732,7 +726,7 @@ class AIHybridStrategy(StrategyBase):
         print(
             (
                 f"[AI_INIT_TEST_REQUEST] symbol={self.config.symbol} interval={self.config.interval} "
-                f"model={self.model_name} payload={self._truncate_for_log(test_payload_text)}"
+                f"model={self.model_name} payload={test_payload_text}"
             ),
             flush=True,
         )
@@ -778,7 +772,7 @@ class AIHybridStrategy(StrategyBase):
             print(
                 (
                     f"[AI_INIT_TEST_RESPONSE] symbol={self.config.symbol} interval={self.config.interval} "
-                    f"model={self.model_name} response={self._truncate_for_log(raw_text)}"
+                    f"model={self.model_name} response={raw_text}"
                 ),
                 flush=True,
             )
