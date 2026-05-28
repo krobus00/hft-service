@@ -299,6 +299,13 @@ curl --request POST \
 - Support multiple user credentials.
 - Support multiple exchanges.
 
+## Donation
+
+If this project helps you, donations are appreciated.
+
+- USDT (TRC20, TRON): `TWqgxX7SZHCnCsx4VJNWtJUgmmiwk78W6S`
+- SOL (Solana Network): `BisxMDwGpFUmSJzUtHjHhDjzSxdJQ3Luc3TPVD98hypj`
+
 ## Contributing
 
 Contributions are welcome and appreciated. I am open for contributions from the community.
