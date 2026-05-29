@@ -322,15 +322,7 @@ This uses Docker image `python-strategy` and mounts local `strategy/` into `/app
 - For Python strategy tuning, check risk controls in `strategy/config.yml` (`global.risk_controls`).
 
 ## Profit Results
-
-Use this section to show transparent strategy performance over time.
-
-### Performance Snapshot Template
-
-| Strategy | Exchange | Market Type | Period | Net PnL | ROI | Max Drawdown | Win Rate |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| KRobot01 | Binance | Futures | 2026-01 to 2026-03 | +12.4% | +12.4% | -4.1% | 58% |
-| KRobot02 | Tokocrypto | Spot | 2026-01 to 2026-03 | +7.2% | +7.2% | -2.8% | 54% |
+TODO
 
 ## Test Order API
 

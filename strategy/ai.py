@@ -411,11 +411,6 @@ class AIHybridStrategy(StrategyBase):
             "recent_returns_pct": self._window_stats(self.recent_returns_pct),
             "recent_macd_hist": self._window_stats(self.recent_macd_hist),
             "recent_atr_pct": self._window_stats(self.recent_atr_pct),
-            "last_ai": {
-                "action": self.last_ai_action,
-                "confidence": round(self.last_ai_confidence, 4),
-                "reason": self.last_ai_reason,
-            },
         }
 
     def _ai_signal(self, payload: Dict[str, Any]) -> Tuple[str, float, str, Dict[str, Any]]:
@@ -638,6 +633,11 @@ class AIHybridStrategy(StrategyBase):
         payload: Dict[str, Any] = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "last_ai": {
+                "action": self.last_ai_action,
+                "confidence": round(self.last_ai_confidence, 4),
+                "reason": self.last_ai_reason,
+            },
             "kline": kline,
             "trend": {
                 "ema_fast": round(ema_fast, 8),
