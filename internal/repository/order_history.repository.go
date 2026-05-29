@@ -141,6 +141,7 @@ func (r *OrderHistoryRepository) Update(ctx context.Context, orderHistory *entit
 	queryBuilder := sq.StatementBuilder.
 		PlaceholderFormat(sq.Dollar).
 		Update(orderHistory.TableName()).
+		Set("price", orderHistory.Price).
 		Set("filled_quantity", orderHistory.FilledQuantity).
 		Set("avg_fill_price", orderHistory.AvgFillPrice).
 		Set("status", orderHistory.Status).

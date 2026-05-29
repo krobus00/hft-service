@@ -824,6 +824,10 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 		return entity.OrderHistory{}, err
 	}
 
+	if executedPrice.GreaterThan(decimal.Zero) && price.LessThanOrEqual(decimal.Zero) {
+		price = executedPrice
+	}
+
 	historyStatus := binanceOrderStatusFromCode(resp.Status)
 	now := time.Now().UTC()
 
@@ -921,6 +925,10 @@ func (e *BinanceExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderH
 	orderHistory.FilledQuantity = filledQuantity
 	if executedPrice.GreaterThan(decimal.Zero) {
 		orderHistory.AvgFillPrice = &executedPrice
+		if orderHistory.Price == nil || orderHistory.Price.LessThanOrEqual(decimal.Zero) {
+			price := executedPrice
+			orderHistory.Price = &price
+		}
 	}
 	orderHistory.UpdatedAt = now
 

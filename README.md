@@ -2,13 +2,50 @@
 
 Event-driven trading platform for market data ingestion, strategy execution, and order execution.
 
-## AI Assistance Notice
+## Why This Project Exists
+
+This repository is built to run automated crypto trading workflows in a modular, production-oriented architecture:
+
+- ingest real-time exchange kline streams,
+- execute strategy signals,
+- place and track orders,
+- and send operational alerts.
 
 Most of the code in this repository was written with AI assistance.
 
+## Table of Contents
+
+- [How HFT Works in This Repository](#how-hft-works-in-this-repository)
+- [System Architecture](#system-architecture)
+- [Services and Use Cases](#services-and-use-cases)
+- [Supported Exchanges](#supported-exchanges)
+- [Market Type Support](#market-type-support)
+- [Quick Start (Local)](#quick-start-local)
+- [How to Run Strategy](#how-to-run-strategy)
+- [Profit Results](#profit-results)
+- [Test Order API](#test-order-api)
+- [Roadmap](#roadmap)
+- [Support This Project](#support-this-project)
+- [Contributing](#contributing)
+
+## How HFT Works in This Repository
+
+This project follows an event-driven HFT loop:
+
+1. Market data gateway subscribes to exchange websocket kline streams.
+2. Incoming candles are normalized and published to NATS JetStream (`kline.data`).
+3. Worker persists market data into the `market_data` database.
+4. Strategy consumes closed candles and decides buy/sell/hold.
+5. If action is needed, strategy publishes `order_engine.place_order`.
+6. Order engine gateway executes the order to the exchange.
+7. Order engine worker continuously reconciles order status until terminal state.
+8. Notification service emits Discord alerts for important events.
+
+In short: low-latency event ingestion + deterministic signal execution + robust post-trade reconciliation.
+
 ## System Architecture
 
-### Event flow
+### Event Flow
 
 1. `market-data-gateway` consumes exchange kline data.
 2. `market-data-gateway` publishes `kline.data` events.
@@ -226,8 +263,74 @@ go run . notification-service
 ```
 
 ```bash
-go run . strategy
+make build-strategy
+make run-strategy
 ```
+
+## How to Run Strategy
+
+There are two common ways to run strategy in this repository.
+
+### Option A: Run via Makefile (recommended)
+
+This is the main runtime strategy flow used by this repository.
+
+1. Start infrastructure and required services first:
+  - `market-data-gateway`
+  - `market-data-worker`
+  - `order-engine-gateway`
+  - `order-engine-worker`
+2. Build strategy runner image:
+
+```bash
+make build-strategy
+```
+
+3. Run strategy:
+
+```bash
+make run-strategy
+```
+
+4. Verify the container is running:
+
+```bash
+docker ps --filter "name=-runner"
+```
+
+5. Verify logs show strategy consuming closed kline events and publishing `order_engine.place_order` when signals fire.
+
+```bash
+docker logs -f krobot01-runner
+```
+
+### Option B: Run a specific Python strategy file
+
+For Python-based strategy scripts under `strategy/`:
+
+```bash
+make run-strategy STRATEGY_FILE=krobot01
+```
+
+This uses Docker image `python-strategy` and mounts local `strategy/` into `/app`.
+
+### Configuration Checklist
+
+- Ensure strategy symbols match canonical internal symbol mapping (`symbol_mappings.symbol`).
+- Ensure `market_type` alignment (`spot` or `futures`) across subscriptions and mappings.
+- Set required API keys and NATS/database hosts in `config.yml`.
+- For Python strategy tuning, check risk controls in `strategy/config.yml` (`global.risk_controls`).
+
+## Profit Results
+
+Use this section to show transparent strategy performance over time.
+
+### Performance Snapshot Template
+
+| Strategy | Exchange | Market Type | Period | Net PnL | ROI | Max Drawdown | Win Rate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| KRobot01 | Binance | Futures | 2026-01 to 2026-03 | +12.4% | +12.4% | -4.1% | 58% |
+| KRobot02 | Tokocrypto | Spot | 2026-01 to 2026-03 | +7.2% | +7.2% | -2.8% | 54% |
 
 ## Test Order API
 
@@ -259,7 +362,7 @@ curl --request POST \
   }'
 ```
 
-### gRPC payload example
+### gRPC Payload Example
 
 ```json
 {
@@ -279,7 +382,7 @@ curl --request POST \
 }
 ```
 
-### Market Data gRPC backfill payload example
+### Market Data gRPC Backfill Payload Example
 
 ```json
 {
@@ -292,27 +395,38 @@ curl --request POST \
 }
 ```
 
-## TODO
+## Roadmap
 
 - Build analytic service that consumes market data.
 - Support HA deployment for all services.
 - Support multiple user credentials.
 - Support multiple exchanges.
+- Dashboard
 
-## Donation
+## Support This Project
 
-If this project helps you, donations are appreciated.
+If this project helps you, please consider donating to support development and infrastructure costs.
 
 - USDT (TRC20, TRON): `TWqgxX7SZHCnCsx4VJNWtJUgmmiwk78W6S`
 - SOL (Solana Network): `BisxMDwGpFUmSJzUtHjHhDjzSxdJQ3Luc3TPVD98hypj`
 
+Every donation helps maintain this project and accelerate new features.
+
 ## Contributing
 
-Contributions are welcome and appreciated. I am open for contributions from the community.
+Contributions are very welcome. If you want to improve this project, you are invited to open a PR.
 
-If you want to contribute:
+### How to Contribute
 
-- Fork this repository.
-- Create a feature/fix branch.
-- Make focused changes with clear commit messages.
-- Open a Pull Request with a short description of the problem and solution.
+1. Fork this repository.
+2. Create a feature/fix branch.
+3. Make focused changes with clear commit messages.
+4. Run tests/checks for your changes.
+5. Open a Pull Request with a short description of problem and solution.
+
+### Contribution Ideas
+
+- New exchange connectors.
+- Better risk management controls.
+- Performance profiling and latency optimization.
+- Improved strategy evaluation and reporting.

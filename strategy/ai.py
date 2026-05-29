@@ -627,8 +627,8 @@ class AIHybridStrategy(StrategyBase):
                 distance_from_ema=distance_from_ema,
             )
         )
-        if len(kline) > 24:
-            kline = kline[-24:]
+        if len(kline) > 5:
+            kline = kline[-5:]
 
         previous_trade_condition = list(self.previous_trade_conditions)
         previous_trade_condition.append(self._build_previous_trade_condition_snapshot())
@@ -650,6 +650,21 @@ class AIHybridStrategy(StrategyBase):
                 "max_positions": max(1, self.max_positions),
             },
             "previous_trade_condition": previous_trade_condition,
+            "current_position": {
+                "is_open": self.position_side in {"LONG", "SHORT"} and self.entry_price is not None and self.entry_price != 0,
+                "side": self.position_side or "FLAT",
+                "entry_price": round(self.entry_price, 8) if self.entry_price is not None else None,
+                "bars_in_position": max(0, int(self.bars_in_pos)),
+                "tp_anchor_price": round(self.tp_anchor_price, 8) if self.tp_anchor_price is not None else None,
+                "tp_ladder_steps": max(0, int(self.tp_ladder_steps)),
+                "highest_since_entry": round(self.highest_since_entry, 8) if self.highest_since_entry is not None else None,
+                "lowest_since_entry": round(self.lowest_since_entry, 8) if self.lowest_since_entry is not None else None,
+                "risk": {
+                    "active_take_profit_pct": round(float(self.active_take_profit_pct), 6),
+                    "active_stop_loss_pct": round(float(self.active_stop_loss_pct), 6),
+                    "active_trailing_stop_pct": round(float(self.active_trailing_stop_pct), 6),
+                },
+            },
         }
 
         if self.position_side in {"LONG", "SHORT"} and self.entry_price is not None and self.entry_price != 0:
@@ -667,6 +682,8 @@ class AIHybridStrategy(StrategyBase):
                 "pnl": round(pnl_pct, 4),
                 "holding_time": f"{hold_minutes}m",
             }
+            payload["current_position"]["unrealized_pnl_pct"] = round(pnl_pct, 4)
+            payload["current_position"]["holding_time_minutes"] = hold_minutes
 
         return payload
 

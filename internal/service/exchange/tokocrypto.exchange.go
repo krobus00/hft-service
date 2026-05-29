@@ -645,6 +645,10 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		return entity.OrderHistory{}, err
 	}
 
+	if executedPrice.GreaterThan(decimal.Zero) && price.LessThanOrEqual(decimal.Zero) {
+		price = executedPrice
+	}
+
 	historyStatus := tokocryptoOrderStatusFromCode(resp.Status)
 	now := time.Now().UTC()
 
@@ -737,6 +741,10 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 	orderHistory.FilledQuantity = filledQuantity
 	if executedPrice.GreaterThan(decimal.Zero) {
 		orderHistory.AvgFillPrice = &executedPrice
+		if orderHistory.Price == nil || orderHistory.Price.LessThanOrEqual(decimal.Zero) {
+			price := executedPrice
+			orderHistory.Price = &price
+		}
 	}
 	orderHistory.UpdatedAt = now
 
