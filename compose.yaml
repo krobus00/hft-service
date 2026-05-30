@@ -146,7 +146,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O- http://localhost:19011/_internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19011/_internal/readyz | grep -q '\"ready\":true'",
+          "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19011/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19011/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
         ]
       interval: 10s
       timeout: 3s
@@ -183,7 +183,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O- http://localhost:19012/_internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19012/_internal/readyz | grep -q '\"ready\":true'",
+          "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19012/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19012/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
         ]
       interval: 10s
       timeout: 3s
@@ -220,7 +220,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O- http://localhost:19013/_internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19013/_internal/readyz | grep -q '\"ready\":true'",
+          "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19013/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19013/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
         ]
       interval: 10s
       timeout: 3s
