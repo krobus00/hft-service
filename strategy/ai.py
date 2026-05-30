@@ -20,6 +20,99 @@ CONFIG = load_full_config()
 GLOBAL_CONFIG = CONFIG.get("global", {})
 AI_CONFIG = CONFIG.get("ai", {})
 
+AI_SYSTEM_PROMPT = (
+    "You are an advanced quantitative crypto trading assistant.\n\n"
+    "Make a trading decision based ONLY on the provided data.\n\n"
+    "Kline feature mapping (use this grouping when reasoning):\n"
+    "- momentum: rsi, macd.line, macd.signal, macd.hist\n"
+    "- volatility: atr, atr_pct\n"
+    "- price_action: o, h, l, c, v, vwap.value, vwap.gap_pct, distance_from_ema\n\n"
+    "--------------------------------------------------\n"
+    "DECISION FRAMEWORK (STRICT ORDER)\n"
+    "--------------------------------------------------\n"
+    "1. Trend alignment (EMA fast vs slow)\n"
+    "2. Momentum confirmation (MACD hist direction + RSI regime)\n"
+    "3. Price location (VWAP + distance_from_ema)\n"
+    "4. Volatility filter (ATR%)\n"
+    "5. Risk-reward vs risk_rules\n\n"
+    "If any of (1-3) are not aligned -> prefer HOLD\n\n"
+    "--------------------------------------------------\n"
+    "ENTRY RULES (ALL MUST BE TRUE)\n"
+    "--------------------------------------------------\n"
+    "- Trend and momentum aligned\n"
+    "- MACD histogram expanding in trade direction\n"
+    "- RSI > 55 for BUY, RSI < 45 for SELL\n"
+    "- distance_from_ema within +/-0.3% (not overextended)\n"
+    "- Risk-reward >= 1:2 based on risk_rules\n\n"
+    "--------------------------------------------------\n"
+    "NO-TRADE ZONE (CHOP FILTER)\n"
+    "--------------------------------------------------\n"
+    "- RSI between 45-55 AND\n"
+    "- |MACD hist| < 0.02\n"
+    "-> MUST return HOLD\n\n"
+    "--------------------------------------------------\n"
+    "OVEREXTENSION RULE (STRICT)\n"
+    "--------------------------------------------------\n"
+    "- distance_from_ema > 0.5% -> overbought -> no BUY\n"
+    "- distance_from_ema < -0.5% -> oversold -> no SELL\n\n"
+    "--------------------------------------------------\n"
+    "EXIT RULES (WHEN IN POSITION)\n"
+    "--------------------------------------------------\n"
+    "- MACD histogram reverses against position\n"
+    "- RSI crosses 50 against position\n"
+    "- Price crosses VWAP against position\n"
+    "- Trailing stop hit\n\n"
+    "If already in position:\n"
+    "- Decide HOLD or EXIT\n"
+    "- SELL exits BUY/LONG\n"
+    "- BUY exits SELL/SHORT\n\n"
+    "If TP already reached:\n"
+    "- If confidence remains high AND trend still valid:\n"
+    "  -> keep position\n"
+    "  -> move SL to previous TP\n"
+    "  -> set next TP = previous TP + TP %\n\n"
+    "--------------------------------------------------\n"
+    "CONFIDENCE SCALE\n"
+    "--------------------------------------------------\n"
+    "0.0-0.4 -> weak (avoid trading)\n"
+    "0.4-0.6 -> neutral (prefer HOLD)\n"
+    "0.6-0.8 -> valid setup\n"
+    "0.8-1.0 -> strong setup\n\n"
+    "--------------------------------------------------\n"
+    "RISK CONTROL RULES\n"
+    "--------------------------------------------------\n"
+    "- Respect risk_rules strictly\n"
+    "- Adjust SL / TP / trailing based on volatility (ATR%)\n"
+    "- Do NOT output static values blindly\n"
+    "- Higher ATR -> wider SL, tighter trailing\n"
+    "- Lower ATR -> tighter SL, standard TP\n\n"
+    "--------------------------------------------------\n"
+    "BEHAVIOR CONSTRAINTS\n"
+    "--------------------------------------------------\n"
+    "- Do NOT chase price\n"
+    "- Prefer HOLD over low-quality trades\n"
+    "- Ignore previous AI decisions (last_ai)\n"
+    "- Be deterministic and consistent\n\n"
+    "--------------------------------------------------\n"
+    "OUTPUT FORMAT (STRICT JSON ONLY)\n"
+    "--------------------------------------------------\n"
+    "{\n"
+    "  \"action\": \"BUY | SELL | HOLD | EXIT\",\n"
+    "  \"confidence\": 0.0,\n"
+    "  \"reason\": \"<trend>, <momentum>, <location>. <decision (max 255 chars)>\",\n"
+    "  \"risk_control\": {\n"
+    "    \"keep_position_on_tp\": true|false,\n"
+    "    \"suggested_sl_pct\": number >= 0,\n"
+    "    \"suggested_trailing_stop_pct\": number >= 0,\n"
+    "    \"suggested_tp_pct\": number >= 0\n"
+    "  }\n"
+    "}\n\n"
+    "Rules:\n"
+    "- Reason MUST include: trend + momentum + price location\n"
+    "- Reason MUST be <= 255 characters\n"
+    "- Return ONLY valid JSON"
+)
+
 
 class AIHybridStrategy(StrategyBase):
     __slots__ = (
@@ -355,6 +448,13 @@ class AIHybridStrategy(StrategyBase):
         return default
 
     @staticmethod
+    def _truncate_text(value: Any, limit: int = 512) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}...<truncated:{len(text)-limit}>"
+
+    @staticmethod
     def _macd_condition(macd_hist: float) -> str:
         if macd_hist > 0:
             return "bullish"
@@ -549,7 +649,7 @@ class AIHybridStrategy(StrategyBase):
         return (
             "Analyze the following market data and return a trading decision.\n\n"
             "Input:\n"
-            f"{json.dumps(user_input, indent=2)}\n\n"
+            f"{json.dumps(user_input, separators=(',', ':'))}\n\n"
             "Instructions:\n"
             "- Follow the system decision framework strictly\n"
             "- Use ONLY the provided data\n"
@@ -569,106 +669,12 @@ class AIHybridStrategy(StrategyBase):
         payload_symbol = str(payload.get("symbol", self.config.symbol) or self.config.symbol)
         payload_timeframe = str(payload.get("timeframe", self.config.interval) or self.config.interval)
 
-        system_prompt = (
-            "You are an advanced quantitative crypto trading assistant.\n\n"
-            "Make a trading decision based ONLY on the provided data.\n\n"
-            "Kline feature mapping (use this grouping when reasoning):\n"
-            "- momentum: rsi, macd.line, macd.signal, macd.hist\n"
-            "- volatility: atr, atr_pct\n"
-            "- price_action: o, h, l, c, v, vwap.value, vwap.gap_pct, distance_from_ema\n\n"
-            "--------------------------------------------------\n"
-            "DECISION FRAMEWORK (STRICT ORDER)\n"
-            "--------------------------------------------------\n"
-            "1. Trend alignment (EMA fast vs slow)\n"
-            "2. Momentum confirmation (MACD hist direction + RSI regime)\n"
-            "3. Price location (VWAP + distance_from_ema)\n"
-            "4. Volatility filter (ATR%)\n"
-            "5. Risk-reward vs risk_rules\n\n"
-            "If any of (1-3) are not aligned -> prefer HOLD\n\n"
-            "--------------------------------------------------\n"
-            "ENTRY RULES (ALL MUST BE TRUE)\n"
-            "--------------------------------------------------\n"
-            "- Trend and momentum aligned\n"
-            "- MACD histogram expanding in trade direction\n"
-            "- RSI > 55 for BUY, RSI < 45 for SELL\n"
-            "- distance_from_ema within +/-0.3% (not overextended)\n"
-            "- Risk-reward >= 1:2 based on risk_rules\n\n"
-            "--------------------------------------------------\n"
-            "NO-TRADE ZONE (CHOP FILTER)\n"
-            "--------------------------------------------------\n"
-            "- RSI between 45-55 AND\n"
-            "- |MACD hist| < 0.02\n"
-            "-> MUST return HOLD\n\n"
-            "--------------------------------------------------\n"
-            "OVEREXTENSION RULE (STRICT)\n"
-            "--------------------------------------------------\n"
-            "- distance_from_ema > 0.5% -> overbought -> no BUY\n"
-            "- distance_from_ema < -0.5% -> oversold -> no SELL\n\n"
-            "--------------------------------------------------\n"
-            "EXIT RULES (WHEN IN POSITION)\n"
-            "--------------------------------------------------\n"
-            "- MACD histogram reverses against position\n"
-            "- RSI crosses 50 against position\n"
-            "- Price crosses VWAP against position\n"
-            "- Trailing stop hit\n\n"
-            "If already in position:\n"
-            "- Decide HOLD or EXIT\n"
-            "- SELL exits BUY/LONG\n"
-            "- BUY exits SELL/SHORT\n\n"
-            "If TP already reached:\n"
-            "- If confidence remains high AND trend still valid:\n"
-            "  -> keep position\n"
-            "  -> move SL to previous TP\n"
-            "  -> set next TP = previous TP + TP %\n\n"
-            "--------------------------------------------------\n"
-            "CONFIDENCE SCALE\n"
-            "--------------------------------------------------\n"
-            "0.0-0.4 -> weak (avoid trading)\n"
-            "0.4-0.6 -> neutral (prefer HOLD)\n"
-            "0.6-0.8 -> valid setup\n"
-            "0.8-1.0 -> strong setup\n\n"
-            "--------------------------------------------------\n"
-            "RISK CONTROL RULES\n"
-            "--------------------------------------------------\n"
-            "- Respect risk_rules strictly\n"
-            "- Adjust SL / TP / trailing based on volatility (ATR%)\n"
-            "- Do NOT output static values blindly\n"
-            "- Higher ATR -> wider SL, tighter trailing\n"
-            "- Lower ATR -> tighter SL, standard TP\n\n"
-            "--------------------------------------------------\n"
-            "BEHAVIOR CONSTRAINTS\n"
-            "--------------------------------------------------\n"
-            "- Do NOT chase price\n"
-            "- Prefer HOLD over low-quality trades\n"
-            "- Ignore previous AI decisions (last_ai)\n"
-            "- Be deterministic and consistent\n\n"
-            "--------------------------------------------------\n"
-            "OUTPUT FORMAT (STRICT JSON ONLY)\n"
-            "--------------------------------------------------\n"
-            "{\n"
-            "  \"action\": \"BUY | SELL | HOLD | EXIT\",\n"
-            "  \"confidence\": 0.0,\n"
-            "  \"reason\": \"<trend>, <momentum>, <location>. <decision (max 255 chars)>\",\n"
-            "  \"risk_control\": {\n"
-            "    \"keep_position_on_tp\": true|false,\n"
-            "    \"suggested_sl_pct\": number >= 0,\n"
-            "    \"suggested_trailing_stop_pct\": number >= 0,\n"
-            "    \"suggested_tp_pct\": number >= 0\n"
-            "  }\n"
-            "}\n\n"
-            "Rules:\n"
-            "- Reason MUST include: trend + momentum + price location\n"
-            "- Reason MUST be <= 255 characters\n"
-            "- Return ONLY valid JSON"
-        )
-
         user_payload_text = self._build_user_input_prompt(payload)
         print(
             (
                 f"[AI_REQUEST] symbol={payload_symbol} interval={payload_timeframe} "
                 f"model={self.model_name} "
-                f"system_prompt={system_prompt} "
-                f"payload={user_payload_text}"
+                f"prompt_len={len(AI_SYSTEM_PROMPT)} payload_len={len(user_payload_text)}"
             ),
             flush=True,
         )
@@ -680,7 +686,7 @@ class AIHybridStrategy(StrategyBase):
                 messages=[
                     {
                         "role": "system",
-                        "content": system_prompt,
+                        "content": AI_SYSTEM_PROMPT,
                     },
                     {
                         "role": "user",
@@ -702,7 +708,7 @@ class AIHybridStrategy(StrategyBase):
                 (
                     f"[AI_RESPONSE_RAW] symbol={payload_symbol} interval={payload_timeframe} "
                     f"model={self.model_name} finish_reason={finish_reason} "
-                    f"response={raw_text}"
+                    f"response={self._truncate_text(raw_text, 600)}"
                 ),
                 flush=True,
             )
@@ -1483,29 +1489,13 @@ async def run():
     if strategy.sl_pause_bars < 0:
         raise ValueError("sl_pause_bars must be >= 0")
 
-    init_check_task: Optional[asyncio.Task] = None
-
-    async def _run_init_check_background() -> None:
-        try:
-            await asyncio.to_thread(strategy._test_llm_on_init)
-        except Exception as exc:
-            print(
-                (
-                    f"[AI_INIT_TEST_BACKGROUND_ERROR] symbol={strategy.config.symbol} interval={strategy.config.interval} "
-                    f"model={strategy.model_name} error={type(exc).__name__}:{exc}"
-                ),
-                flush=True,
-            )
+    # Run one-time connectivity check before the runner starts.
+    strategy._test_llm_on_init()
 
     runner = StrategyRunner(strategy=strategy, runtime=runtime)
     try:
-        init_check_task = asyncio.create_task(_run_init_check_background())
         await runner.run()
     finally:
-        if init_check_task is not None and not init_check_task.done():
-            init_check_task.cancel()
-            with suppress(Exception):
-                await init_check_task
         if strategy.ai_client is not None:
             with suppress(Exception):
                 strategy.ai_client.close()

@@ -941,7 +941,6 @@ class StrategyRunner:
                 "active_pairs_count": len(active_pair_map),
                 "active_pairs": active_pair_map,
                 "subscriptions": subscriptions,
-                "state_store": state_by_pair,
                 "strategy_state_by_pair": strategy_state_by_pair,
             }
 
@@ -982,12 +981,9 @@ class StrategyRunner:
 
             def do_GET(self) -> None:  # noqa: N802
                 path = str(self.path or "/").split("?", 1)[0]
-                with monitor_cache_lock:
-                    health_payload = copy.deepcopy(monitor_cache.get("health", {}))
-                    ready_payload = copy.deepcopy(monitor_cache.get("ready", {}))
-                    state_payload = copy.deepcopy(monitor_cache.get("state", {}))
-
                 if path in {"/health", "/healthz", "/_internal/health", "/_internal/healthz"}:
+                    with monitor_cache_lock:
+                        health_payload = dict(monitor_cache.get("health", {}))
                     self._write_json(200, health_payload)
                     return
 
@@ -999,11 +995,15 @@ class StrategyRunner:
                     "/_internal/readyz",
                     "/_internal/readiness",
                 }:
+                    with monitor_cache_lock:
+                        ready_payload = dict(monitor_cache.get("ready", {}))
                     status_code = 200 if bool(ready_payload.get("ready")) else 503
                     self._write_json(status_code, ready_payload)
                     return
 
                 if path in {"/state", "/statez", "/_internal/state", "/_internal/statez"}:
+                    with monitor_cache_lock:
+                        state_payload = copy.deepcopy(monitor_cache.get("state", {}))
                     self._write_json(200, state_payload)
                     return
 
