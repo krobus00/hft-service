@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -381,6 +382,30 @@ class StrategyRunner:
             trade_condition=trade_condition,
             metadata=metadata,
         )
+        entry_order_id = str(metadata.get("entry_order_id", "")).strip()
+
+        internal_payload: Dict[str, Any] = {}
+        raw_internal = metadata.get("internal")
+        if isinstance(raw_internal, dict):
+            internal_payload.update(raw_internal)
+        elif isinstance(raw_internal, str):
+            raw_internal_text = raw_internal.strip()
+            if raw_internal_text:
+                try:
+                    loaded = json.loads(raw_internal_text)
+                    if isinstance(loaded, dict):
+                        internal_payload.update(loaded)
+                except Exception:
+                    pass
+
+        if entry_order_id:
+            internal_payload["entry_order_id"] = entry_order_id
+
+        pair_key = str(metadata.get("pair_key", "")).strip()
+        if pair_key:
+            internal_payload["pair_key"] = pair_key
+
+        internal_text = json.dumps(internal_payload, separators=(",", ":")) if internal_payload else ""
 
         return {
             "retry": 0,
@@ -402,6 +427,8 @@ class StrategyRunner:
                 "strategy_id": self.runtime.strategy_id,
                 "strategy_name": self.strategy.config.name,
                 "interval": interval,
+                "internal": internal_text,
+                "entry_order_id": entry_order_id,
                 "entry_price": entry_price,
                 "exit_price": exit_price,
                 "pnl_percentage": pnl_percentage,
@@ -473,6 +500,7 @@ class StrategyRunner:
         initial_state = self.strategy.snapshot_state()
         state_store: Dict[str, Any] = {}
         entry_price_store: Dict[str, float] = {}
+        entry_order_id_store: Dict[str, str] = {}
 
         nc = NATS()
 
@@ -583,14 +611,29 @@ class StrategyRunner:
                                 if trade_condition == "ENTRY":
                                     if self._metadata_float(signal_metadata, "entry_price") is None:
                                         signal_metadata["entry_price"] = float(signal.price)
+
+                                    entry_order_id = str(signal_metadata.get("entry_order_id", "")).strip()
+                                    if not entry_order_id:
+                                        entry_order_id = gen_id()
+                                        signal_metadata["entry_order_id"] = entry_order_id
+                                    entry_order_id_store[state_key] = entry_order_id
                                 elif self._is_exit_trade_condition(trade_condition):
                                     if self._metadata_float(signal_metadata, "entry_price") is None:
                                         remembered_entry = entry_price_store.get(state_key)
                                         if remembered_entry is not None:
                                             signal_metadata["entry_price"] = float(remembered_entry)
 
+                                    exit_entry_order_id = str(signal_metadata.get("entry_order_id", "")).strip()
+                                    if not exit_entry_order_id:
+                                        remembered_entry_order_id = entry_order_id_store.get(state_key)
+                                        if remembered_entry_order_id:
+                                            exit_entry_order_id = remembered_entry_order_id
+                                            signal_metadata["entry_order_id"] = remembered_entry_order_id
+
                                     if self._metadata_float(signal_metadata, "exit_price") is None:
                                         signal_metadata["exit_price"] = float(signal.price)
+
+                                signal_metadata["pair_key"] = pair_key
 
                                 out = self.build_order_payload(
                                     signal.side,
@@ -616,6 +659,7 @@ class StrategyRunner:
                                         entry_price_store[state_key] = float(persisted_entry)
                                 elif self._is_exit_trade_condition(trade_condition):
                                     entry_price_store.pop(state_key, None)
+                                    entry_order_id_store.pop(state_key, None)
                             except Exception:
                                 self.strategy.restore_state(snapshot)
                                 raise
@@ -674,6 +718,7 @@ class StrategyRunner:
                 )
                 state_store.pop(state_key, None)
                 entry_price_store.pop(state_key, None)
+                entry_order_id_store.pop(state_key, None)
                 print(f"Removed pair={key}", flush=True)
 
             for key in add_keys:

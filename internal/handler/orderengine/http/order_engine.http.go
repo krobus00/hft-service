@@ -27,6 +27,7 @@ type PlaceOrderRequest struct {
 	RequestID        string `json:"request_id"`
 	UserID           string `json:"user_id"`
 	OrderID          string `json:"order_id"`
+	EntryOrderID     string `json:"entry_order_id"`
 	Exchange         string `json:"exchange"`
 	MarketType       string `json:"market_type"`
 	PositionSide     string `json:"position_side"`
@@ -58,6 +59,7 @@ type PlaceOrderResponse struct {
 	PositionSide      string  `json:"position_side"`
 	Symbol            string  `json:"symbol"`
 	OrderID           string  `json:"order_id"`
+	EntryOrderID      string  `json:"entry_order_id"`
 	ClientOrderID     *string `json:"client_order_id,omitempty"`
 	Side              string  `json:"side"`
 	Type              string  `json:"type"`
@@ -120,7 +122,7 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Exchange) == "" || strings.TrimSpace(req.Symbol) == "" || strings.TrimSpace(req.Type) == "" || strings.TrimSpace(req.Side) == "" || strings.TrimSpace(req.Quantity) == "" || strings.TrimSpace(req.Source) == "" {
+	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Exchange) == "" || strings.TrimSpace(req.Symbol) == "" || strings.TrimSpace(req.Type) == "" || strings.TrimSpace(req.Side) == "" || strings.TrimSpace(req.Quantity) == "" || strings.TrimSpace(req.Source) == "" || resolveEntryOrderID(req.EntryOrderID, req.Internal) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required fields"})
 		return
 	}
@@ -138,6 +140,8 @@ func (h *Handler) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "duplicate request"})
 		case errors.Is(err, orderengine.ErrExchangeNotFound):
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "exchange not found"})
+		case errors.Is(err, orderengine.ErrInvalidEntryOrderID):
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal server error"})
 		}
@@ -169,7 +173,7 @@ func (h *Handler) PlaceOrderAsync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Exchange) == "" || strings.TrimSpace(req.Symbol) == "" || strings.TrimSpace(req.Type) == "" || strings.TrimSpace(req.Side) == "" || strings.TrimSpace(req.Quantity) == "" || strings.TrimSpace(req.Source) == "" {
+	if strings.TrimSpace(req.RequestID) == "" || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.Exchange) == "" || strings.TrimSpace(req.Symbol) == "" || strings.TrimSpace(req.Type) == "" || strings.TrimSpace(req.Side) == "" || strings.TrimSpace(req.Quantity) == "" || strings.TrimSpace(req.Source) == "" || resolveEntryOrderID(req.EntryOrderID, req.Internal) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required fields"})
 		return
 	}
@@ -183,6 +187,8 @@ func (h *Handler) PlaceOrderAsync(w http.ResponseWriter, r *http.Request) {
 	err = h.orderEngineService.PlaceOrderAsync(r.Context(), orderReq)
 	if err != nil {
 		switch {
+		case errors.Is(err, orderengine.ErrInvalidEntryOrderID):
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		case errors.Is(err, orderengine.ErrPublishOrderEventFailed):
 			writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		default:
@@ -218,6 +224,7 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 		RequestID:        req.RequestID,
 		UserID:           req.UserID,
 		OrderID:          null.NewString(req.OrderID, req.OrderID != "").Ptr(),
+		EntryOrderID:     resolveEntryOrderID(req.EntryOrderID, req.Internal),
 		Exchange:         req.Exchange,
 		MarketType:       string(marketType),
 		PositionSide:     string(entity.NormalizePositionSide(req.PositionSide)),
@@ -239,6 +246,40 @@ func mapHTTPRequestToOrderRequest(req *PlaceOrderRequest) (entity.OrderRequest, 
 		NeedNotification: req.NeedNotification,
 		IsPaperTrading:   req.IsPaperTrading,
 	}, nil
+}
+
+func resolveEntryOrderID(entryOrderID string, internal string) string {
+	trimmed := strings.TrimSpace(entryOrderID)
+	if trimmed != "" {
+		return trimmed
+	}
+
+	internalText := strings.TrimSpace(internal)
+	if internalText == "" {
+		return ""
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(internalText), &payload); err != nil {
+		return ""
+	}
+
+	raw, ok := payload["entry_order_id"]
+	if !ok || raw == nil {
+		return ""
+	}
+
+	value := strings.TrimSpace(castToString(raw))
+	return value
+}
+
+func castToString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	default:
+		return ""
+	}
 }
 
 func mapOrderHistoryToHTTPResponse(orderHistory *entity.OrderHistory) *PlaceOrderResponse {
@@ -323,6 +364,7 @@ func mapOrderHistoryToHTTPResponse(orderHistory *entity.OrderHistory) *PlaceOrde
 		PositionSide:      orderHistory.PositionSide,
 		Symbol:            orderHistory.Symbol,
 		OrderID:           orderHistory.OrderID,
+		EntryOrderID:      orderHistory.EntryOrderID,
 		ClientOrderID:     clientOrderID,
 		Side:              string(orderHistory.Side),
 		Type:              string(orderHistory.Type),
