@@ -29,9 +29,4 @@ build-strategy:
 		. --no-cache
 
 up-service:
-	@docker compose --profile=infra --profile=app up -d --build
-
-build-and-run:
-	$(MAKE) build-strategy
-	$(MAKE) up-service
-	$(MAKE) rerun-all-strategy
+	@docker compose --profile=infra --profile=app --profile=strategy up -d --build

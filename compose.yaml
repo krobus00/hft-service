@@ -123,6 +123,117 @@ services:
     networks:
       - hft-network
 
+  strategy-krobot01:
+    build:
+      context: .
+      dockerfile: tools/python-strategy/Dockerfile
+    command: ["bash", "-c", "python krobot01.py"]
+    working_dir: /app
+    volumes:
+      - ./strategy:/app
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "19011:19011"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O- http://localhost:19011/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19011/readyz | grep -q '\"ready\":true'",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    profiles:
+      - strategy
+    cpus: "0.75"
+    mem_limit: 512m
+    networks:
+      - hft-network
+
+  strategy-krobot02:
+    build:
+      context: .
+      dockerfile: tools/python-strategy/Dockerfile
+    command: ["bash", "-c", "python krobot02.py"]
+    working_dir: /app
+    volumes:
+      - ./strategy:/app
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "19012:19012"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O- http://localhost:19012/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19012/readyz | grep -q '\"ready\":true'",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    profiles:
+      - strategy
+    cpus: "0.75"
+    mem_limit: 512m
+    networks:
+      - hft-network
+
+  strategy-ai:
+    build:
+      context: .
+      dockerfile: tools/python-strategy/Dockerfile
+    command: ["bash", "-c", "python ai.py"]
+    working_dir: /app
+    volumes:
+      - ./strategy:/app
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "19013:19013"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O- http://localhost:19013/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19013/readyz | grep -q '\"ready\":true'",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 45s
+    restart: unless-stopped
+    profiles:
+      - strategy
+    cpus: "1.0"
+    mem_limit: 1g
+    networks:
+      - hft-network
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis
