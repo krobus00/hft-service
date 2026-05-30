@@ -285,7 +285,13 @@ class AIHybridStrategy(StrategyBase):
             client_kwargs["base_url"] = self.base_url
 
         if self.use_ai and api_key:
-            self.ai_client = OpenAI(**client_kwargs)
+            try:
+                self.ai_client = OpenAI(**client_kwargs)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to initialize OpenAI client: {type(exc).__name__}:{exc}. "
+                    "Check openai/httpx package compatibility."
+                ) from exc
         else:
             self.ai_client = None
 
