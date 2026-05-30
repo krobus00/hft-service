@@ -888,9 +888,7 @@ class StrategyRunner:
                     "source": self.runtime.source,
                 },
                 "strategy_config": self._to_jsonable(vars(self.strategy.config)),
-                "runtime_config": self._to_jsonable(vars(self.runtime)),
                 "runtime": {
-                    "nats_url": self.runtime.nats_url,
                     "order_subject": self.runtime.order_subject,
                     "enable_intrabar_risk_exit": self.runtime.enable_intrabar_risk_exit,
                     "monitor": {
