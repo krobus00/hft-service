@@ -27,3 +27,11 @@ build-strategy:
 		-t python-strategy:latest \
 		-f tools/python-strategy/Dockerfile \
 		. --no-cache
+
+up-service:
+	@docker compose -f docker-compose.yml --profile=infra --profile=app up -d --build
+
+build-and-run:
+	$(MAKE) build-strategy
+	$(MAKE) up-service
+	$(MAKE) run-strategy
