@@ -1,6 +1,8 @@
 global:
   nats_url: nats://localhost:4222
   db_dsn: postgres://root:root@localhost:5432/market_data?sslmode=disable
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
   proxy_host: https://llm.proxy
   api_key: YOUR_API_KEY
   max_tokens: 1200
@@ -42,6 +44,8 @@ krobot01:
 
   historical_limit: 800
 
+  monitor_port: 19011
+
 krobot02:
   name: KROBOT02_VWAP_VOLUME
   exchange: tokocrypto
@@ -68,6 +72,8 @@ krobot02:
   volume_window: 20
   volume_mult: 1.15
 
+  monitor_port: 19012
+
 
 template:
   name: TEMPLATE
@@ -91,6 +97,8 @@ template:
   limit_slippage_pct: 0.02
 
   cooldown_bars: 1
+
+  monitor_port: 19019
 
 ai:
   name: AI-M2.7
@@ -129,3 +137,5 @@ ai:
   vwap_window: 120
   atr_n: 14
   rsi_period: 14
+
+  monitor_port: 19013
