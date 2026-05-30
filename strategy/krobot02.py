@@ -290,9 +290,6 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 		order_qty=float(section.get("order_qty", 10)),
 		limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
 		enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", False)),
-		monitor_enabled=bool(cfg_value(section, GLOBAL_CONFIG, "monitor_enabled", True)),
-		monitor_host=str(section.get("monitor_host") or GLOBAL_CONFIG.get("monitor_host") or "127.0.0.1"),
-		monitor_port=int(cfg_value(section, GLOBAL_CONFIG, "monitor_port", 19012)),
 	)
 
 

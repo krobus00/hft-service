@@ -5,7 +5,6 @@ import json
 import os
 from typing import Any, Dict, Optional, Tuple
 
-import httpx
 from openai import OpenAI
 import uvloop
 
@@ -129,7 +128,6 @@ class AIHybridStrategy(StrategyBase):
         "cooldown",
         "bar_count",
         "ai_client",
-        "http_client",
         "base_url",
         "use_ai",
         "model_name",
@@ -286,10 +284,8 @@ class AIHybridStrategy(StrategyBase):
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
 
-        self.http_client: Optional[httpx.Client] = None
         if self.use_ai and api_key:
-            self.http_client = httpx.Client()
-            self.ai_client = OpenAI(http_client=self.http_client, **client_kwargs)
+            self.ai_client = OpenAI(**client_kwargs)
         else:
             self.ai_client = None
 
@@ -1445,9 +1441,6 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         order_qty=float(section.get("order_qty", 10)),
         limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
         enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", True)),
-        monitor_enabled=bool(cfg_value(section, GLOBAL_CONFIG, "monitor_enabled", True)),
-        monitor_host=str(section.get("monitor_host") or GLOBAL_CONFIG.get("monitor_host") or "127.0.0.1"),
-        monitor_port=int(cfg_value(section, GLOBAL_CONFIG, "monitor_port", 19013)),
     )
 
 
@@ -1499,9 +1492,6 @@ async def run():
         if strategy.ai_client is not None:
             with suppress(Exception):
                 strategy.ai_client.close()
-        if strategy.http_client is not None:
-            with suppress(Exception):
-                strategy.http_client.close()
 
 
 if __name__ == "__main__":

@@ -9,10 +9,8 @@ from typing import Any, Dict, List, Optional
 import asyncpg
 import orjson
 from nats.aio.client import Client as NATS
-import threading
 
 from .common import fmt_num, gen_id, now_ms, parse_iso_to_ms, pct_to_frac
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .models import Candle, RuntimeConfig, Signal, StrategyConfig
 
 
@@ -577,28 +575,6 @@ class StrategyRunner:
         no_pairs_logged = False
         last_active_summary = ""
         started_at_ms = now_ms()
-        monitor_server: Optional[ThreadingHTTPServer] = None
-        monitor_thread: Optional[threading.Thread] = None
-        monitor_cache_lock = threading.Lock()
-        monitor_cache: Dict[str, Any] = {
-            "health": {
-                "status": "starting",
-                "strategy": self.strategy.config.name,
-                "started_at_ms": started_at_ms,
-                "nats_connected": False,
-                "nats_closed": False,
-            },
-            "ready": {
-                "ready": False,
-                "checks": {
-                    "nats_connected": False,
-                    "nats_not_closed": True,
-                    "has_active_pairs": False,
-                },
-                "active_pairs_count": 0,
-            },
-            "state": {},
-        }
         last_reconcile_ms = 0
 
         def build_handler(pair_key: str):
@@ -924,11 +900,6 @@ class StrategyRunner:
                 "runtime": {
                     "order_subject": self.runtime.order_subject,
                     "enable_intrabar_risk_exit": self.runtime.enable_intrabar_risk_exit,
-                    "monitor": {
-                        "enabled": self.runtime.monitor_enabled,
-                        "host": self.runtime.monitor_host,
-                        "port": self.runtime.monitor_port,
-                    },
                 },
                 "health": {
                     "started_at_ms": started_at_ms,
@@ -944,94 +915,12 @@ class StrategyRunner:
                 "strategy_state_by_pair": strategy_state_by_pair,
             }
 
-        async def refresh_monitor_cache() -> None:
-            state_payload = await monitor_payload()
-            health_payload = {
-                "status": "ok",
-                "strategy": self.strategy.config.name,
-                "started_at_ms": started_at_ms,
-                "nats_connected": bool(nc.is_connected),
-                "nats_closed": bool(nc.is_closed),
-            }
-            ready_payload = {
-                "ready": bool(nc.is_connected) and not bool(nc.is_closed) and len(active_pairs) > 0,
-                "checks": {
-                    "nats_connected": bool(nc.is_connected),
-                    "nats_not_closed": not bool(nc.is_closed),
-                    "has_active_pairs": len(active_pairs) > 0,
-                },
-                "active_pairs_count": len(active_pairs),
-            }
-            with monitor_cache_lock:
-                monitor_cache["state"] = state_payload
-                monitor_cache["health"] = health_payload
-                monitor_cache["ready"] = ready_payload
-
-        class MonitorHandler(BaseHTTPRequestHandler):
-            def log_message(self, format: str, *args) -> None:  # noqa: A003
-                return
-
-            def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
-                body = orjson.dumps(StrategyRunner._to_jsonable(payload))
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def do_GET(self) -> None:  # noqa: N802
-                path = str(self.path or "/").split("?", 1)[0]
-                if path in {"/health", "/healthz", "/_internal/health", "/_internal/healthz"}:
-                    with monitor_cache_lock:
-                        health_payload = dict(monitor_cache.get("health", {}))
-                    self._write_json(200, health_payload)
-                    return
-
-                if path in {
-                    "/ready",
-                    "/readyz",
-                    "/readiness",
-                    "/_internal/ready",
-                    "/_internal/readyz",
-                    "/_internal/readiness",
-                }:
-                    with monitor_cache_lock:
-                        ready_payload = dict(monitor_cache.get("ready", {}))
-                    status_code = 200 if bool(ready_payload.get("ready")) else 503
-                    self._write_json(status_code, ready_payload)
-                    return
-
-                if path in {"/state", "/statez", "/_internal/state", "/_internal/statez"}:
-                    with monitor_cache_lock:
-                        state_payload = copy.deepcopy(monitor_cache.get("state", {}))
-                    self._write_json(200, state_payload)
-                    return
-
-                self._write_json(404, {"error": "not_found"})
-
-        if self.runtime.monitor_enabled and self.runtime.monitor_port > 0:
-            monitor_server = ThreadingHTTPServer(
-                (self.runtime.monitor_host, self.runtime.monitor_port),
-                MonitorHandler,
-            )
-            monitor_server.daemon_threads = True
-            monitor_thread = threading.Thread(target=monitor_server.serve_forever, daemon=True)
-            monitor_thread.start()
-            print(
-                f"[{self.strategy.config.name}] monitor listening on http://{self.runtime.monitor_host}:{self.runtime.monitor_port} endpoints=/healthz,/readyz,/state",
-                flush=True,
-            )
-
         try:
             while True:
                 if nc.is_closed:
                     raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
                 await reconcile_pairs()
-                await refresh_monitor_cache()
                 await asyncio.sleep(refresh_interval_sec)
         finally:
-            if monitor_server is not None:
-                monitor_server.shutdown()
-                monitor_server.server_close()
-            if monitor_thread is not None:
-                monitor_thread.join(timeout=2)
+            if not nc.is_closed:
+                await nc.close()
