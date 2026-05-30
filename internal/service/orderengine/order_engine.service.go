@@ -25,6 +25,7 @@ var (
 	ErrFailToGetOrderHistoryFailed    = errors.New("failed to get order history")
 	ErrCreateOrderHistoryFailed       = errors.New("failed to create order history")
 	ErrDuplicateOrder                 = errors.New("duplicate order")
+	ErrInvalidEntryOrderID            = errors.New("entry_order_id is required")
 	ErrPublishOrderEventFailed        = errors.New("failed to publish order event")
 	ErrPublishOrderNotificationFailed = errors.New("failed to publish order notification event")
 	ErrInvalidAPIKey                  = errors.New("invalid API key")
@@ -165,6 +166,9 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
 	order.OrderReason = strings.TrimSpace(order.OrderReason)
 	order.ExitType = normalizeExitType(order.ExitType, order.TradeCondition)
+	if err := ensureEntryOrderID(&order); err != nil {
+		return nil, err
+	}
 
 	exchange, ok := s.exchanges[entity.ExchangeName(order.Exchange)]
 	if !ok {
@@ -257,6 +261,9 @@ func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.O
 	order.TradeCondition = string(entity.NormalizeTradeCondition(order.TradeCondition))
 	order.OrderReason = strings.TrimSpace(order.OrderReason)
 	order.ExitType = normalizeExitType(order.ExitType, order.TradeCondition)
+	if err := ensureEntryOrderID(&order); err != nil {
+		return err
+	}
 
 	event := entity.OrderRequestEvent{
 		Data: order,
@@ -312,6 +319,7 @@ func buildPaperOrderHistory(order entity.OrderRequest) *entity.OrderHistory {
 		PositionSide:      order.PositionSide,
 		Symbol:            order.Symbol,
 		OrderID:           fmt.Sprintf("paper-%s", order.RequestID),
+		EntryOrderID:      strings.TrimSpace(order.EntryOrderID),
 		ClientOrderID:     clientOrderID,
 		Side:              order.Side,
 		Type:              order.Type,
@@ -367,6 +375,7 @@ func (s *OrderEngineService) publishOrderNotificationEvent(order entity.OrderReq
 	event := entity.OrderNotificationEvent{
 		Data: entity.OrderNotification{
 			RequestID:      order.RequestID,
+			EntryOrderID:   strings.TrimSpace(order.EntryOrderID),
 			Exchange:       order.Exchange,
 			MarketType:     order.MarketType,
 			StrategyID:     strategyID,
@@ -452,6 +461,43 @@ func normalizeExitType(rawExitType, tradeCondition string) string {
 	}
 }
 
+func ensureEntryOrderID(order *entity.OrderRequest) error {
+	if order == nil {
+		return ErrInvalidEntryOrderID
+	}
+
+	entryOrderID := strings.TrimSpace(order.EntryOrderID)
+	if entryOrderID == "" {
+		entryOrderID = extractEntryOrderIDFromInternal(order.Internal)
+	}
+
+	if entryOrderID == "" {
+		return ErrInvalidEntryOrderID
+	}
+
+	order.EntryOrderID = entryOrderID
+	return nil
+}
+
+func extractEntryOrderIDFromInternal(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return ""
+	}
+
+	value, ok := payload["entry_order_id"]
+	if !ok || value == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
 func applyOrderMetadataToHistory(orderHistory *entity.OrderHistory, order entity.OrderRequest) *entity.OrderHistory {
 	if orderHistory == nil {
 		return nil
@@ -467,6 +513,10 @@ func applyOrderMetadataToHistory(orderHistory *entity.OrderHistory, order entity
 
 	if strings.TrimSpace(orderHistory.ExitType) == "" {
 		orderHistory.ExitType = order.ExitType
+	}
+
+	if strings.TrimSpace(orderHistory.EntryOrderID) == "" {
+		orderHistory.EntryOrderID = strings.TrimSpace(order.EntryOrderID)
 	}
 
 	return orderHistory

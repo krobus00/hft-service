@@ -2,7 +2,10 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/guregu/null/v6"
 	"github.com/krobus00/hft-service/internal/entity"
@@ -23,6 +26,25 @@ func decimalPtrToStringPtr(v *decimal.Decimal) *string {
 type Server struct {
 	orderEngineService *orderengine.OrderEngineService
 	pb.UnimplementedOrderEngineServiceServer
+}
+
+func extractEntryOrderIDFromInternal(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return ""
+	}
+
+	v, ok := payload["entry_order_id"]
+	if !ok || v == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(fmt.Sprint(v))
 }
 
 func NewOrderEngineGRPCServer(orderEngineService *orderengine.OrderEngineService) *Server {
@@ -53,6 +75,7 @@ func (s *Server) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb
 		MarketType:       string(marketType),
 		PositionSide:     string(entity.NormalizePositionSide(req.GetPositionSide())),
 		OrderID:          null.NewString(req.GetOrderId(), req.GetOrderId() != "").Ptr(),
+		EntryOrderID:     extractEntryOrderIDFromInternal(req.GetInternal()),
 		Symbol:           req.GetSymbol(),
 		Type:             entity.OrderType(req.GetType()),
 		Side:             normalizedSide,
