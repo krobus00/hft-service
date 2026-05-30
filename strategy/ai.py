@@ -413,6 +413,121 @@ class AIHybridStrategy(StrategyBase):
             "recent_atr_pct": self._window_stats(self.recent_atr_pct),
         }
 
+    @staticmethod
+    def _build_user_input_prompt(payload: Dict[str, Any]) -> str:
+        kline_src = payload.get("kline") if isinstance(payload.get("kline"), list) else []
+        kline: list = []
+        for item in kline_src:
+            if not isinstance(item, dict):
+                continue
+            metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+            macd_metrics = metrics.get("macd") if isinstance(metrics.get("macd"), dict) else {}
+            vwap_metrics = metrics.get("vwap") if isinstance(metrics.get("vwap"), dict) else {}
+            kline.append(
+                {
+                    "t": item.get("t"),
+                    "o": item.get("o"),
+                    "h": item.get("h"),
+                    "l": item.get("l"),
+                    "c": item.get("c"),
+                    "v": item.get("v"),
+                    "rsi": metrics.get("rsi"),
+                    "macd_hist": macd_metrics.get("hist"),
+                    "macd_line": macd_metrics.get("line"),
+                    "macd_signal": macd_metrics.get("signal"),
+                    "vwap_gap_pct": vwap_metrics.get("gap_pct"),
+                    "ema_dist_pct": metrics.get("distance_from_ema"),
+                    "atr_pct": metrics.get("atr_pct"),
+                }
+            )
+
+        trend_data = payload.get("trend") if isinstance(payload.get("trend"), dict) else {}
+        previous_trade_condition = (
+            payload.get("previous_trade_condition")
+            if isinstance(payload.get("previous_trade_condition"), list)
+            else []
+        )
+        prev_snapshot = previous_trade_condition[-1] if previous_trade_condition and isinstance(previous_trade_condition[-1], dict) else {}
+        current_position = payload.get("current_position") if isinstance(payload.get("current_position"), dict) else {}
+        risk_rules = payload.get("risk_rules") if isinstance(payload.get("risk_rules"), dict) else {}
+
+        ema_fast = trend_data.get("ema_fast")
+        ema_slow = trend_data.get("ema_slow")
+        ema_spread_pct = 0.0
+        if isinstance(ema_fast, (int, float)) and isinstance(ema_slow, (int, float)) and ema_slow != 0:
+            ema_spread_pct = ((float(ema_fast) - float(ema_slow)) / float(ema_slow)) * 100.0
+
+        rsi_values = [
+            float(entry.get("rsi"))
+            for entry in kline
+            if isinstance(entry, dict) and isinstance(entry.get("rsi"), (int, float))
+        ]
+        rsi_mean_5 = sum(rsi_values[-5:]) / len(rsi_values[-5:]) if rsi_values else 0.0
+
+        macd_hist_values = [
+            float(entry.get("macd_hist"))
+            for entry in kline
+            if isinstance(entry, dict) and isinstance(entry.get("macd_hist"), (int, float))
+        ]
+        macd_hist_trend = 0
+        if len(macd_hist_values) >= 2:
+            delta = macd_hist_values[-1] - macd_hist_values[-2]
+            macd_hist_trend = 1 if delta > 0 else (-1 if delta < 0 else 0)
+        elif len(macd_hist_values) == 1:
+            macd_hist_trend = 1 if macd_hist_values[-1] > 0 else (-1 if macd_hist_values[-1] < 0 else 0)
+
+        atr_pct_now = kline[-1].get("atr_pct") if kline and isinstance(kline[-1], dict) else None
+        volatility_regime = "normal"
+        if isinstance(atr_pct_now, (int, float)):
+            if atr_pct_now <= 0:
+                volatility_regime = "flat"
+            elif atr_pct_now >= 1.8:
+                volatility_regime = "high"
+
+        return_5 = 0.0
+        recent_returns = prev_snapshot.get("recent_returns_pct") if isinstance(prev_snapshot.get("recent_returns_pct"), dict) else {}
+        if isinstance(recent_returns.get("mean"), (int, float)):
+            return_5 = float(recent_returns.get("mean"))
+
+        user_input = {
+            "symbol": payload.get("symbol"),
+            "timeframe": payload.get("timeframe"),
+            "kline": kline,
+            "features": {
+                "trend": str(trend_data.get("trend", "sideways")),
+                "ema_spread_pct": round(ema_spread_pct, 6),
+                "macd_hist_trend": macd_hist_trend,
+                "rsi_mean_5": round(rsi_mean_5, 4),
+                "volatility_regime": volatility_regime,
+                "return_5": round(return_5, 6),
+            },
+            "risk_rules": {
+                "max_loss_pct": abs(float(risk_rules.get("max_loss", 0.0))),
+                "target_profit_pct": abs(float(risk_rules.get("target_profit", 0.0))),
+                "max_positions": int(risk_rules.get("max_positions", 1) or 1),
+            },
+            "position": {
+                "is_open": bool(current_position.get("is_open", False)),
+                "side": str(current_position.get("side", "FLAT")),
+                "entry_price": current_position.get("entry_price"),
+                "bars_in_position": int(current_position.get("bars_in_position", 0) or 0),
+            },
+        }
+
+        return (
+            "Analyze the following market data and return a trading decision.\n\n"
+            "Input:\n"
+            f"{json.dumps(user_input, indent=2)}\n\n"
+            "Instructions:\n"
+            "- Follow the system decision framework strictly\n"
+            "- Use ONLY the provided data\n"
+            "- Do NOT assume missing data\n"
+            "- Do NOT explain outside JSON\n"
+            "- Be consistent and deterministic\n\n"
+            "Output:\n"
+            "Return ONLY valid JSON matching the required schema without any additional text."
+        )
+
     def _ai_signal(self, payload: Dict[str, Any]) -> Tuple[str, float, str, Dict[str, Any]]:
         if self.intrabar_risk_guard:
             raise RuntimeError("LLM call is blocked during intrabar risk checks")
@@ -429,23 +544,93 @@ class AIHybridStrategy(StrategyBase):
             "- momentum: rsi, macd.line, macd.signal, macd.hist\n"
             "- volatility: atr, atr_pct\n"
             "- price_action: o, h, l, c, v, vwap.value, vwap.gap_pct, distance_from_ema\n\n"
-            "Rules:\n"
+            "--------------------------------------------------\n"
+            "DECISION FRAMEWORK (STRICT ORDER)\n"
+            "--------------------------------------------------\n"
+            "1. Trend alignment (EMA fast vs slow)\n"
+            "2. Momentum confirmation (MACD hist direction + RSI regime)\n"
+            "3. Price location (VWAP + distance_from_ema)\n"
+            "4. Volatility filter (ATR%)\n"
+            "5. Risk-reward vs risk_rules\n\n"
+            "If any of (1-3) are not aligned -> prefer HOLD\n\n"
+            "--------------------------------------------------\n"
+            "ENTRY RULES (ALL MUST BE TRUE)\n"
+            "--------------------------------------------------\n"
+            "- Trend and momentum aligned\n"
+            "- MACD histogram expanding in trade direction\n"
+            "- RSI > 55 for BUY, RSI < 45 for SELL\n"
+            "- distance_from_ema within +/-0.3% (not overextended)\n"
+            "- Risk-reward >= 1:2 based on risk_rules\n\n"
+            "--------------------------------------------------\n"
+            "NO-TRADE ZONE (CHOP FILTER)\n"
+            "--------------------------------------------------\n"
+            "- RSI between 45-55 AND\n"
+            "- |MACD hist| < 0.02\n"
+            "-> MUST return HOLD\n\n"
+            "--------------------------------------------------\n"
+            "OVEREXTENSION RULE (STRICT)\n"
+            "--------------------------------------------------\n"
+            "- distance_from_ema > 0.5% -> overbought -> no BUY\n"
+            "- distance_from_ema < -0.5% -> oversold -> no SELL\n\n"
+            "--------------------------------------------------\n"
+            "EXIT RULES (WHEN IN POSITION)\n"
+            "--------------------------------------------------\n"
+            "- MACD histogram reverses against position\n"
+            "- RSI crosses 50 against position\n"
+            "- Price crosses VWAP against position\n"
+            "- Trailing stop hit\n\n"
+            "If already in position:\n"
+            "- Decide HOLD or EXIT\n"
+            "- SELL exits BUY/LONG\n"
+            "- BUY exits SELL/SHORT\n\n"
+            "If TP already reached:\n"
+            "- If confidence remains high AND trend still valid:\n"
+            "  -> keep position\n"
+            "  -> move SL to previous TP\n"
+            "  -> set next TP = previous TP + TP %\n\n"
+            "--------------------------------------------------\n"
+            "CONFIDENCE SCALE\n"
+            "--------------------------------------------------\n"
+            "0.0-0.4 -> weak (avoid trading)\n"
+            "0.4-0.6 -> neutral (prefer HOLD)\n"
+            "0.6-0.8 -> valid setup\n"
+            "0.8-1.0 -> strong setup\n\n"
+            "--------------------------------------------------\n"
+            "RISK CONTROL RULES\n"
+            "--------------------------------------------------\n"
             "- Respect risk_rules strictly\n"
-            "- Do NOT chase overextended moves\n"
-            "- Prefer HOLD over bad trades\n"
-            "- If already in position, decide whether to HOLD or EXIT using side action"
-            " (SELL exits BUY/LONG, BUY exits SELL/SHORT).\n"
-            "- When in position and TP is already reached, if confidence is high and trend still supports position,"
-            " keep position, move SL to previous TP, and set next TP = previous TP plus TP percentage.\n"
-            "- Provide adaptive SL and trailing stop suggestions when confidence is high.\n\n"
-            "Respond in JSON:\n"
-            "{\"action\":\"BUY | SELL | HOLD | EXIT\",\"confidence\":0..1,\"reason\":\"short explanation (max 255 chars)\","
-            "\"risk_control\":{\"keep_position_on_tp\":true|false,\"suggested_sl_pct\":number>=0,\"suggested_trailing_stop_pct\":number>=0,\"suggested_tp_pct\":number>=0}}\n"
-            "The reason must be concise and MUST NOT exceed 255 characters.\n"
-            "Return ONLY valid JSON."
+            "- Adjust SL / TP / trailing based on volatility (ATR%)\n"
+            "- Do NOT output static values blindly\n"
+            "- Higher ATR -> wider SL, tighter trailing\n"
+            "- Lower ATR -> tighter SL, standard TP\n\n"
+            "--------------------------------------------------\n"
+            "BEHAVIOR CONSTRAINTS\n"
+            "--------------------------------------------------\n"
+            "- Do NOT chase price\n"
+            "- Prefer HOLD over low-quality trades\n"
+            "- Ignore previous AI decisions (last_ai)\n"
+            "- Be deterministic and consistent\n\n"
+            "--------------------------------------------------\n"
+            "OUTPUT FORMAT (STRICT JSON ONLY)\n"
+            "--------------------------------------------------\n"
+            "{\n"
+            "  \"action\": \"BUY | SELL | HOLD | EXIT\",\n"
+            "  \"confidence\": 0.0,\n"
+            "  \"reason\": \"<trend>, <momentum>, <location>. <decision (max 255 chars)>\",\n"
+            "  \"risk_control\": {\n"
+            "    \"keep_position_on_tp\": true|false,\n"
+            "    \"suggested_sl_pct\": number >= 0,\n"
+            "    \"suggested_trailing_stop_pct\": number >= 0,\n"
+            "    \"suggested_tp_pct\": number >= 0\n"
+            "  }\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Reason MUST include: trend + momentum + price location\n"
+            "- Reason MUST be <= 255 characters\n"
+            "- Return ONLY valid JSON"
         )
 
-        user_payload_text = json.dumps(payload, separators=(",", ":"))
+        user_payload_text = self._build_user_input_prompt(payload)
         print(
             (
                 f"[AI_REQUEST] symbol={payload_symbol} interval={payload_timeframe} "
@@ -470,7 +655,7 @@ class AIHybridStrategy(StrategyBase):
                         "content": user_payload_text,
                     }
                 ],
-                temperature=0.2,
+                temperature=0,
             )
 
             raw_text = self._extract_text(response)
