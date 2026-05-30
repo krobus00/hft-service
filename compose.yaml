@@ -155,8 +155,6 @@ services:
     restart: unless-stopped
     profiles:
       - strategy
-    cpus: "0.75"
-    mem_limit: 512m
     networks:
       - hft-network
 
@@ -192,8 +190,6 @@ services:
     restart: unless-stopped
     profiles:
       - strategy
-    cpus: "0.75"
-    mem_limit: 512m
     networks:
       - hft-network
 
@@ -229,8 +225,6 @@ services:
     restart: unless-stopped
     profiles:
       - strategy
-    cpus: "1.0"
-    mem_limit: 1g
     networks:
       - hft-network
 

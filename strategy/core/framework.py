@@ -987,16 +987,23 @@ class StrategyRunner:
                     ready_payload = copy.deepcopy(monitor_cache.get("ready", {}))
                     state_payload = copy.deepcopy(monitor_cache.get("state", {}))
 
-                if path in {"/_internal/health", "/_internal/healthz"}:
+                if path in {"/health", "/healthz", "/_internal/health", "/_internal/healthz"}:
                     self._write_json(200, health_payload)
                     return
 
-                if path in {"/_internal/ready", "/_internal/readyz", "/_internal/readiness"}:
+                if path in {
+                    "/ready",
+                    "/readyz",
+                    "/readiness",
+                    "/_internal/ready",
+                    "/_internal/readyz",
+                    "/_internal/readiness",
+                }:
                     status_code = 200 if bool(ready_payload.get("ready")) else 503
                     self._write_json(status_code, ready_payload)
                     return
 
-                if path in {"/_internal/state", "/_internal/statez"}:
+                if path in {"/state", "/statez", "/_internal/state", "/_internal/statez"}:
                     self._write_json(200, state_payload)
                     return
 
