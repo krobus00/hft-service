@@ -239,6 +239,24 @@ class AIHybridStrategy(StrategyBase):
 
     @staticmethod
     def _extract_text(response) -> str:
+        def _coerce_text(value: Any) -> str:
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, list):
+                parts = []
+                for item in value:
+                    text = _coerce_text(item)
+                    if text:
+                        parts.append(text)
+                return "\n".join(parts).strip()
+            if isinstance(value, dict):
+                # Common OpenAI-compatible payload variants.
+                for key in ("text", "value", "content", "output_text", "reasoning_content"):
+                    text = _coerce_text(value.get(key))
+                    if text:
+                        return text
+            return ""
+
         choices = getattr(response, "choices", None) or []
         if not choices:
             output_text = getattr(response, "output_text", None)
@@ -272,10 +290,24 @@ class AIHybridStrategy(StrategyBase):
                     part_type = part.get("type")
                     part_text = part.get("text")
                 if part_type in {"text", "output_text"} and part_text:
-                    texts.append(str(part_text))
+                    candidate = _coerce_text(part_text)
+                    if candidate:
+                        texts.append(candidate)
                 elif isinstance(part, str) and part.strip():
                     texts.append(part.strip())
+                elif isinstance(part, dict):
+                    candidate = _coerce_text(part)
+                    if candidate:
+                        texts.append(candidate)
             return "\n".join(texts).strip()
+
+        # Fallbacks for OpenAI-compatible providers that return non-standard fields.
+        fallback = _coerce_text(message)
+        if fallback:
+            return fallback
+        fallback = _coerce_text(first_choice)
+        if fallback:
+            return fallback
         return ""
 
     @staticmethod
@@ -934,7 +966,7 @@ class AIHybridStrategy(StrategyBase):
         )
 
         try:
-            init_max_tokens = max(16, min(max(1, self.max_tokens), 64))
+            init_max_tokens = max(64, min(max(1, self.max_tokens), 256))
             response = self.ai_client.chat.completions.create(
                 model=self.model_name,
                 max_tokens=init_max_tokens,
@@ -962,9 +994,9 @@ class AIHybridStrategy(StrategyBase):
                 if choices:
                     print(
                         (
-                            f"[AI_INIT_TEST_RESPONSE_EMPTY] symbol={self.config.symbol} interval={self.config.interval} "
+                            f"[AI_INIT_TEST_RESPONSE_NO_TEXT] symbol={self.config.symbol} interval={self.config.interval} "
                             f"model={self.model_name} finish_reason={finish_reason} "
-                            "warning=empty_text_with_nonempty_choices"
+                            "status=ok warning=empty_text_with_nonempty_choices"
                         ),
                         flush=True,
                     )
