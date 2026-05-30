@@ -146,7 +146,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O- http://localhost:19011/internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19011/readyz | grep -q '\"ready\":true'",
+          "wget -q -O- http://localhost:19011/_internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19011/_internal/readyz | grep -q '\"ready\":true'",
         ]
       interval: 10s
       timeout: 3s
@@ -183,7 +183,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O- http://localhost:19012/internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19012/readyz | grep -q '\"ready\":true'",
+          "wget -q -O- http://localhost:19012/_internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19012/_internal/readyz | grep -q '\"ready\":true'",
         ]
       interval: 10s
       timeout: 3s
@@ -220,7 +220,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O- http://localhost:19013/internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19013/readyz | grep -q '\"ready\":true'",
+          "wget -q -O- http://localhost:19013/_internal/healthz | grep -q '\"status\":\"ok\"' && wget -q -O- http://localhost:19013/_internal/readyz | grep -q '\"ready\":true'",
         ]
       interval: 10s
       timeout: 3s
