@@ -1431,7 +1431,6 @@ async def run():
     strategy = AIHybridStrategy(build_strategy_config(AI_CONFIG), AI_CONFIG)
     if strategy.ai_client is None:
         raise ValueError("LLM is required. Set api_key or API_KEY.")
-    strategy._test_llm_on_init()
 
     if strategy.take_profit_pct < 0:
         raise ValueError("take_profit_pct must be >= 0")
@@ -1452,10 +1451,29 @@ async def run():
     if strategy.sl_pause_bars < 0:
         raise ValueError("sl_pause_bars must be >= 0")
 
+    init_check_task: Optional[asyncio.Task] = None
+
+    async def _run_init_check_background() -> None:
+        try:
+            await asyncio.to_thread(strategy._test_llm_on_init)
+        except Exception as exc:
+            print(
+                (
+                    f"[AI_INIT_TEST_BACKGROUND_ERROR] symbol={strategy.config.symbol} interval={strategy.config.interval} "
+                    f"model={strategy.model_name} error={type(exc).__name__}:{exc}"
+                ),
+                flush=True,
+            )
+
     runner = StrategyRunner(strategy=strategy, runtime=runtime)
     try:
+        init_check_task = asyncio.create_task(_run_init_check_background())
         await runner.run()
     finally:
+        if init_check_task is not None and not init_check_task.done():
+            init_check_task.cancel()
+            with suppress(Exception):
+                await init_check_task
         if strategy.ai_client is not None:
             with suppress(Exception):
                 strategy.ai_client.close()
