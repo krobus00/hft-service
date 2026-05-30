@@ -132,9 +132,9 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.pause_bars -= 1
 			return None
 
-		if self.cooldown > 0:
+		entry_cooldown_active = self.cooldown > 0
+		if entry_cooldown_active:
 			self.cooldown -= 1
-			return None
 
 		ema_px = self.ema.update(candle.close)
 		vwap_px = self.vwap.update(candle.close, candle.quote_volume)
@@ -178,21 +178,23 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 				metadata["order_reason"] = "STOP_LOSS_LONG"
 				metadata["exit_type"] = "STOP_LOSS"
 				self._reset_position("STOP_LOSS")
-				return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
+				exit_px = min(candle.close, sl_px)
+				return self.sell(exit_px, "STOP_LOSS_LONG", metadata)
 
 			if self.take_profit_pct > 0 and high_px >= tp_px:
 				metadata["trade_condition"] = "TAKE_PROFIT"
 				metadata["order_reason"] = "TAKE_PROFIT_LONG"
 				metadata["exit_type"] = "TAKE_PROFIT"
 				self._reset_position("TAKE_PROFIT")
-				return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
+				return self.sell(tp_px, "TAKE_PROFIT_LONG", metadata)
 
 			if self.trailing_stop_pct > 0 and low_px <= trail_px:
 				metadata["trade_condition"] = "TRAILING_STOP"
 				metadata["order_reason"] = "TRAILING_STOP_LONG"
 				metadata["exit_type"] = "TRAILING_STOP"
 				self._reset_position("TRAILING_STOP")
-				return self.sell(candle.close, "TRAILING_STOP_LONG", metadata)
+				exit_px = min(candle.close, trail_px)
+				return self.sell(exit_px, "TRAILING_STOP_LONG", metadata)
 
 		if self.position_side == "SHORT" and self.entry_price is not None:
 			self.lowest_since_entry = min(self.lowest_since_entry or low_px, low_px)
@@ -214,23 +216,25 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 				metadata["order_reason"] = "STOP_LOSS_SHORT"
 				metadata["exit_type"] = "STOP_LOSS"
 				self._reset_position("STOP_LOSS")
-				return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
+				exit_px = max(candle.close, sl_px)
+				return self.buy(exit_px, "STOP_LOSS_SHORT", metadata)
 
 			if self.take_profit_pct > 0 and low_px <= tp_px:
 				metadata["trade_condition"] = "TAKE_PROFIT"
 				metadata["order_reason"] = "TAKE_PROFIT_SHORT"
 				metadata["exit_type"] = "TAKE_PROFIT"
 				self._reset_position("TAKE_PROFIT")
-				return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
+				return self.buy(tp_px, "TAKE_PROFIT_SHORT", metadata)
 
 			if self.trailing_stop_pct > 0 and high_px >= trail_px:
 				metadata["trade_condition"] = "TRAILING_STOP"
 				metadata["order_reason"] = "TRAILING_STOP_SHORT"
 				metadata["exit_type"] = "TRAILING_STOP"
 				self._reset_position("TRAILING_STOP")
-				return self.buy(candle.close, "TRAILING_STOP_SHORT", metadata)
+				exit_px = max(candle.close, trail_px)
+				return self.buy(exit_px, "TRAILING_STOP_SHORT", metadata)
 
-		if self.cooldown > 0:
+		if entry_cooldown_active:
 			return None
 
 		long_cond = candle.close > vwap_px and candle.close > ema_px and vol_ok
