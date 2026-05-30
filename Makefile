@@ -29,7 +29,7 @@ build-strategy:
 		. --no-cache
 
 up-service:
-	@docker compose -f docker-compose.yml --profile=infra --profile=app up -d --build
+	@docker compose --profile=infra --profile=app up -d --build
 
 build-and-run:
 	$(MAKE) build-strategy
