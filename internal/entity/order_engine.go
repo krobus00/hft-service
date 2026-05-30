@@ -126,6 +126,7 @@ type OrderRequest struct {
 	RequestID        string          `json:"request_id"`
 	UserID           string          `json:"user_id"`
 	OrderID          *string         `json:"order_id"`
+	EntryOrderID     string          `json:"entry_order_id"`
 	Exchange         string          `json:"exchange"`
 	MarketType       string          `json:"market_type"`
 	PositionSide     string          `json:"position_side"`
@@ -157,6 +158,7 @@ type OrderRequestEvent struct {
 
 type OrderNotification struct {
 	RequestID      string `json:"request_id"`
+	EntryOrderID   string `json:"entry_order_id"`
 	Exchange       string `json:"exchange"`
 	MarketType     string `json:"market_type"`
 	StrategyID     string `json:"strategy_id,omitempty"`
@@ -186,6 +188,7 @@ type OrderHistory struct {
 	PositionSide      string           `db:"position_side" json:"position_side"`
 	Symbol            string           `db:"symbol" json:"symbol"`
 	OrderID           string           `db:"order_id" json:"order_id"`
+	EntryOrderID      string           `db:"entry_order_id" json:"entry_order_id"`
 	ClientOrderID     sql.NullString   `db:"client_order_id" json:"client_order_id"`
 	Side              OrderSide        `db:"side" json:"side"`
 	Type              OrderType        `db:"type" json:"type"`
