@@ -34,4 +34,4 @@ up-service:
 build-and-run:
 	$(MAKE) build-strategy
 	$(MAKE) up-service
-	$(MAKE) run-strategy
+	$(MAKE) rerun-all-strategy
