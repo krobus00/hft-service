@@ -2,6 +2,7 @@ import asyncio
 import copy
 import re
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 import asyncpg
@@ -237,6 +238,44 @@ class StrategyRunner:
     def _is_exit_trade_condition(trade_condition: str) -> bool:
         normalized = str(trade_condition or "").strip().upper()
         return normalized in {"EXIT", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"}
+
+    @classmethod
+    def _to_jsonable(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+
+        if isinstance(value, dict):
+            return {str(k): cls._to_jsonable(v) for k, v in value.items()}
+
+        if isinstance(value, (list, tuple, set, deque)):
+            return [cls._to_jsonable(v) for v in value]
+
+        if hasattr(value, "isoformat"):
+            try:
+                return value.isoformat()
+            except Exception:
+                pass
+
+        slots = getattr(value, "__slots__", None)
+        if slots:
+            if isinstance(slots, str):
+                slots = (slots,)
+            out: Dict[str, Any] = {}
+            for slot in slots:
+                if hasattr(value, slot):
+                    out[str(slot)] = cls._to_jsonable(getattr(value, slot))
+            if out:
+                return out
+
+        if hasattr(value, "__dict__"):
+            try:
+                raw = vars(value)
+                if raw:
+                    return {str(k): cls._to_jsonable(v) for k, v in raw.items()}
+            except Exception:
+                pass
+
+        return str(value)
 
     def _safe_token(self, value: str, fallback: str = "NA") -> str:
         token = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip())
@@ -507,6 +546,9 @@ class StrategyRunner:
         refresh_interval_sec = 10
         no_pairs_logged = False
         last_active_summary = ""
+        monitor_server: Optional[asyncio.AbstractServer] = None
+        started_at_ms = now_ms()
+        last_reconcile_ms = 0
 
         def build_handler(pair_key: str):
             async def handler(msg):
@@ -634,13 +676,15 @@ class StrategyRunner:
             return handler
 
         async def reconcile_pairs() -> None:
-            nonlocal no_pairs_logged, last_active_summary
+            nonlocal no_pairs_logged, last_active_summary, last_reconcile_ms
 
             try:
                 desired_pairs = await self.load_strategy_targets_from_order_configs()
             except Exception as exc:
                 print(f"Failed loading strategy_order_configs: {exc}", flush=True)
                 return
+
+            last_reconcile_ms = now_ms()
 
             active_keys = set(active_pairs.keys())
             desired_keys = set(desired_pairs.keys())
@@ -712,6 +756,8 @@ class StrategyRunner:
                 active_pairs[key] = {
                     "target": target,
                     "subscription": sub,
+                    "subject": subject,
+                    "queue": queue_name,
                 }
                 print(
                     f"Subscribed pair={key} subject={subject} queue={queue_name}",
@@ -732,8 +778,188 @@ class StrategyRunner:
                 no_pairs_logged = True
                 last_active_summary = ""
 
-        while True:
-            if nc.is_closed:
-                raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
-            await reconcile_pairs()
-            await asyncio.sleep(refresh_interval_sec)
+        async def monitor_payload() -> Dict[str, Any]:
+            def _slice_by_tokens(values: Dict[str, Any], tokens: tuple[str, ...]) -> Dict[str, Any]:
+                out: Dict[str, Any] = {}
+                for key, value in values.items():
+                    normalized = str(key).strip().lower()
+                    if any(token in normalized for token in tokens):
+                        out[key] = value
+                return out
+
+            async with state_lock:
+                active_pair_map = {key: ctx.get("target", {}) for key, ctx in active_pairs.items()}
+                state_by_pair = {key: self._to_jsonable(value) for key, value in state_store.items()}
+                subscriptions = {
+                    key: {
+                        "subject": str(ctx.get("subject", "")),
+                        "queue": str(ctx.get("queue", "")),
+                        "target": self._to_jsonable(ctx.get("target", {})),
+                    }
+                    for key, ctx in active_pairs.items()
+                }
+
+            risk_tokens = (
+                "risk",
+                "stop",
+                "sl",
+                "tp",
+                "take_profit",
+                "trailing",
+                "max_hold",
+                "cooldown",
+                "pause",
+                "loss",
+                "entry",
+                "position",
+            )
+            indicator_tokens = (
+                "ema",
+                "vwap",
+                "macd",
+                "atr",
+                "rsi",
+                "vol",
+                "volume",
+                "mean",
+                "hist",
+                "spread",
+            )
+
+            strategy_state_by_pair: Dict[str, Any] = {}
+            for pair_key, state_value in state_by_pair.items():
+                as_dict = state_value if isinstance(state_value, dict) else {"raw": state_value}
+                strategy_state_by_pair[pair_key] = {
+                    "all_variables": as_dict,
+                    "risk_config": _slice_by_tokens(as_dict, risk_tokens),
+                    "indicator_state": _slice_by_tokens(as_dict, indicator_tokens),
+                }
+
+            return {
+                "status": "ok",
+                "strategy": {
+                    "name": self.strategy.config.name,
+                    "strategy_id": self.runtime.strategy_id,
+                    "source": self.runtime.source,
+                },
+                "strategy_config": self._to_jsonable(vars(self.strategy.config)),
+                "runtime_config": self._to_jsonable(vars(self.runtime)),
+                "runtime": {
+                    "nats_url": self.runtime.nats_url,
+                    "order_subject": self.runtime.order_subject,
+                    "enable_intrabar_risk_exit": self.runtime.enable_intrabar_risk_exit,
+                    "monitor": {
+                        "enabled": self.runtime.monitor_enabled,
+                        "host": self.runtime.monitor_host,
+                        "port": self.runtime.monitor_port,
+                    },
+                },
+                "health": {
+                    "started_at_ms": started_at_ms,
+                    "now_ms": now_ms(),
+                    "uptime_sec": max(0, (now_ms() - started_at_ms) // 1000),
+                    "nats_connected": bool(nc.is_connected),
+                    "nats_closed": bool(nc.is_closed),
+                    "last_reconcile_ms": last_reconcile_ms,
+                },
+                "active_pairs_count": len(active_pair_map),
+                "active_pairs": active_pair_map,
+                "subscriptions": subscriptions,
+                "state_store": state_by_pair,
+                "strategy_state_by_pair": strategy_state_by_pair,
+            }
+
+        async def monitor_response(path: str) -> tuple[int, Dict[str, Any]]:
+            normalized = str(path or "/").split("?", 1)[0]
+            if normalized in {"/_internal/health", "/_internal/healthz"}:
+                return 200, {
+                    "status": "ok",
+                    "strategy": self.strategy.config.name,
+                    "started_at_ms": started_at_ms,
+                    "nats_connected": bool(nc.is_connected),
+                    "nats_closed": bool(nc.is_closed),
+                }
+
+            if normalized in {"/_internal/ready", "/_internal/readyz", "/_internal/readiness"}:
+                ready = bool(nc.is_connected) and not bool(nc.is_closed) and len(active_pairs) > 0
+                status_code = 200 if ready else 503
+                return status_code, {
+                    "ready": ready,
+                    "checks": {
+                        "nats_connected": bool(nc.is_connected),
+                        "nats_not_closed": not bool(nc.is_closed),
+                        "has_active_pairs": len(active_pairs) > 0,
+                    },
+                    "active_pairs_count": len(active_pairs),
+                }
+
+            if normalized in {"/_internal/state", "/_internal/statez"}:
+                return 200, await monitor_payload()
+
+            return 404, {
+                "error": "not_found",
+            }
+
+        async def monitor_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                raw = await reader.read(4096)
+                first_line = raw.split(b"\r\n", 1)[0].decode("utf-8", errors="ignore")
+                parts = first_line.split(" ")
+                path = parts[1] if len(parts) >= 2 else "/"
+
+                status_code, payload = await monitor_response(path)
+                reason = {
+                    200: "OK",
+                    404: "Not Found",
+                    503: "Service Unavailable",
+                }.get(status_code, "OK")
+                body = orjson.dumps(self._to_jsonable(payload))
+                headers = (
+                    f"HTTP/1.1 {status_code} {reason}\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode("utf-8")
+                writer.write(headers + body)
+                await writer.drain()
+            except Exception as exc:
+                err = orjson.dumps({"error": f"monitor_handler_error:{type(exc).__name__}"})
+                writer.write(
+                    b"HTTP/1.1 500 Internal Server Error\r\n"
+                    b"Content-Type: application/json\r\n"
+                    + f"Content-Length: {len(err)}\r\n".encode("utf-8")
+                    + b"Connection: close\r\n\r\n"
+                    + err
+                )
+                try:
+                    await writer.drain()
+                except Exception:
+                    pass
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        if self.runtime.monitor_enabled and self.runtime.monitor_port > 0:
+            monitor_server = await asyncio.start_server(
+                monitor_handler,
+                host=self.runtime.monitor_host,
+                port=self.runtime.monitor_port,
+            )
+            print(
+                f"[{self.strategy.config.name}] monitor listening on http://{self.runtime.monitor_host}:{self.runtime.monitor_port} endpoints=/healthz,/readyz,/state",
+                flush=True,
+            )
+
+        try:
+            while True:
+                if nc.is_closed:
+                    raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
+                await reconcile_pairs()
+                await asyncio.sleep(refresh_interval_sec)
+        finally:
+            if monitor_server is not None:
+                monitor_server.close()
+                await monitor_server.wait_closed()
