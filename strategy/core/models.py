@@ -52,3 +52,6 @@ class RuntimeConfig:
     order_qty: float
     limit_slippage_pct: float
     enable_intrabar_risk_exit: bool = False
+    monitor_enabled: bool = True
+    monitor_host: str = "127.0.0.1"
+    monitor_port: int = 0
