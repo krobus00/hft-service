@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any, Dict, Optional, Tuple
 
+import httpx
 from openai import OpenAI
 import uvloop
 
@@ -128,6 +129,7 @@ class AIHybridStrategy(StrategyBase):
         "cooldown",
         "bar_count",
         "ai_client",
+        "_http_client",
         "base_url",
         "use_ai",
         "model_name",
@@ -284,16 +286,35 @@ class AIHybridStrategy(StrategyBase):
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
 
+        self._http_client = None
         if self.use_ai and api_key:
             try:
-                self.ai_client = OpenAI(**client_kwargs)
+                # Use an explicit httpx client to avoid known destructor issues
+                # in some OpenAI/httpx version combinations.
+                self._http_client = httpx.Client()
+                self.ai_client = OpenAI(http_client=self._http_client, **client_kwargs)
             except Exception as exc:
+                with suppress(Exception):
+                    if self._http_client is not None:
+                        self._http_client.close()
+                self._http_client = None
                 raise RuntimeError(
                     f"Failed to initialize OpenAI client: {type(exc).__name__}:{exc}. "
                     "Check openai/httpx package compatibility."
                 ) from exc
         else:
             self.ai_client = None
+
+    def close_ai_clients(self):
+        if self.ai_client is not None:
+            with suppress(Exception):
+                self.ai_client.close()
+            self.ai_client = None
+
+        if self._http_client is not None:
+            with suppress(Exception):
+                self._http_client.close()
+            self._http_client = None
 
     def _local_signal(self, candle: Candle, ema_fast: float, ema_slow: float, vwap_px: float, macd_hist: float, atr: float):
         trend_up = ema_fast > ema_slow and candle.close > ema_slow
@@ -1495,9 +1516,7 @@ async def run():
     try:
         await runner.run()
     finally:
-        if strategy.ai_client is not None:
-            with suppress(Exception):
-                strategy.ai_client.close()
+        strategy.close_ai_clients()
 
 
 if __name__ == "__main__":
