@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Optional
 import asyncpg
 import orjson
 from nats.aio.client import Client as NATS
+import threading
 
 from .common import fmt_num, gen_id, now_ms, parse_iso_to_ms, pct_to_frac
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .models import Candle, RuntimeConfig, Signal, StrategyConfig
 
 
@@ -574,8 +576,29 @@ class StrategyRunner:
         refresh_interval_sec = 10
         no_pairs_logged = False
         last_active_summary = ""
-        monitor_server: Optional[asyncio.AbstractServer] = None
         started_at_ms = now_ms()
+        monitor_server: Optional[ThreadingHTTPServer] = None
+        monitor_thread: Optional[threading.Thread] = None
+        monitor_cache_lock = threading.Lock()
+        monitor_cache: Dict[str, Any] = {
+            "health": {
+                "status": "starting",
+                "strategy": self.strategy.config.name,
+                "started_at_ms": started_at_ms,
+                "nats_connected": False,
+                "nats_closed": False,
+            },
+            "ready": {
+                "ready": False,
+                "checks": {
+                    "nats_connected": False,
+                    "nats_not_closed": True,
+                    "has_active_pairs": False,
+                },
+                "active_pairs_count": 0,
+            },
+            "state": {},
+        }
         last_reconcile_ms = 0
 
         def build_handler(pair_key: str):
@@ -792,12 +815,22 @@ class StrategyRunner:
                 subject = self._resolve_subject_for_exchange(target["exchange"])
                 queue_scope = f"{target['strategy']}_{target['symbol']}_{target['market_type']}_{target['interval']}"
                 queue_name = self._resolve_queue_name(target["exchange"], target["market_type"], queue_scope)
-                sub = await js.subscribe(
-                    subject,
-                    manual_ack=True,
-                    queue=queue_name,
-                    cb=build_handler(key),
-                )
+                try:
+                    sub = await js.subscribe(
+                        subject,
+                        manual_ack=True,
+                        queue=queue_name,
+                        cb=build_handler(key),
+                    )
+                except Exception as exc:
+                    print(
+                        (
+                            f"subscribe error for pair={key} subject={subject} queue={queue_name} "
+                            f"error={type(exc).__name__}:{exc}; will retry on next reconcile"
+                        ),
+                        flush=True,
+                    )
+                    continue
                 active_pairs[key] = {
                     "target": target,
                     "subscription": sub,
@@ -912,85 +945,71 @@ class StrategyRunner:
                 "strategy_state_by_pair": strategy_state_by_pair,
             }
 
-        async def monitor_response(path: str) -> tuple[int, Dict[str, Any]]:
-            normalized = str(path or "/").split("?", 1)[0]
-            if normalized in {"/_internal/health", "/_internal/healthz"}:
-                return 200, {
-                    "status": "ok",
-                    "strategy": self.strategy.config.name,
-                    "started_at_ms": started_at_ms,
-                    "nats_connected": bool(nc.is_connected),
-                    "nats_closed": bool(nc.is_closed),
-                }
-
-            if normalized in {"/_internal/ready", "/_internal/readyz", "/_internal/readiness"}:
-                ready = bool(nc.is_connected) and not bool(nc.is_closed) and len(active_pairs) > 0
-                status_code = 200 if ready else 503
-                return status_code, {
-                    "ready": ready,
-                    "checks": {
-                        "nats_connected": bool(nc.is_connected),
-                        "nats_not_closed": not bool(nc.is_closed),
-                        "has_active_pairs": len(active_pairs) > 0,
-                    },
-                    "active_pairs_count": len(active_pairs),
-                }
-
-            if normalized in {"/_internal/state", "/_internal/statez"}:
-                return 200, await monitor_payload()
-
-            return 404, {
-                "error": "not_found",
+        async def refresh_monitor_cache() -> None:
+            state_payload = await monitor_payload()
+            health_payload = {
+                "status": "ok",
+                "strategy": self.strategy.config.name,
+                "started_at_ms": started_at_ms,
+                "nats_connected": bool(nc.is_connected),
+                "nats_closed": bool(nc.is_closed),
             }
+            ready_payload = {
+                "ready": bool(nc.is_connected) and not bool(nc.is_closed) and len(active_pairs) > 0,
+                "checks": {
+                    "nats_connected": bool(nc.is_connected),
+                    "nats_not_closed": not bool(nc.is_closed),
+                    "has_active_pairs": len(active_pairs) > 0,
+                },
+                "active_pairs_count": len(active_pairs),
+            }
+            with monitor_cache_lock:
+                monitor_cache["state"] = state_payload
+                monitor_cache["health"] = health_payload
+                monitor_cache["ready"] = ready_payload
 
-        async def monitor_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            try:
-                raw = await reader.read(4096)
-                first_line = raw.split(b"\r\n", 1)[0].decode("utf-8", errors="ignore")
-                parts = first_line.split(" ")
-                path = parts[1] if len(parts) >= 2 else "/"
+        class MonitorHandler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
 
-                status_code, payload = await monitor_response(path)
-                reason = {
-                    200: "OK",
-                    404: "Not Found",
-                    503: "Service Unavailable",
-                }.get(status_code, "OK")
-                body = orjson.dumps(self._to_jsonable(payload))
-                headers = (
-                    f"HTTP/1.1 {status_code} {reason}\r\n"
-                    "Content-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\n"
-                    "Connection: close\r\n\r\n"
-                ).encode("utf-8")
-                writer.write(headers + body)
-                await writer.drain()
-            except Exception as exc:
-                err = orjson.dumps({"error": f"monitor_handler_error:{type(exc).__name__}"})
-                writer.write(
-                    b"HTTP/1.1 500 Internal Server Error\r\n"
-                    b"Content-Type: application/json\r\n"
-                    + f"Content-Length: {len(err)}\r\n".encode("utf-8")
-                    + b"Connection: close\r\n\r\n"
-                    + err
-                )
-                try:
-                    await writer.drain()
-                except Exception:
-                    pass
-            finally:
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except Exception:
-                    pass
+            def _write_json(self, code: int, payload: Dict[str, Any]) -> None:
+                body = orjson.dumps(StrategyRunner._to_jsonable(payload))
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:  # noqa: N802
+                path = str(self.path or "/").split("?", 1)[0]
+                with monitor_cache_lock:
+                    health_payload = copy.deepcopy(monitor_cache.get("health", {}))
+                    ready_payload = copy.deepcopy(monitor_cache.get("ready", {}))
+                    state_payload = copy.deepcopy(monitor_cache.get("state", {}))
+
+                if path in {"/_internal/health", "/_internal/healthz"}:
+                    self._write_json(200, health_payload)
+                    return
+
+                if path in {"/_internal/ready", "/_internal/readyz", "/_internal/readiness"}:
+                    status_code = 200 if bool(ready_payload.get("ready")) else 503
+                    self._write_json(status_code, ready_payload)
+                    return
+
+                if path in {"/_internal/state", "/_internal/statez"}:
+                    self._write_json(200, state_payload)
+                    return
+
+                self._write_json(404, {"error": "not_found"})
 
         if self.runtime.monitor_enabled and self.runtime.monitor_port > 0:
-            monitor_server = await asyncio.start_server(
-                monitor_handler,
-                host=self.runtime.monitor_host,
-                port=self.runtime.monitor_port,
+            monitor_server = ThreadingHTTPServer(
+                (self.runtime.monitor_host, self.runtime.monitor_port),
+                MonitorHandler,
             )
+            monitor_server.daemon_threads = True
+            monitor_thread = threading.Thread(target=monitor_server.serve_forever, daemon=True)
+            monitor_thread.start()
             print(
                 f"[{self.strategy.config.name}] monitor listening on http://{self.runtime.monitor_host}:{self.runtime.monitor_port} endpoints=/healthz,/readyz,/state",
                 flush=True,
@@ -1001,8 +1020,11 @@ class StrategyRunner:
                 if nc.is_closed:
                     raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
                 await reconcile_pairs()
+                await refresh_monitor_cache()
                 await asyncio.sleep(refresh_interval_sec)
         finally:
             if monitor_server is not None:
-                monitor_server.close()
-                await monitor_server.wait_closed()
+                monitor_server.shutdown()
+                monitor_server.server_close()
+            if monitor_thread is not None:
+                monitor_thread.join(timeout=2)
