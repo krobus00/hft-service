@@ -142,16 +142,16 @@ services:
         condition: service_completed_successfully
     ports:
       - "19011:19011"
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19011/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19011/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
-        ]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
+    # healthcheck:
+    #   test:
+    #     [
+    #       "CMD-SHELL",
+    #       "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19011/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19011/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
+    #     ]
+    #   interval: 10s
+    #   timeout: 3s
+    #   retries: 10
+    #   start_period: 30s
     restart: unless-stopped
     profiles:
       - strategy
@@ -177,16 +177,16 @@ services:
         condition: service_completed_successfully
     ports:
       - "19012:19012"
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19012/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19012/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
-        ]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
+    # healthcheck:
+    #   test:
+    #     [
+    #       "CMD-SHELL",
+    #       "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19012/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19012/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
+    #     ]
+    #   interval: 10s
+    #   timeout: 3s
+    #   retries: 10
+    #   start_period: 30s
     restart: unless-stopped
     profiles:
       - strategy
