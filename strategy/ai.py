@@ -478,6 +478,14 @@ class AIHybridStrategy(StrategyBase):
         return f"{text[:limit]}...<truncated:{len(text)-limit}>"
 
     @staticmethod
+    def _resolve_order_reason(default_reason: str, metadata: Dict[str, Any]) -> str:
+        ai_reason = metadata.get("ai_reason") if isinstance(metadata, dict) else None
+        reason_text = " ".join(str(ai_reason or "").split()).strip()
+        if reason_text:
+            return reason_text[:255]
+        return str(default_reason or "")[:255]
+
+    @staticmethod
     def _macd_condition(macd_hist: float) -> str:
         if macd_hist > 0:
             return "bullish"
@@ -1173,7 +1181,7 @@ class AIHybridStrategy(StrategyBase):
                 tagged_metadata["trade_condition"] = "TRAILING_STOP"
             else:
                 tagged_metadata["trade_condition"] = "EXIT"
-        tagged_metadata["order_reason"] = reason[:255]
+        tagged_metadata["order_reason"] = self._resolve_order_reason(reason, tagged_metadata)
         if reason.startswith("TAKE_PROFIT"):
             tagged_metadata["exit_type"] = "TAKE_PROFIT"
         elif reason.startswith("STOP_LOSS"):
@@ -1218,7 +1226,7 @@ class AIHybridStrategy(StrategyBase):
                 tagged_metadata["trade_condition"] = "TRAILING_STOP"
             else:
                 tagged_metadata["trade_condition"] = "EXIT"
-        tagged_metadata["order_reason"] = reason[:255]
+        tagged_metadata["order_reason"] = self._resolve_order_reason(reason, tagged_metadata)
         if reason.startswith("TAKE_PROFIT"):
             tagged_metadata["exit_type"] = "TAKE_PROFIT"
         elif reason.startswith("STOP_LOSS"):
@@ -1403,7 +1411,7 @@ class AIHybridStrategy(StrategyBase):
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
-                    metadata["order_reason"] = "ENTER_LONG_AI"
+                    metadata["order_reason"] = self._resolve_order_reason("ENTER_LONG_AI", metadata)
                     metadata["exit_type"] = ""
                     signal = self.buy(candle.close, "ENTER_LONG_AI", metadata)
                 elif final_action == "SELL":
@@ -1426,7 +1434,7 @@ class AIHybridStrategy(StrategyBase):
                     self.bars_in_pos = 0
                     self.cooldown = self.cooldown_bars
                     metadata["trade_condition"] = "ENTRY"
-                    metadata["order_reason"] = "ENTER_SHORT_AI"
+                    metadata["order_reason"] = self._resolve_order_reason("ENTER_SHORT_AI", metadata)
                     metadata["exit_type"] = ""
                     signal = self.sell(candle.close, "ENTER_SHORT_AI", metadata)
 

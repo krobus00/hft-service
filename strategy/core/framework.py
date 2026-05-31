@@ -192,9 +192,38 @@ class StrategyRunner:
             return ""
         return fmt_num(float(value))
 
+    @staticmethod
+    def _infer_pnl_direction(
+        side: str,
+        reason: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        # Prefer explicit trade direction when present.
+        if metadata:
+            for key in ("position_side", "position", "side", "trade_side"):
+                raw = str(metadata.get(key, "")).strip().upper()
+                if raw in {"LONG", "BUY"}:
+                    return "LONG"
+                if raw in {"SHORT", "SELL"}:
+                    return "SHORT"
+
+        normalized_reason = str(reason or "").strip().upper()
+        if "SHORT" in normalized_reason:
+            return "SHORT"
+        if "LONG" in normalized_reason:
+            return "LONG"
+
+        normalized_side = str(side or "").strip().upper()
+        if normalized_side in {"BUY", "LONG"}:
+            return "SHORT"
+        if normalized_side in {"SELL", "SHORT"}:
+            return "LONG"
+        return ""
+
     def infer_entry_exit_and_pnl(
         self,
         side: str,
+        reason: str,
         signal_price: float,
         trade_condition: str,
         metadata: Optional[Dict[str, Any]] = None,
@@ -223,10 +252,10 @@ class StrategyRunner:
             and entry_price > 0
             and trade_condition in {"EXIT", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"}
         ):
-            normalized_side = str(side or "").strip().upper()
-            if normalized_side == "SELL":
+            pnl_direction = self._infer_pnl_direction(side=side, reason=reason, metadata=metadata)
+            if pnl_direction == "LONG":
                 pnl_percentage = ((exit_price - entry_price) / entry_price) * 100.0
-            elif normalized_side == "BUY":
+            elif pnl_direction == "SHORT":
                 pnl_percentage = ((entry_price - exit_price) / entry_price) * 100.0
 
         return (
@@ -417,6 +446,7 @@ class StrategyRunner:
         exit_type = self.infer_exit_type(reason, metadata)
         entry_price, exit_price, pnl_percentage = self.infer_entry_exit_and_pnl(
             side=side,
+            reason=reason,
             signal_price=px,
             trade_condition=trade_condition,
             metadata=metadata,
