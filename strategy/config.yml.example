@@ -31,10 +31,6 @@ krobot01:
   order_subject: order_engine.place_order
   queue_name: KLINE_STRATEGY_TOKOCRYPTO_KROBOT01
 
-  order_type: LIMIT
-  order_qty: 10
-  limit_slippage_pct: 0.02
-
   ema_period: 200
   vwap_window: 200
   macd_fast: 12
@@ -58,10 +54,6 @@ krobot02:
   kline_subject: KLINE.TOKOCRYPTO.>
   order_subject: order_engine.place_order
   queue_name: KLINE_STRATEGY_TOKOCRYPTO_KROBOT02
-
-  order_type: LIMIT
-  order_qty: 10
-  limit_slippage_pct: 0.02
 
   historical_limit: 800
 
@@ -89,10 +81,6 @@ template:
   order_subject: order_engine.place_order
   queue_name: KLINE_STRATEGY_TEMPLATE
 
-  order_type: LIMIT
-  order_qty: 10
-  limit_slippage_pct: 0.02
-
   cooldown_bars: 1
 
   monitor_port: 19019
@@ -113,10 +101,6 @@ ai:
   order_subject: order_engine.place_order
   queue_name: KLINE_STRATEGY_BINANCE_AI
 
-  order_type: MARKET
-  order_qty: 10
-  limit_slippage_pct: 0.02
-
   # AI settings
   use_ai: true
   ai_model: MiniMax-M2.7
@@ -135,3 +119,27 @@ ai:
   rsi_period: 14
 
   monitor_port: 19013
+
+supertrend:
+  name: SUPERTREND
+  exchange: binance
+  market_type: futures
+  position_side: ONE_WAY
+  source: python-supertrend
+  strategy_id: python-supertrend
+  need_notification: true
+  is_paper_trading: true
+
+  kline_subject: KLINE.BINANCE.>
+  order_subject: order_engine.place_order
+  queue_name: KLINE_STRATEGY_BINANCE_SUPERTREND
+
+  # Supertrend indicator settings
+  atr_period: 10
+  multiplier: 3.0
+  historical_limit: 600
+
+  # This strategy intentionally has no TP/SL/trailing risk controls.
+  enable_intrabar_risk_exit: false
+
+  monitor_port: 19014
