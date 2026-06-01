@@ -35,6 +35,7 @@ var tokocryptoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 type TokocryptoExchange struct {
 	apiKey     string
 	apiSecret  string
+	userCredentials map[string]config.ExchangeAccountConfig
 	baseURL    string
 	recvWindow int64
 	httpClient *http.Client
@@ -72,6 +73,7 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 	newExchange := &TokocryptoExchange{
 		apiKey:            strings.TrimSpace(exchangeConfig.APIKey),
 		apiSecret:         strings.TrimSpace(exchangeConfig.APISecret),
+		userCredentials:   make(map[string]config.ExchangeAccountConfig),
 		baseURL:           strings.TrimRight(baseURL, "/"),
 		recvWindow:        recvWindow,
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
@@ -80,11 +82,51 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
 	}
+	for rawUserID, account := range exchangeConfig.Accounts {
+		userID := strings.TrimSpace(rawUserID)
+		if userID == "" {
+			continue
+		}
+		newExchange.userCredentials[userID] = config.ExchangeAccountConfig{
+			APIKey:    strings.TrimSpace(account.APIKey),
+			APISecret: strings.TrimSpace(account.APISecret),
+		}
+	}
 	persistSymbolMapping(&newExchange.symbolMapping, symbolMapping)
+
+	logrus.WithFields(logrus.Fields{
+		"account_count": len(newExchange.userCredentials),
+		"base_url":      newExchange.baseURL,
+	}).Info("tokocrypto exchange initialized")
 
 	RegisterExchange(entity.ExchangeTokoCrypto, newExchange)
 
 	return newExchange
+}
+
+func (e *TokocryptoExchange) credentialsForUser(userID string) (string, string, error) {
+	trimmedUserID := strings.TrimSpace(userID)
+	if trimmedUserID != "" {
+		if account, ok := e.userCredentials[trimmedUserID]; ok {
+			apiKey := strings.TrimSpace(account.APIKey)
+			apiSecret := strings.TrimSpace(account.APISecret)
+			if apiKey != "" && apiSecret != "" {
+				return apiKey, apiSecret, nil
+			}
+			return "", "", fmt.Errorf("tokocrypto credentials are missing for user_id=%s", trimmedUserID)
+		}
+	}
+
+	apiKey := strings.TrimSpace(e.apiKey)
+	apiSecret := strings.TrimSpace(e.apiSecret)
+	if apiKey == "" || apiSecret == "" {
+		if trimmedUserID != "" {
+			return "", "", fmt.Errorf("tokocrypto credentials are missing for user_id=%s and no default credentials configured", trimmedUserID)
+		}
+		return "", "", fmt.Errorf("tokocrypto credentials are missing in config")
+	}
+
+	return apiKey, apiSecret, nil
 }
 
 func (e *TokocryptoExchange) JetstreamEventInit(ctx context.Context) error {
@@ -354,8 +396,9 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if e.apiKey == "" || e.apiSecret == "" {
-		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
+	apiKey, apiSecret, err := e.credentialsForUser(order.UserID)
+	if err != nil {
+		return nil, err
 	}
 
 	deps := exchangeKlineResyncDeps{
@@ -430,7 +473,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := hmacSHA256Hex(e.apiSecret, payload)
+	signature := hmacSHA256Hex(apiSecret, payload)
 	bodyPayload := payload + "&signature=" + signature
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("TOKOCRYPTO_DEBUG_SIGN")), "true") {
@@ -445,7 +488,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, err
 	}
 
-	req.Header.Set("X-MBX-APIKEY", e.apiKey)
+	req.Header.Set("X-MBX-APIKEY", apiKey)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := e.httpClient.Do(req)
@@ -516,8 +559,9 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if e.apiKey == "" || e.apiSecret == "" {
-		return nil, fmt.Errorf("tokocrypto credentials are missing in config")
+	apiKey, apiSecret, err := e.credentialsForUser(orderHistory.UserID)
+	if err != nil {
+		return nil, err
 	}
 
 	deps := exchangeKlineResyncDeps{
@@ -555,7 +599,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := hmacSHA256Hex(e.apiSecret, payload)
+	signature := hmacSHA256Hex(apiSecret, payload)
 	endpoint := e.baseURL + "/open/v1/orders/detail?" + payload + "&signature=" + signature
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -563,7 +607,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 		return nil, err
 	}
 
-	req.Header.Set("X-MBX-APIKEY", e.apiKey)
+	req.Header.Set("X-MBX-APIKEY", apiKey)
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {

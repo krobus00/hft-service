@@ -50,7 +50,6 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
         nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
         order_subject=section.get("order_subject", "order_engine.place_order"),
-        user_id=section.get("user_id", "paper-1"),
         position_side=section.get("position_side", "BOTH"),
         source=section.get("source", "python-template"),
         strategy_id=section.get("strategy_id", "python-template"),

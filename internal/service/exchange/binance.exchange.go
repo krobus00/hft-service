@@ -35,6 +35,7 @@ var binanceClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 type BinanceExchange struct {
 	apiKey            string
 	apiSecret         string
+	userCredentials   map[string]config.ExchangeAccountConfig
 	spotBaseURL       string
 	futuresBaseURL    string
 	defaultMarketType entity.MarketType
@@ -86,6 +87,7 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 	newExchange := &BinanceExchange{
 		apiKey:            strings.TrimSpace(exchangeConfig.APIKey),
 		apiSecret:         strings.TrimSpace(exchangeConfig.APISecret),
+		userCredentials:   make(map[string]config.ExchangeAccountConfig),
 		spotBaseURL:       strings.TrimRight(spotBaseURL, "/"),
 		futuresBaseURL:    strings.TrimRight(futuresBaseURL, "/"),
 		defaultMarketType: defaultMarketType,
@@ -96,17 +98,53 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
 	}
+	for rawUserID, account := range exchangeConfig.Accounts {
+		userID := strings.TrimSpace(rawUserID)
+		if userID == "" {
+			continue
+		}
+		newExchange.userCredentials[userID] = config.ExchangeAccountConfig{
+			APIKey:    strings.TrimSpace(account.APIKey),
+			APISecret: strings.TrimSpace(account.APISecret),
+		}
+	}
 	persistSymbolMapping(&newExchange.symbolMapping, symbolMapping)
 
 	logrus.WithFields(logrus.Fields{
 		"default_market_type": newExchange.defaultMarketType,
 		"spot_base_url":       newExchange.spotBaseURL,
 		"futures_base_url":    newExchange.futuresBaseURL,
+		"account_count":       len(newExchange.userCredentials),
 	}).Info("binance exchange initialized")
 
 	RegisterExchange(entity.ExchangeBinance, newExchange)
 
 	return newExchange
+}
+
+func (e *BinanceExchange) credentialsForUser(userID string) (string, string, error) {
+	trimmedUserID := strings.TrimSpace(userID)
+	if trimmedUserID != "" {
+		if account, ok := e.userCredentials[trimmedUserID]; ok {
+			apiKey := strings.TrimSpace(account.APIKey)
+			apiSecret := strings.TrimSpace(account.APISecret)
+			if apiKey != "" && apiSecret != "" {
+				return apiKey, apiSecret, nil
+			}
+			return "", "", fmt.Errorf("binance credentials are missing for user_id=%s", trimmedUserID)
+		}
+	}
+
+	apiKey := strings.TrimSpace(e.apiKey)
+	apiSecret := strings.TrimSpace(e.apiSecret)
+	if apiKey == "" || apiSecret == "" {
+		if trimmedUserID != "" {
+			return "", "", fmt.Errorf("binance credentials are missing for user_id=%s and no default credentials configured", trimmedUserID)
+		}
+		return "", "", fmt.Errorf("binance credentials are missing in config")
+	}
+
+	return apiKey, apiSecret, nil
 }
 
 func (e *BinanceExchange) JetstreamEventInit(ctx context.Context) error {
@@ -458,8 +496,9 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if e.apiKey == "" || e.apiSecret == "" {
-		return nil, fmt.Errorf("binance credentials are missing in config")
+	apiKey, apiSecret, err := e.credentialsForUser(order.UserID)
+	if err != nil {
+		return nil, err
 	}
 
 	marketType := e.resolveMarketType(order.MarketType)
@@ -562,7 +601,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		)
 
 		payload := strings.Join(pairs, "&")
-		signature := binanceHMACSHA256Hex(e.apiSecret, payload)
+		signature := binanceHMACSHA256Hex(apiSecret, payload)
 		bodyPayload := payload + "&signature=" + signature
 
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("BINANCE_DEBUG_SIGN")), "true") {
@@ -577,7 +616,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 			return 0, nil, err
 		}
 
-		req.Header.Set("X-MBX-APIKEY", e.apiKey)
+		req.Header.Set("X-MBX-APIKEY", apiKey)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 		resp, err := e.httpClient.Do(req)
@@ -685,8 +724,9 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if e.apiKey == "" || e.apiSecret == "" {
-		return nil, fmt.Errorf("binance credentials are missing in config")
+	apiKey, apiSecret, err := e.credentialsForUser(orderHistory.UserID)
+	if err != nil {
+		return nil, err
 	}
 
 	marketType := e.resolveMarketType(orderHistory.MarketType)
@@ -727,7 +767,7 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := binanceHMACSHA256Hex(e.apiSecret, payload)
+	signature := binanceHMACSHA256Hex(apiSecret, payload)
 	endpoint := e.baseURLByMarketType(marketType) + e.orderPathByMarketType(marketType) + "?" + payload + "&signature=" + signature
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -735,7 +775,7 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 		return nil, err
 	}
 
-	req.Header.Set("X-MBX-APIKEY", e.apiKey)
+	req.Header.Set("X-MBX-APIKEY", apiKey)
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
