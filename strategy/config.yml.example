@@ -22,7 +22,6 @@ krobot01:
   exchange: tokocrypto
   market_type: spot
   position_side: BOTH
-  user_id: paper-1
   source: python-krobot01
   strategy_id: python-krobot01-ema200-vwap-macd
   need_notification: true
@@ -51,7 +50,6 @@ krobot02:
   exchange: tokocrypto
   market_type: spot
   position_side: BOTH
-  user_id: paper-1
   source: python-krobot02
   strategy_id: python-krobot02-vwap-volume
   need_notification: true
@@ -82,7 +80,6 @@ template:
   exchange: tokocrypto
   market_type: spot
   position_side: BOTH
-  user_id: paper-1
   source: python-template
   strategy_id: python-template
   need_notification: true
@@ -107,7 +104,6 @@ ai:
   exchange: binance
   market_type: futures
   position_side: ONE_WAY
-  user_id: minimax-01
   source: python-ai-minimax-m2-7
   strategy_id: python-ai-minimax-m2-7-hybrid
   need_notification: true

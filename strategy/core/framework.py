@@ -362,6 +362,7 @@ class StrategyRunner:
                     symbol,
                     market_type,
                     interval,
+                    user_id,
                     need_notification,
                     is_paper_trading,
                     order_type,
@@ -383,6 +384,7 @@ class StrategyRunner:
             symbol = str(row["symbol"] or "").strip().upper()
             market_type = str(row["market_type"] or "spot").strip().lower() or "spot"
             interval = str(row["interval"] or "").strip() or str(self.strategy.config.interval or "").strip()
+            user_id = str(row["user_id"] or "").strip()
             if not symbol:
                 continue
             if not exchange:
@@ -390,6 +392,8 @@ class StrategyRunner:
             if not market_type:
                 continue
             if not interval:
+                continue
+            if not user_id:
                 continue
             if not row_strategy:
                 continue
@@ -403,6 +407,7 @@ class StrategyRunner:
                 "interval": interval,
                 "order_config": {
                     "strategy": row_strategy,
+                    "user_id": user_id,
                     "order_type": str(row["order_type"] or "").strip().upper() or self.runtime.order_type,
                     "order_qty": float(row["order_qty"]),
                     "limit_slippage_pct": float(row["limit_slippage_pct"]),
@@ -433,6 +438,7 @@ class StrategyRunner:
         limit_slippage_pct = float(order_config.get("limit_slippage_pct", self.runtime.limit_slippage_pct))
         need_notification = bool(order_config.get("need_notification", self.runtime.need_notification))
         is_paper_trading = bool(order_config.get("is_paper_trading", self.runtime.is_paper_trading))
+        user_id = str(order_config.get("user_id", "")).strip()
 
         px = float(price)
         if order_type == "LIMIT":
@@ -480,7 +486,7 @@ class StrategyRunner:
             "retry": 0,
             "data": {
                 "request_id": gen_id(),
-                "user_id": self.runtime.user_id,
+                "user_id": user_id,
                 "order_id": gen_id(),
                 "exchange": exchange,
                 "market_type": market_type,
@@ -562,7 +568,7 @@ class StrategyRunner:
             raise ValueError("order_qty must be > 0")
 
         print(
-            f"[{self.strategy.config.name}] start_config strategy_id={self.runtime.strategy_id} source={self.runtime.source} user_id={self.runtime.user_id} interval={self.strategy.config.interval} warmup_limit={self.strategy.config.warmup_limit} order_subject={self.runtime.order_subject} order_type={self.runtime.order_type} order_qty={self.runtime.order_qty} limit_slippage_pct={self.runtime.limit_slippage_pct} position_side={self.runtime.position_side} need_notification={self.runtime.need_notification} is_paper_trading={self.runtime.is_paper_trading} intrabar_risk_exit={self.runtime.enable_intrabar_risk_exit}",
+            f"[{self.strategy.config.name}] start_config strategy_id={self.runtime.strategy_id} source={self.runtime.source} user_id=FROM_STRATEGY_ORDER_CONFIGS interval={self.strategy.config.interval} warmup_limit={self.strategy.config.warmup_limit} order_subject={self.runtime.order_subject} order_type={self.runtime.order_type} order_qty={self.runtime.order_qty} limit_slippage_pct={self.runtime.limit_slippage_pct} position_side={self.runtime.position_side} need_notification={self.runtime.need_notification} is_paper_trading={self.runtime.is_paper_trading} intrabar_risk_exit={self.runtime.enable_intrabar_risk_exit}",
             flush=True,
         )
 

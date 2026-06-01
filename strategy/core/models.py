@@ -42,7 +42,6 @@ class RuntimeConfig:
     nats_ping_interval_sec: int
     nats_max_outstanding_pings: int
     order_subject: str
-    user_id: str
     position_side: str
     source: str
     strategy_id: str

@@ -89,6 +89,64 @@ docker run --rm \
   bash -c "python ${STRATEGY_FILE}"
 ```
 
+## Required Runtime Configuration
+
+Before running any strategy, configure both files and DB rows:
+
+- Root config: `config.yml`
+- Strategy config: `strategy/config.yml`
+- Database table: `strategy_order_configs`
+
+### 1) Root config (`config.yml`)
+
+Configure exchange credentials. For multi-user routing, use per-user accounts:
+
+```yaml
+exchanges:
+  binance:
+    accounts:
+      minimax-01:
+        api_key: "..."
+        api_secret: "..."
+  tokocrypto:
+    accounts:
+      paper-1:
+        api_key: "..."
+        api_secret: "..."
+```
+
+### 2) Strategy config (`strategy/config.yml`)
+
+Each strategy section should define runtime identity and execution settings, for example:
+
+- `source`
+- `strategy_id`
+- `order_subject`
+- `order_type`
+- `order_qty`
+- `position_side`
+- `need_notification`
+- `is_paper_trading`
+
+Do not define `user_id` in strategy config.
+
+### 3) Strategy order configs (`strategy_order_configs`)
+
+Strategies now use pair-level `user_id` from this table (not from YAML):
+
+```sql
+INSERT INTO strategy_order_configs
+(strategy, exchange, market_type, symbol, interval, user_id, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct)
+VALUES
+('python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02);
+```
+
+Rules:
+
+- `strategy` must match strategy runtime `strategy_id`.
+- `symbol/interval/exchange/market_type` must match active market-data rows.
+- `user_id` must match a configured exchange account key.
+
 ## Project Layout
 
 Shared reusable framework in `core/`:

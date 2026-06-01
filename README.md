@@ -172,6 +172,34 @@ Update required values in `config.yml`:
 - `api_keys[*].key`
 - `notification.discord_webhook_url` (required when running `notification-service`)
 
+If you run multiple users/API keys, configure per-user exchange accounts (recommended):
+
+```yaml
+exchanges:
+  binance:
+    api_key: "default-key-optional"
+    api_secret: "default-secret-optional"
+    accounts:
+      paper-1:
+        api_key: "binance-key-user-1"
+        api_secret: "binance-secret-user-1"
+      minimax-01:
+        api_key: "binance-key-user-2"
+        api_secret: "binance-secret-user-2"
+  tokocrypto:
+    api_key: "default-key-optional"
+    api_secret: "default-secret-optional"
+    accounts:
+      paper-1:
+        api_key: "tokocrypto-key-user-1"
+        api_secret: "tokocrypto-secret-user-1"
+```
+
+Credential resolution behavior:
+
+- Order engine resolves exchange credentials by `user_id` first from `exchanges.<exchange>.accounts.<user_id>`.
+- If no account match is found, it falls back to `exchanges.<exchange>.api_key/api_secret`.
+
 Host mapping reminder:
 
 - Run app locally (`go run`): use `localhost` hosts.
@@ -240,7 +268,53 @@ VALUES
 ('4494faed-468c-46b5-b7ca-389419ad63ad', 'tokocrypto', 'spot', 'TKO_IDR', 'tkoidr', 'TKO_IDR', '2026-02-22 14:36:22.978', '2026-02-22 14:36:22.978');
 ```
 
-### 7) Run services (separate terminals)
+### 7) Seed `strategy_order_configs` (required)
+
+`user_id` is now sourced per pair from this table. Strategy runtime no longer reads `user_id` from `strategy/config.yml`.
+
+Example:
+
+```sql
+INSERT INTO strategy_order_configs
+(id, strategy, exchange, market_type, symbol, interval, user_id, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct, created_at, updated_at)
+VALUES
+('7f5f6d39-fd5b-4c94-b9f4-41c9b92e2c01', 'python-krobot01-ema200-vwap-macd', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02, NOW(), NOW()),
+('f0e8d75f-77de-448b-9eb3-9948e3a0d742', 'python-krobot02-vwap-volume', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-02', true, true, 'LIMIT', 10, 0.02, NOW(), NOW()),
+('96c50cef-07ea-42e2-b4f7-bf9f12c11a82', 'python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02, NOW(), NOW());
+```
+
+Important rules:
+
+- `strategy` must match your strategy runtime `strategy_id`.
+- `exchange/market_type/symbol/interval` must match active kline subscription + symbol mapping.
+- `user_id` must match your exchange account key path, for example `exchanges.binance.accounts.minimax-01`.
+
+### 8) Configure strategy runtime (`strategy/config.yml`)
+
+Copy and update strategy config:
+
+```bash
+copy strategy\config.yml.example strategy\config.yml
+```
+
+Minimum required settings in `strategy/config.yml`:
+
+- `global.nats_url`
+- `global.strategy_api_base_url`
+- `global.strategy_api_key`
+- `<strategy>.source`
+- `<strategy>.strategy_id`
+- `<strategy>.order_subject`
+- `<strategy>.order_type`
+- `<strategy>.order_qty`
+
+Notes:
+
+- Do not set `user_id` in strategy config anymore.
+- Strategy user routing is now pair-based from `strategy_order_configs.user_id`.
+- Keep risk controls in `global.risk_controls` (or override per strategy section).
+
+### 9) Run services (separate terminals)
 
 ```bash
 go run . market-data-gateway
@@ -318,6 +392,8 @@ This uses Docker image `python-strategy` and mounts local `strategy/` into `/app
 
 - Ensure strategy symbols match canonical internal symbol mapping (`symbol_mappings.symbol`).
 - Ensure `market_type` alignment (`spot` or `futures`) across subscriptions and mappings.
+- Ensure every active `strategy_order_configs` row has non-empty `user_id`.
+- Ensure each `strategy_order_configs.user_id` maps to configured exchange credentials.
 - Set required API keys and NATS/database hosts in `config.yml`.
 - For Python strategy tuning, check risk controls in `strategy/config.yml` (`global.risk_controls`).
 
@@ -391,7 +467,7 @@ curl --request POST \
 
 - Build analytic service that consumes market data.
 - Support HA deployment for all services.
-- Support multiple user credentials.
+- Improve multi-user credential management UX (dashboard/admin APIs).
 - Support multiple exchanges.
 - Dashboard
 

@@ -69,10 +69,16 @@ type ExchangeConfig struct {
 	Name          string          `mapstructure:"name"`
 	APIKey        string          `mapstructure:"api_key"`
 	APISecret     string          `mapstructure:"api_secret"`
+	Accounts      map[string]ExchangeAccountConfig `mapstructure:"accounts"`
 	LimitBuyFee   decimal.Decimal `mapstructure:"limit_buy_fee"`   // in percentage, e.g. 0.1 for 0.1%
 	LimitSellFee  decimal.Decimal `mapstructure:"limit_sell_fee"`  // in percentage, e.g. 0.1 for 0.1%
 	MarketBuyFee  decimal.Decimal `mapstructure:"market_buy_fee"`  // in percentage, e.g. 0.1 for 0.1%
 	MarketSellFee decimal.Decimal `mapstructure:"market_sell_fee"` // in percentage, e.g. 0.1 for 0.1%
+}
+
+type ExchangeAccountConfig struct {
+	APIKey    string `mapstructure:"api_key"`
+	APISecret string `mapstructure:"api_secret"`
 }
 
 type RedisConfig struct {
