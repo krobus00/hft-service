@@ -398,7 +398,35 @@ This uses Docker image `python-strategy` and mounts local `strategy/` into `/app
 - For Python strategy tuning, check risk controls in `strategy/config.yml` (`global.risk_controls`).
 
 ## Profit Results
-TODO
+
+All strategies below were run with approximately $30 margin and 20x leverage.
+
+Performance snapshot:
+
+- Runtime window: 2026-05-31 00:30:00 to 2026-06-01 14:47:59 (38h 17m 59s)
+- Gross profit: $56.673
+- Gross loss: $32.424
+- Net PnL: +$24.249
+
+| strategy_id   | symbol      | start_trade_date    | end_trade_date      |   total_profit |   win_rate |    avg_size |   total_trades |   winning_trades |   losing_trades |
+|:--------------|:------------|:--------------------|:--------------------|---------------:|-----------:|------------:|---------------:|-----------------:|----------------:|
+| krobot01      | BNB_USDT.P  | 2026-05-31 00:30:00 | 2026-06-01 13:44:02 |          9.647 |   0.545455 |    0.841545 |             11 |                8 |               3 |
+| krobot02      | TRX_USDT.P  | 2026-05-31 15:30:02 | 2026-06-01 07:15:04 |          8.492 |   1        | 1722.68     |              2 |                2 |               0 |
+| krobot02      | HYPE_USDT.P | 2026-05-31 07:00:04 | 2026-06-01 14:15:00 |          8.031 |   0.692308 |    8.57495  |             13 |                9 |               4 |
+| krobot02      | ETH_USDT.P  | 2026-05-31 04:30:00 | 2026-06-01 14:15:00 |          7.112 |   0.6      |    0.298091 |             10 |                6 |               4 |
+| krobot01      | TRX_USDT.P  | 2026-05-31 00:45:00 | 2026-06-01 07:09:16 |          6.456 |   0.666667 | 1721.7      |              3 |                2 |               1 |
+| ai            | ETH_USDT.P  | 2026-05-31 03:00:34 | 2026-06-01 14:47:59 |          5.596 |   0.714286 |    0.29854  |              7 |                5 |               2 |
+| krobot01      | SOL_USDT.P  | 2026-05-31 00:30:00 | 2026-06-01 13:49:45 |          5     |   0.545455 |    7.27711  |             11 |                6 |               5 |
+| ai            | HYPE_USDT.P | 2026-05-31 11:31:05 | 2026-06-01 03:12:34 |          3.113 |   0.666667 |    8.67509  |              3 |                2 |               1 |
+| krobot01      | ETH_USDT.P  | 2026-05-31 04:30:00 | 2026-06-01 14:05:09 |          2.173 |   0.444444 |    0.298796 |              9 |                4 |               5 |
+| ai            | SOL_USDT.P  | 2026-05-31 13:01:13 | 2026-06-01 12:27:27 |          1.025 |   0.5      |    7.28626  |              6 |                3 |               3 |
+| ai            | BNB_USDT.P  | 2026-05-31 23:15:41 | 2026-06-01 05:55:50 |          0.028 |   0.5      |    0.836655 |              2 |                1 |               1 |
+| ai            | TRX_USDT.P  | 2026-05-31 12:32:02 | 2026-06-01 02:16:23 |         -0.072 |   0.333333 | 1722.99     |              3 |                1 |               2 |
+| krobot01      | HYPE_USDT.P | 2026-05-31 02:30:00 | 2026-06-01 00:34:26 |         -0.847 |   0.428571 |    8.75397  |              7 |                3 |               4 |
+| krobot02      | SOL_USDT.P  | 2026-05-31 04:15:00 | 2026-06-01 14:00:04 |        -11.927 |   0.181818 |    7.27353  |             11 |                2 |               9 |
+| krobot02      | BNB_USDT.P  | 2026-05-31 01:00:00 | 2026-06-01 14:00:04 |        -19.578 |   0.181818 |    0.832617 |             11 |                2 |               9 |
+
+Final result: this service generated a net profit of approximately +$24.249 in about 38.3 hours.
 
 ## Test Order API
 
