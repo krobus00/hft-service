@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest an improvement or new capability.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe behavior, API, config, and expected outcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact area
+      options:
+        - strategy runtime
+        - order engine
+        - exchange integration
+        - market data
+        - notification
+        - infra/devex
+        - docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Define clear success criteria.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...

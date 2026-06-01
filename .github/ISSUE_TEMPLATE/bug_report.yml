@@ -1,0 +1,80 @@
+name: Bug report
+description: Report incorrect behavior, regressions, or runtime failures.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: Short description of the issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include exact steps and inputs.
+      placeholder: |
+        1. Start services...
+        2. Run strategy...
+        3. Observe failure...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and errors
+      description: Paste relevant logs, stack traces, and query/output snippets.
+      render: shell
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - market-data-gateway
+        - market-data-worker
+        - order-engine-gateway
+        - order-engine-worker
+        - notification-service
+        - strategy
+        - database/migration
+        - docs
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, runtime, and deployment mode.
+      placeholder: Windows + Docker Compose
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I verified this is not a duplicate issue.
+          required: true
+        - label: I removed secrets from logs and screenshots.
+          required: true
