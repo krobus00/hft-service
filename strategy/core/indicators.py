@@ -165,3 +165,121 @@ class AnchoredVWAP:
         if old <= 0:
             return None
         return (latest - old) / old * 100.0
+
+
+class BollingerBands:
+    __slots__ = ("window", "std_mult", "buf", "sum", "sum_sq")
+
+    def __init__(self, window: int, std_mult: float = 2.0):
+        self.window = max(2, int(window))
+        self.std_mult = float(std_mult)
+        self.buf = deque()
+        self.sum = 0.0
+        self.sum_sq = 0.0
+
+    def update(self, price: float) -> Optional[Tuple[float, float, float]]:
+        px = float(price)
+        self.buf.append(px)
+        self.sum += px
+        self.sum_sq += px * px
+
+        if len(self.buf) > self.window:
+            old = self.buf.popleft()
+            self.sum -= old
+            self.sum_sq -= old * old
+
+        if len(self.buf) < self.window:
+            return None
+
+        n = float(len(self.buf))
+        mean = self.sum / n
+        variance = max((self.sum_sq / n) - (mean * mean), 0.0)
+        std = variance ** 0.5
+        upper = mean + (self.std_mult * std)
+        lower = mean - (self.std_mult * std)
+        return lower, mean, upper
+
+
+class RSI:
+    __slots__ = ("period", "prev_close", "avg_gain", "avg_loss", "count")
+
+    def __init__(self, period: int):
+        self.period = max(2, int(period))
+        self.prev_close: Optional[float] = None
+        self.avg_gain = 0.0
+        self.avg_loss = 0.0
+        self.count = 0
+
+    def update(self, close: float) -> Optional[float]:
+        px = float(close)
+        if self.prev_close is None:
+            self.prev_close = px
+            return None
+
+        delta = px - self.prev_close
+        self.prev_close = px
+
+        gain = max(delta, 0.0)
+        loss = max(-delta, 0.0)
+
+        self.count += 1
+        if self.count <= self.period:
+            scale = float(self.count)
+            self.avg_gain = ((self.avg_gain * (scale - 1.0)) + gain) / scale
+            self.avg_loss = ((self.avg_loss * (scale - 1.0)) + loss) / scale
+            if self.count < self.period:
+                return None
+        else:
+            period = float(self.period)
+            self.avg_gain = ((self.avg_gain * (period - 1.0)) + gain) / period
+            self.avg_loss = ((self.avg_loss * (period - 1.0)) + loss) / period
+
+        if self.avg_loss == 0.0:
+            return 100.0
+        rs = self.avg_gain / self.avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+
+class Stochastic:
+    __slots__ = ("k_period", "d_period", "high_buf", "low_buf", "k_buf")
+
+    def __init__(self, k_period: int, d_period: int = 3):
+        self.k_period = max(2, int(k_period))
+        self.d_period = max(1, int(d_period))
+        self.high_buf = deque()
+        self.low_buf = deque()
+        self.k_buf = deque()
+
+    def update(self, high: float, low: float, close: float) -> Tuple[Optional[float], Optional[float]]:
+        hi = float(high)
+        lo = float(low)
+        px = float(close)
+
+        self.high_buf.append(hi)
+        self.low_buf.append(lo)
+
+        if len(self.high_buf) > self.k_period:
+            self.high_buf.popleft()
+        if len(self.low_buf) > self.k_period:
+            self.low_buf.popleft()
+
+        if len(self.high_buf) < self.k_period or len(self.low_buf) < self.k_period:
+            return None, None
+
+        period_high = max(self.high_buf)
+        period_low = min(self.low_buf)
+        denom = period_high - period_low
+        if denom <= 0:
+            k = 50.0
+        else:
+            k = ((px - period_low) / denom) * 100.0
+
+        self.k_buf.append(k)
+        if len(self.k_buf) > self.d_period:
+            self.k_buf.popleft()
+
+        d = None
+        if len(self.k_buf) == self.d_period:
+            d = sum(self.k_buf) / float(self.d_period)
+
+        return k, d

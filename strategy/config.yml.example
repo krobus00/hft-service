@@ -6,34 +6,11 @@ global:
   proxy_host: https://llm.proxy
   api_key: YOUR_API_KEY
   max_tokens: 1200
-  risk_controls:
-    cooldown_bars: 2
-    sl_cooldown_bars: 3
-    max_consecutive_stop_losses: 2
-    sl_pause_bars: 10
-    take_profit_pct: 0.25
-    stop_loss_pct: 0.15
-    trailing_stop_pct: 0.12
-    max_hold_bars: 24
-    max_positions: 1
-    enable_intrabar_risk_exit: true
 
 krobot01:
-  exchange: tokocrypto
-  market_type: spot
-  position_side: BOTH
   source: python-krobot01
   strategy_id: python-krobot01-ema200-vwap-macd
-  need_notification: true
-  is_paper_trading: true
-
-  kline_subject: KLINE.TOKOCRYPTO.>
   order_subject: order_engine.place_order
-  queue_name: KLINE_STRATEGY_TOKOCRYPTO_KROBOT01
-
-  order_type: LIMIT
-  order_qty: 10
-  limit_slippage_pct: 0.02
 
   ema_period: 200
   vwap_window: 200
@@ -47,21 +24,9 @@ krobot01:
 
 krobot02:
   name: KROBOT02_VWAP_VOLUME
-  exchange: tokocrypto
-  market_type: spot
-  position_side: BOTH
   source: python-krobot02
   strategy_id: python-krobot02-vwap-volume
-  need_notification: true
-  is_paper_trading: true
-
-  kline_subject: KLINE.TOKOCRYPTO.>
   order_subject: order_engine.place_order
-  queue_name: KLINE_STRATEGY_TOKOCRYPTO_KROBOT02
-
-  order_type: LIMIT
-  order_qty: 10
-  limit_slippage_pct: 0.02
 
   historical_limit: 800
 
@@ -72,27 +37,44 @@ krobot02:
 
   monitor_port: 19012
 
+krobot03:
+  name: KROBOT03_EMA_BB_RSI
+  source: python-krobot03
+  strategy_id: python-krobot03-ema-bb-rsi
+  order_subject: order_engine.place_order
+
+  historical_limit: 800
+
+  ema_fast: 21
+  ema_slow: 50
+
+  use_bollinger: true
+  bb_window: 20
+  bb_std_mult: 2.0
+
+  use_atr_filter: false
+  atr_n: 14
+  atr_min_pct: 0.10
+
+  use_stochastic: false
+  stoch_k_period: 14
+  stoch_d_period: 3
+  stoch_low: 20
+  stoch_high: 80
+
+  rsi_period: 14
+  rsi_buy_min: 52
+  rsi_sell_max: 48
+
+  monitor_port: 19014
 
 template:
   name: TEMPLATE
-  historical_limit: 500
-
-  exchange: tokocrypto
-  market_type: spot
-  position_side: BOTH
   source: python-template
   strategy_id: python-template
-  need_notification: true
-  is_paper_trading: true
-
-  kline_subject: KLINE.TOKOCRYPTO.>
   order_subject: order_engine.place_order
-  queue_name: KLINE_STRATEGY_TEMPLATE
 
-  order_type: LIMIT
-  order_qty: 10
-  limit_slippage_pct: 0.02
-
+  historical_limit: 500
   cooldown_bars: 1
 
   monitor_port: 19019
@@ -101,17 +83,9 @@ ai:
   name: AI-M2.7
   historical_limit: 800
 
-  exchange: binance
-  market_type: futures
-  position_side: ONE_WAY
   source: python-ai-minimax-m2-7
   strategy_id: python-ai-minimax-m2-7-hybrid
-  need_notification: true
-  is_paper_trading: false
-
-  kline_subject: KLINE.BINANCE.>
   order_subject: order_engine.place_order
-  queue_name: KLINE_STRATEGY_BINANCE_AI
 
   order_type: MARKET
   order_qty: 10

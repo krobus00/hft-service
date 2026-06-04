@@ -268,19 +268,27 @@ VALUES
 ('4494faed-468c-46b5-b7ca-389419ad63ad', 'tokocrypto', 'spot', 'TKO_IDR', 'tkoidr', 'TKO_IDR', '2026-02-22 14:36:22.978', '2026-02-22 14:36:22.978');
 ```
 
-### 7) Seed `strategy_order_configs` (required)
+### 7) Seed `strategy_configs` (required)
 
-`user_id` is now sourced per pair from this table. Strategy runtime no longer reads `user_id` from `strategy/config.yml`.
+`user_id` and risk controls are now sourced per pair from this table. Strategy runtime no longer reads `user_id` and shared risk controls from `strategy/config.yml`.
 
 Example:
 
 ```sql
-INSERT INTO strategy_order_configs
-(id, strategy, exchange, market_type, symbol, interval, user_id, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct, created_at, updated_at)
+INSERT INTO strategy_configs
+(id, strategy, exchange, market_type, symbol, interval, user_id, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
+ cooldown_bars, sl_cooldown_bars, max_consecutive_stop_losses, sl_pause_bars, take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_stop_trigger_pct, max_hold_bars, max_positions, enable_intrabar_risk_exit,
+ created_at, updated_at)
 VALUES
-('7f5f6d39-fd5b-4c94-b9f4-41c9b92e2c01', 'python-krobot01-ema200-vwap-macd', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02, NOW(), NOW()),
-('f0e8d75f-77de-448b-9eb3-9948e3a0d742', 'python-krobot02-vwap-volume', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-02', true, true, 'LIMIT', 10, 0.02, NOW(), NOW()),
-('96c50cef-07ea-42e2-b4f7-bf9f12c11a82', 'python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02, NOW(), NOW());
+('7f5f6d39-fd5b-4c94-b9f4-41c9b92e2c01', 'python-krobot01-ema200-vwap-macd', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02,
+ 2, 3, 2, 10, 0.25, 0.15, 0.12, 0.20, 24, 1, true,
+ NOW(), NOW()),
+('f0e8d75f-77de-448b-9eb3-9948e3a0d742', 'python-krobot02-vwap-volume', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-02', true, true, 'LIMIT', 10, 0.02,
+ 2, 3, 2, 10, 0.25, 0.15, 0.12, 0.20, 24, 1, true,
+ NOW(), NOW()),
+('96c50cef-07ea-42e2-b4f7-bf9f12c11a82', 'python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02,
+ 2, 3, 2, 10, 0.25, 0.15, 0.12, 0.20, 24, 1, true,
+ NOW(), NOW());
 ```
 
 Important rules:
@@ -311,8 +319,8 @@ Minimum required settings in `strategy/config.yml`:
 Notes:
 
 - Do not set `user_id` in strategy config anymore.
-- Strategy user routing is now pair-based from `strategy_order_configs.user_id`.
-- Keep risk controls in `global.risk_controls` (or override per strategy section).
+- Strategy user routing is now pair-based from `strategy_configs.user_id`.
+- Pair-level risk controls are now sourced from `strategy_configs` columns.
 
 ### 9) Run services (separate terminals)
 
@@ -392,10 +400,10 @@ This uses Docker image `python-strategy` and mounts local `strategy/` into `/app
 
 - Ensure strategy symbols match canonical internal symbol mapping (`symbol_mappings.symbol`).
 - Ensure `market_type` alignment (`spot` or `futures`) across subscriptions and mappings.
-- Ensure every active `strategy_order_configs` row has non-empty `user_id`.
-- Ensure each `strategy_order_configs.user_id` maps to configured exchange credentials.
+- Ensure every active `strategy_configs` row has non-empty `user_id`.
+- Ensure each `strategy_configs.user_id` maps to configured exchange credentials.
 - Set required API keys and NATS/database hosts in `config.yml`.
-- For Python strategy tuning, check risk controls in `strategy/config.yml` (`global.risk_controls`).
+- For Python strategy tuning, update risk control values in `strategy_configs` row columns.
 
 ## Profit Results
 
