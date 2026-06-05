@@ -31,6 +31,7 @@ class Krobot01Strategy(StrategyBase):
         "take_profit_pct",
         "stop_loss_pct",
         "trailing_stop_pct",
+        "trailing_stop_trigger_pct",
     )
 
     def __init__(self, strategy_config: StrategyConfig, section: dict):
@@ -66,6 +67,7 @@ class Krobot01Strategy(StrategyBase):
         self.trailing_stop_pct = float(
             cfg_value(section, GLOBAL_CONFIG, "trailing_stop_pct", section.get("ts_pct", 0.0))
         )
+        self.trailing_stop_trigger_pct = float(cfg_value(section, GLOBAL_CONFIG, "trailing_stop_trigger_pct", 0.0))
 
     def _symbol_key(self, candle: Candle) -> str:
         symbol = str(candle.symbol or self.config.symbol or "").strip().upper()
@@ -88,6 +90,7 @@ class Krobot01Strategy(StrategyBase):
             "entry_price": None,
             "highest_since_entry": None,
             "lowest_since_entry": None,
+            "trail_armed": False,
         }
         self.states[symbol] = state
         return state
@@ -97,6 +100,7 @@ class Krobot01Strategy(StrategyBase):
         state["entry_price"] = None
         state["highest_since_entry"] = None
         state["lowest_since_entry"] = None
+        state["trail_armed"] = False
 
         normalized_exited_side = str(exited_side or "").strip().upper()
         if normalized_exited_side in {"LONG", "SHORT"}:
@@ -150,14 +154,23 @@ class Krobot01Strategy(StrategyBase):
             entry_price = float(state["entry_price"])
             sl_px = entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
             tp_px = entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
-            trail_px = (state["highest_since_entry"] or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
+            trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+            trailing_trigger_px = entry_price * (1.0 + pct_to_frac(trailing_trigger_pct))
+            if trailing_trigger_pct <= 0 or high_px >= trailing_trigger_px:
+                state["trail_armed"] = True
+
+            trail_px = None
+            if self.trailing_stop_pct > 0 and state.get("trail_armed"):
+                trail_px = (state["highest_since_entry"] or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
 
             metadata.update(
                 {
                     "trade_condition": "EXIT",
                     "sl_px": round(sl_px, 8),
                     "tp_px": round(tp_px, 8),
-                    "trail_px": round(trail_px, 8),
+                    "trail_px": round(trail_px, 8) if trail_px is not None else None,
+                    "trail_trigger_px": round(trailing_trigger_px, 8),
+                    "trail_armed": bool(state.get("trail_armed")),
                 }
             )
 
@@ -166,35 +179,47 @@ class Krobot01Strategy(StrategyBase):
                 metadata["order_reason"] = "STOP_LOSS_LONG"
                 metadata["exit_type"] = "STOP_LOSS"
                 self._reset_position(state, "STOP_LOSS", "LONG")
-                return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
+                exit_px = min(candle.close, sl_px)
+                return self.sell(exit_px, "STOP_LOSS_LONG", metadata)
 
             if self.take_profit_pct > 0 and high_px >= tp_px:
                 metadata["trade_condition"] = "TAKE_PROFIT"
                 metadata["order_reason"] = "TAKE_PROFIT_LONG"
                 metadata["exit_type"] = "TAKE_PROFIT"
                 self._reset_position(state, "TAKE_PROFIT", "LONG")
-                return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
+                exit_px = max(candle.close, tp_px)
+                return self.sell(exit_px, "TAKE_PROFIT_LONG", metadata)
 
-            if self.trailing_stop_pct > 0 and low_px <= trail_px:
+            if trail_px is not None and low_px <= trail_px:
                 metadata["trade_condition"] = "TRAILING_STOP"
                 metadata["order_reason"] = "TRAILING_STOP_LONG"
                 metadata["exit_type"] = "TRAILING_STOP"
                 self._reset_position(state, "TRAILING_STOP", "LONG")
-                return self.sell(candle.close, "TRAILING_STOP_LONG", metadata)
+                exit_px = min(candle.close, trail_px)
+                return self.sell(exit_px, "TRAILING_STOP_LONG", metadata)
 
         if state["position_side"] == "SHORT":
             state["lowest_since_entry"] = min(state["lowest_since_entry"] or low_px, low_px)
             entry_price = float(state["entry_price"])
             sl_px = entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
             tp_px = entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
-            trail_px = (state["lowest_since_entry"] or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
+            trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+            trailing_trigger_px = entry_price * (1.0 - pct_to_frac(trailing_trigger_pct))
+            if trailing_trigger_pct <= 0 or low_px <= trailing_trigger_px:
+                state["trail_armed"] = True
+
+            trail_px = None
+            if self.trailing_stop_pct > 0 and state.get("trail_armed"):
+                trail_px = (state["lowest_since_entry"] or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
 
             metadata.update(
                 {
                     "trade_condition": "EXIT",
                     "sl_px": round(sl_px, 8),
                     "tp_px": round(tp_px, 8),
-                    "trail_px": round(trail_px, 8),
+                    "trail_px": round(trail_px, 8) if trail_px is not None else None,
+                    "trail_trigger_px": round(trailing_trigger_px, 8),
+                    "trail_armed": bool(state.get("trail_armed")),
                 }
             )
 
@@ -203,21 +228,24 @@ class Krobot01Strategy(StrategyBase):
                 metadata["order_reason"] = "STOP_LOSS_SHORT"
                 metadata["exit_type"] = "STOP_LOSS"
                 self._reset_position(state, "STOP_LOSS", "SHORT")
-                return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
+                exit_px = max(candle.close, sl_px)
+                return self.buy(exit_px, "STOP_LOSS_SHORT", metadata)
 
             if self.take_profit_pct > 0 and low_px <= tp_px:
                 metadata["trade_condition"] = "TAKE_PROFIT"
                 metadata["order_reason"] = "TAKE_PROFIT_SHORT"
                 metadata["exit_type"] = "TAKE_PROFIT"
                 self._reset_position(state, "TAKE_PROFIT", "SHORT")
-                return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
+                exit_px = min(candle.close, tp_px)
+                return self.buy(exit_px, "TAKE_PROFIT_SHORT", metadata)
 
-            if self.trailing_stop_pct > 0 and high_px >= trail_px:
+            if trail_px is not None and high_px >= trail_px:
                 metadata["trade_condition"] = "TRAILING_STOP"
                 metadata["order_reason"] = "TRAILING_STOP_SHORT"
                 metadata["exit_type"] = "TRAILING_STOP"
                 self._reset_position(state, "TRAILING_STOP", "SHORT")
-                return self.buy(candle.close, "TRAILING_STOP_SHORT", metadata)
+                exit_px = max(candle.close, trail_px)
+                return self.buy(exit_px, "TRAILING_STOP_SHORT", metadata)
 
         return None
 
@@ -254,7 +282,14 @@ class Krobot01Strategy(StrategyBase):
             entry_price = float(state["entry_price"])
             sl_px = entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
             tp_px = entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
-            trail_px = (state["highest_since_entry"] or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
+            trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+            trailing_trigger_px = entry_price * (1.0 + pct_to_frac(trailing_trigger_pct))
+            if trailing_trigger_pct <= 0 or high_px >= trailing_trigger_px:
+                state["trail_armed"] = True
+
+            trail_px = None
+            if self.trailing_stop_pct > 0 and state.get("trail_armed"):
+                trail_px = (state["highest_since_entry"] or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
 
             metadata.update(
                 {
@@ -262,7 +297,9 @@ class Krobot01Strategy(StrategyBase):
                     "high_since_entry": round(state["highest_since_entry"] or high_px, 8),
                     "tp_px": round(tp_px, 8),
                     "sl_px": round(sl_px, 8),
-                    "trail_px": round(trail_px, 8),
+                    "trail_px": round(trail_px, 8) if trail_px is not None else None,
+                    "trail_trigger_px": round(trailing_trigger_px, 8),
+                    "trail_armed": bool(state.get("trail_armed")),
                 }
             )
 
@@ -271,21 +308,24 @@ class Krobot01Strategy(StrategyBase):
                 metadata["order_reason"] = "STOP_LOSS_LONG"
                 metadata["exit_type"] = "STOP_LOSS"
                 self._reset_position(state, "STOP_LOSS", "LONG")
-                return self.sell(candle.close, "STOP_LOSS_LONG", metadata)
+                exit_px = min(candle.close, sl_px)
+                return self.sell(exit_px, "STOP_LOSS_LONG", metadata)
 
             if self.take_profit_pct > 0 and high_px >= tp_px:
                 metadata["trade_condition"] = "TAKE_PROFIT"
                 metadata["order_reason"] = "TAKE_PROFIT_LONG"
                 metadata["exit_type"] = "TAKE_PROFIT"
                 self._reset_position(state, "TAKE_PROFIT", "LONG")
-                return self.sell(candle.close, "TAKE_PROFIT_LONG", metadata)
+                exit_px = max(candle.close, tp_px)
+                return self.sell(exit_px, "TAKE_PROFIT_LONG", metadata)
 
-            if self.trailing_stop_pct > 0 and low_px <= trail_px:
+            if trail_px is not None and low_px <= trail_px:
                 metadata["trade_condition"] = "TRAILING_STOP"
                 metadata["order_reason"] = "TRAILING_STOP_LONG"
                 metadata["exit_type"] = "TRAILING_STOP"
                 self._reset_position(state, "TRAILING_STOP", "LONG")
-                return self.sell(candle.close, "TRAILING_STOP_LONG", metadata)
+                exit_px = min(candle.close, trail_px)
+                return self.sell(exit_px, "TRAILING_STOP_LONG", metadata)
 
         if state["position_side"] == "SHORT" and state["entry_price"] is not None:
             state["lowest_since_entry"] = min(state["lowest_since_entry"] or low_px, low_px)
@@ -293,7 +333,14 @@ class Krobot01Strategy(StrategyBase):
             entry_price = float(state["entry_price"])
             sl_px = entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
             tp_px = entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
-            trail_px = (state["lowest_since_entry"] or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
+            trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+            trailing_trigger_px = entry_price * (1.0 - pct_to_frac(trailing_trigger_pct))
+            if trailing_trigger_pct <= 0 or low_px <= trailing_trigger_px:
+                state["trail_armed"] = True
+
+            trail_px = None
+            if self.trailing_stop_pct > 0 and state.get("trail_armed"):
+                trail_px = (state["lowest_since_entry"] or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
 
             metadata.update(
                 {
@@ -301,7 +348,9 @@ class Krobot01Strategy(StrategyBase):
                     "low_since_entry": round(state["lowest_since_entry"] or low_px, 8),
                     "tp_px": round(tp_px, 8),
                     "sl_px": round(sl_px, 8),
-                    "trail_px": round(trail_px, 8),
+                    "trail_px": round(trail_px, 8) if trail_px is not None else None,
+                    "trail_trigger_px": round(trailing_trigger_px, 8),
+                    "trail_armed": bool(state.get("trail_armed")),
                 }
             )
 
@@ -310,21 +359,24 @@ class Krobot01Strategy(StrategyBase):
                 metadata["order_reason"] = "STOP_LOSS_SHORT"
                 metadata["exit_type"] = "STOP_LOSS"
                 self._reset_position(state, "STOP_LOSS", "SHORT")
-                return self.buy(candle.close, "STOP_LOSS_SHORT", metadata)
+                exit_px = max(candle.close, sl_px)
+                return self.buy(exit_px, "STOP_LOSS_SHORT", metadata)
 
             if self.take_profit_pct > 0 and low_px <= tp_px:
                 metadata["trade_condition"] = "TAKE_PROFIT"
                 metadata["order_reason"] = "TAKE_PROFIT_SHORT"
                 metadata["exit_type"] = "TAKE_PROFIT"
                 self._reset_position(state, "TAKE_PROFIT", "SHORT")
-                return self.buy(candle.close, "TAKE_PROFIT_SHORT", metadata)
+                exit_px = min(candle.close, tp_px)
+                return self.buy(exit_px, "TAKE_PROFIT_SHORT", metadata)
 
-            if self.trailing_stop_pct > 0 and high_px >= trail_px:
+            if trail_px is not None and high_px >= trail_px:
                 metadata["trade_condition"] = "TRAILING_STOP"
                 metadata["order_reason"] = "TRAILING_STOP_SHORT"
                 metadata["exit_type"] = "TRAILING_STOP"
                 self._reset_position(state, "TRAILING_STOP", "SHORT")
-                return self.buy(candle.close, "TRAILING_STOP_SHORT", metadata)
+                exit_px = max(candle.close, trail_px)
+                return self.buy(exit_px, "TRAILING_STOP_SHORT", metadata)
 
         if state["pause_bars"] > 0:
             state["pause_bars"] -= 1
@@ -355,6 +407,7 @@ class Krobot01Strategy(StrategyBase):
             state["entry_price"] = candle.close
             state["highest_since_entry"] = high_px
             state["lowest_since_entry"] = low_px
+            state["trail_armed"] = False
             state["cooldown"] = self.cooldown_bars
             metadata["trade_condition"] = "ENTRY"
             metadata["order_reason"] = "ENTER_LONG"
@@ -370,6 +423,7 @@ class Krobot01Strategy(StrategyBase):
             state["entry_price"] = candle.close
             state["highest_since_entry"] = high_px
             state["lowest_since_entry"] = low_px
+            state["trail_armed"] = False
             state["cooldown"] = self.cooldown_bars
             metadata["trade_condition"] = "ENTRY"
             metadata["order_reason"] = "ENTER_SHORT"
@@ -427,6 +481,9 @@ async def run():
 
     if strategy.trailing_stop_pct < 0:
         raise ValueError("trailing_stop_pct must be >= 0")
+
+    if strategy.trailing_stop_trigger_pct < 0:
+        raise ValueError("trailing_stop_trigger_pct must be >= 0")
 
     if strategy.cooldown_bars < 0:
         raise ValueError("cooldown_bars must be >= 0")

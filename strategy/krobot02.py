@@ -49,6 +49,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		"entry_price",
 		"highest_since_entry",
 		"lowest_since_entry",
+		"trail_armed",
 		"ema_period",
 		"vwap_window",
 		"volume_window",
@@ -60,6 +61,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		"take_profit_pct",
 		"stop_loss_pct",
 		"trailing_stop_pct",
+		"trailing_stop_trigger_pct",
 		"warmup_min",
 	)
 
@@ -81,6 +83,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		self.entry_price: Optional[float] = None
 		self.highest_since_entry: Optional[float] = None
 		self.lowest_since_entry: Optional[float] = None
+		self.trail_armed = False
 
 		self.volume_mult = float(section.get("volume_mult", 1.15))
 		self.cooldown_bars = int(cfg_value(section, GLOBAL_CONFIG, "cooldown_bars", 1))
@@ -99,6 +102,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		self.trailing_stop_pct = float(
 			cfg_value(section, GLOBAL_CONFIG, "trailing_stop_pct", section.get("ts_pct", 0.0))
 		)
+		self.trailing_stop_trigger_pct = float(cfg_value(section, GLOBAL_CONFIG, "trailing_stop_trigger_pct", 0.0))
 
 		self.warmup_min = max(self.ema_period, self.vwap_window, self.volume_window)
 
@@ -107,6 +111,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 		self.entry_price = None
 		self.highest_since_entry = None
 		self.lowest_since_entry = None
+		self.trail_armed = False
 
 		normalized_exit = str(exit_type or "").strip().upper()
 		if normalized_exit == "STOP_LOSS":
@@ -162,14 +167,23 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.highest_since_entry = max(self.highest_since_entry or high_px, high_px)
 			sl_px = self.entry_price * (1.0 - pct_to_frac(self.stop_loss_pct))
 			tp_px = self.entry_price * (1.0 + pct_to_frac(self.take_profit_pct))
-			trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
+			trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+			trailing_trigger_px = self.entry_price * (1.0 + pct_to_frac(trailing_trigger_pct))
+			if trailing_trigger_pct <= 0 or high_px >= trailing_trigger_px:
+				self.trail_armed = True
+
+			trail_px = None
+			if self.trailing_stop_pct > 0 and self.trail_armed:
+				trail_px = (self.highest_since_entry or high_px) * (1.0 - pct_to_frac(self.trailing_stop_pct))
 
 			metadata.update(
 				{
 					"entry_price": round(self.entry_price, 8),
 					"tp_px": round(tp_px, 8),
 					"sl_px": round(sl_px, 8),
-					"trail_px": round(trail_px, 8),
+					"trail_px": round(trail_px, 8) if trail_px is not None else None,
+					"trail_trigger_px": round(trailing_trigger_px, 8),
+					"trail_armed": bool(self.trail_armed),
 				}
 			)
 
@@ -188,7 +202,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 				self._reset_position("TAKE_PROFIT")
 				return self.sell(tp_px, "TAKE_PROFIT_LONG", metadata)
 
-			if self.trailing_stop_pct > 0 and low_px <= trail_px:
+			if trail_px is not None and low_px <= trail_px:
 				metadata["trade_condition"] = "TRAILING_STOP"
 				metadata["order_reason"] = "TRAILING_STOP_LONG"
 				metadata["exit_type"] = "TRAILING_STOP"
@@ -200,14 +214,23 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.lowest_since_entry = min(self.lowest_since_entry or low_px, low_px)
 			sl_px = self.entry_price * (1.0 + pct_to_frac(self.stop_loss_pct))
 			tp_px = self.entry_price * (1.0 - pct_to_frac(self.take_profit_pct))
-			trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
+			trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+			trailing_trigger_px = self.entry_price * (1.0 - pct_to_frac(trailing_trigger_pct))
+			if trailing_trigger_pct <= 0 or low_px <= trailing_trigger_px:
+				self.trail_armed = True
+
+			trail_px = None
+			if self.trailing_stop_pct > 0 and self.trail_armed:
+				trail_px = (self.lowest_since_entry or low_px) * (1.0 + pct_to_frac(self.trailing_stop_pct))
 
 			metadata.update(
 				{
 					"entry_price": round(self.entry_price, 8),
 					"tp_px": round(tp_px, 8),
 					"sl_px": round(sl_px, 8),
-					"trail_px": round(trail_px, 8),
+					"trail_px": round(trail_px, 8) if trail_px is not None else None,
+					"trail_trigger_px": round(trailing_trigger_px, 8),
+					"trail_armed": bool(self.trail_armed),
 				}
 			)
 
@@ -226,7 +249,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 				self._reset_position("TAKE_PROFIT")
 				return self.buy(tp_px, "TAKE_PROFIT_SHORT", metadata)
 
-			if self.trailing_stop_pct > 0 and high_px >= trail_px:
+			if trail_px is not None and high_px >= trail_px:
 				metadata["trade_condition"] = "TRAILING_STOP"
 				metadata["order_reason"] = "TRAILING_STOP_SHORT"
 				metadata["exit_type"] = "TRAILING_STOP"
@@ -247,6 +270,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.entry_price = candle.close
 			self.highest_since_entry = high_px
 			self.lowest_since_entry = low_px
+			self.trail_armed = False
 			self.cooldown = self.cooldown_bars
 			metadata["trade_condition"] = "ENTRY"
 			metadata["order_reason"] = "ENTER_LONG_VWAP_VOLUME"
@@ -260,6 +284,7 @@ class Krobot02VWAPVolumeStrategy(StrategyBase):
 			self.entry_price = candle.close
 			self.highest_since_entry = high_px
 			self.lowest_since_entry = low_px
+			self.trail_armed = False
 			self.cooldown = self.cooldown_bars
 			metadata["trade_condition"] = "ENTRY"
 			metadata["order_reason"] = "ENTER_SHORT_VWAP_VOLUME"
@@ -317,6 +342,9 @@ async def run():
 
 	if strategy.trailing_stop_pct < 0:
 		raise ValueError("trailing_stop_pct must be >= 0")
+
+	if strategy.trailing_stop_trigger_pct < 0:
+		raise ValueError("trailing_stop_trigger_pct must be >= 0")
 
 	if strategy.cooldown_bars < 0:
 		raise ValueError("cooldown_bars must be >= 0")

@@ -193,6 +193,41 @@ services:
     networks:
       - hft-network
 
+  strategy-krobot03:
+    build:
+      context: .
+      dockerfile: tools/python-strategy/Dockerfile
+    command: ["bash", "-c", "python krobot03.py"]
+    working_dir: /app
+    volumes:
+      - ./strategy:/app
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "19014:19014"
+    # healthcheck:
+    #   test:
+    #     [
+    #       "CMD-SHELL",
+    #       "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19014/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19014/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
+    #     ]
+    #   interval: 10s
+    #   timeout: 3s
+    #   retries: 10
+    #   start_period: 30s
+    restart: unless-stopped
+    profiles:
+      - strategy
+    networks:
+      - hft-network
+
   strategy-ai:
     build:
       context: .

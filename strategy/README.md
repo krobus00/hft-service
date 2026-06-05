@@ -35,6 +35,14 @@ Main strategy design goals:
 - Risk behavior: Cooldown, stop-loss cooldown, and pause after configured stop-loss streak.
 - Primary use case: Capture moves with stronger volume confirmation to reduce weak breakouts.
 
+#### `krobot03.py` (EMA Cross + Bollinger/ATR + RSI/Stochastic)
+
+- Signal style: EMA ribbon cross entries with momentum and volatility confirmation.
+- Trend trigger: EMA 21 crossing EMA 50 (golden/death cross behavior).
+- Volatility filter: Bollinger Bands location checks and optional ATR minimum-percent filter.
+- Momentum filter: RSI thresholds by default, or Stochastic K/D mode via config toggle.
+- Exit logic: Opposite EMA cross, take profit, stop loss, trailing stop, and max-hold timeout.
+
 #### `ai.py` (AI Hybrid Adaptive Strategy)
 
 - Signal style: LLM-driven decisioning with structured market payload.
@@ -102,7 +110,7 @@ Before running any strategy, configure both files and DB rows:
 
 - Root config: `config.yml`
 - Strategy config: `strategy/config.yml`
-- Database table: `strategy_order_configs`
+- Database table: `strategy_configs`
 
 ### 1) Root config (`config.yml`)
 
@@ -137,15 +145,19 @@ Each strategy section should define runtime identity and execution settings, for
 
 Do not define `user_id` in strategy config.
 
-### 3) Strategy order configs (`strategy_order_configs`)
+### 3) Strategy configs (`strategy_configs`)
 
-Strategies now use pair-level `user_id` from this table (not from YAML):
+Strategies now use pair-level config from this table (not from YAML), including risk controls:
 
 ```sql
-INSERT INTO strategy_order_configs
-(strategy, exchange, market_type, symbol, interval, user_id, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct)
+INSERT INTO strategy_configs
+(strategy, exchange, market_type, symbol, interval, user_id, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
+ cooldown_bars, sl_cooldown_bars, max_consecutive_stop_losses, sl_pause_bars,
+ take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_stop_trigger_pct, max_hold_bars, max_positions, enable_intrabar_risk_exit)
 VALUES
-('python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02);
+('python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02,
+ 2, 3, 2, 10,
+ 0.25, 0.15, 0.12, 0.20, 24, 1, true);
 ```
 
 Rules:
@@ -166,30 +178,13 @@ Use `standard_strategy_template.py` as the starting point for new strategies.
 
 ## Risk Controls
 
-Risk controls are centralized in `config.yml` under `global.risk_controls`.
+Risk controls are now sourced from table `strategy_configs` per strategy+pair row.
 
-Resolution order used by each strategy:
-1. Strategy section value (for example `krobot01.cooldown_bars`)
-2. `global.risk_controls.<key>`
-3. `global.<key>`
+Resolution order used by each strategy runtime:
+1. `strategy_configs.<key>` row value
+2. Strategy section value (optional local fallback)
+3. `global.<key>` (optional local fallback)
 4. Hardcoded strategy default
-
-Example:
-
-```yaml
-global:
-  risk_controls:
-    cooldown_bars: 2
-    sl_cooldown_bars: 3
-    max_consecutive_stop_losses: 2
-    sl_pause_bars: 10
-    take_profit_pct: 0.40
-    stop_loss_pct: 0.25
-    trailing_stop_pct: 0.12
-    max_hold_bars: 24
-    max_positions: 1
-    enable_intrabar_risk_exit: true
-```
 
 ### Control Definitions
 
@@ -199,7 +194,8 @@ global:
 - `sl_pause_bars`: Hard pause duration (bars) after SL streak threshold is reached.
 - `take_profit_pct`: Take-profit threshold in percent from entry.
 - `stop_loss_pct`: Stop-loss threshold in percent from entry.
-- `trailing_stop_pct`: Trailing-stop distance in percent from best favorable price since entry.
+- `trailing_stop_pct`: Trailing callback distance in percent from best favorable price since entry.
+- `trailing_stop_trigger_pct`: Trailing activation threshold in percent from entry before callback tracking is armed.
 - `max_hold_bars`: Maximum bars a position can be held before forced timeout exit.
 - `max_positions`: Maximum concurrent positions allowed by strategy decision logic.
 - `enable_intrabar_risk_exit`: Enables risk exits on price updates between closed candles.
