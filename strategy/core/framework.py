@@ -96,6 +96,20 @@ class StrategyBase(ABC):
 class StrategyRunner:
     __slots__ = ("strategy", "runtime")
 
+    RISK_CONFIG_KEYS = (
+        "cooldown_bars",
+        "sl_cooldown_bars",
+        "max_consecutive_stop_losses",
+        "sl_pause_bars",
+        "take_profit_pct",
+        "stop_loss_pct",
+        "trailing_stop_pct",
+        "trailing_stop_trigger_pct",
+        "max_hold_bars",
+        "max_positions",
+        "enable_intrabar_risk_exit",
+    )
+
     def __init__(self, strategy: StrategyBase, runtime: RuntimeConfig):
         self.strategy = strategy
         self.runtime = runtime
@@ -347,6 +361,20 @@ class StrategyRunner:
             keys.append(value)
         return keys
 
+    def _apply_strategy_overrides(self, order_config: Optional[Dict[str, Any]]) -> None:
+        if not isinstance(order_config, dict):
+            return
+
+        for key in self.RISK_CONFIG_KEYS:
+            if key not in order_config:
+                continue
+            value = order_config.get(key)
+            if value is None:
+                continue
+            if not hasattr(self.strategy, key):
+                continue
+            setattr(self.strategy, key, value)
+
     async def load_strategy_targets_from_order_configs(self) -> Dict[str, Dict[str, Any]]:
         strategy_keys = self._strategy_lookup_keys()
         if not strategy_keys:
@@ -367,8 +395,19 @@ class StrategyRunner:
                     is_paper_trading,
                     order_type,
                     order_qty,
-                    limit_slippage_pct
-                FROM strategy_order_configs
+                    limit_slippage_pct,
+                    cooldown_bars,
+                    sl_cooldown_bars,
+                    max_consecutive_stop_losses,
+                    sl_pause_bars,
+                    take_profit_pct,
+                    stop_loss_pct,
+                    trailing_stop_pct,
+                    trailing_stop_trigger_pct,
+                    max_hold_bars,
+                    max_positions,
+                    enable_intrabar_risk_exit
+                FROM strategy_configs
                 WHERE strategy = ANY($1::text[])
                 """,
                 strategy_keys,
@@ -413,6 +452,25 @@ class StrategyRunner:
                     "limit_slippage_pct": float(row["limit_slippage_pct"]),
                     "need_notification": bool(row["need_notification"]),
                     "is_paper_trading": bool(row["is_paper_trading"]),
+                    "cooldown_bars": int(row["cooldown_bars"]) if row["cooldown_bars"] is not None else None,
+                    "sl_cooldown_bars": int(row["sl_cooldown_bars"]) if row["sl_cooldown_bars"] is not None else None,
+                    "max_consecutive_stop_losses": int(row["max_consecutive_stop_losses"])
+                    if row["max_consecutive_stop_losses"] is not None
+                    else None,
+                    "sl_pause_bars": int(row["sl_pause_bars"]) if row["sl_pause_bars"] is not None else None,
+                    "take_profit_pct": float(row["take_profit_pct"]) if row["take_profit_pct"] is not None else None,
+                    "stop_loss_pct": float(row["stop_loss_pct"]) if row["stop_loss_pct"] is not None else None,
+                    "trailing_stop_pct": float(row["trailing_stop_pct"])
+                    if row["trailing_stop_pct"] is not None
+                    else None,
+                    "trailing_stop_trigger_pct": float(row["trailing_stop_trigger_pct"])
+                    if row["trailing_stop_trigger_pct"] is not None
+                    else None,
+                    "max_hold_bars": int(row["max_hold_bars"]) if row["max_hold_bars"] is not None else None,
+                    "max_positions": int(row["max_positions"]) if row["max_positions"] is not None else None,
+                    "enable_intrabar_risk_exit": bool(row["enable_intrabar_risk_exit"])
+                    if row["enable_intrabar_risk_exit"] is not None
+                    else None,
                 },
             }
 
@@ -568,7 +626,7 @@ class StrategyRunner:
             raise ValueError("order_qty must be > 0")
 
         print(
-            f"[{self.strategy.config.name}] start_config strategy_id={self.runtime.strategy_id} source={self.runtime.source} user_id=FROM_STRATEGY_ORDER_CONFIGS interval={self.strategy.config.interval} warmup_limit={self.strategy.config.warmup_limit} order_subject={self.runtime.order_subject} order_type={self.runtime.order_type} order_qty={self.runtime.order_qty} limit_slippage_pct={self.runtime.limit_slippage_pct} position_side={self.runtime.position_side} need_notification={self.runtime.need_notification} is_paper_trading={self.runtime.is_paper_trading} intrabar_risk_exit={self.runtime.enable_intrabar_risk_exit}",
+            f"[{self.strategy.config.name}] start_config strategy_id={self.runtime.strategy_id} source={self.runtime.source} user_id=FROM_STRATEGY_CONFIGS interval={self.strategy.config.interval} warmup_limit={self.strategy.config.warmup_limit} order_subject={self.runtime.order_subject} order_type={self.runtime.order_type} order_qty={self.runtime.order_qty} limit_slippage_pct={self.runtime.limit_slippage_pct} position_side={self.runtime.position_side} need_notification={self.runtime.need_notification} is_paper_trading={self.runtime.is_paper_trading} intrabar_risk_exit={self.runtime.enable_intrabar_risk_exit}",
             flush=True,
         )
 
@@ -671,11 +729,18 @@ class StrategyRunner:
                         )
                         previous_snapshot = state_store.get(state_key)
                         self.strategy.restore_state(previous_snapshot if previous_snapshot is not None else initial_state)
+                        self._apply_strategy_overrides(target.get("order_config"))
 
                         snapshot = self.strategy.snapshot_state()
+                        intrabar_risk_exit_enabled = bool(
+                            target.get("order_config", {}).get(
+                                "enable_intrabar_risk_exit",
+                                self.runtime.enable_intrabar_risk_exit,
+                            )
+                        )
                         if is_closed:
                             signal = self.strategy.on_closed_candle(candle, is_warmup=False)
-                        elif self.runtime.enable_intrabar_risk_exit:
+                        elif intrabar_risk_exit_enabled:
                             signal = self.strategy.on_price_update(candle)
                         else:
                             signal = None
@@ -760,7 +825,7 @@ class StrategyRunner:
             try:
                 desired_pairs = await self.load_strategy_targets_from_order_configs()
             except Exception as exc:
-                print(f"Failed loading strategy_order_configs: {exc}", flush=True)
+                print(f"Failed loading strategy_configs: {exc}", flush=True)
                 return
 
             last_reconcile_ms = now_ms()
@@ -814,6 +879,7 @@ class StrategyRunner:
                     async with state_lock:
                         previous = state_store.get(state_key)
                         self.strategy.restore_state(previous if previous is not None else initial_state)
+                        self._apply_strategy_overrides(target.get("order_config"))
                         await self.warmup_from_postgres(
                             target["exchange"],
                             target["market_type"],
@@ -862,7 +928,7 @@ class StrategyRunner:
                     last_active_summary = active_summary
             elif not no_pairs_logged:
                 print(
-                    f"{self.strategy.config.name} no strategy_order_configs rows, waiting and refreshing every {refresh_interval_sec}s",
+                    f"{self.strategy.config.name} no strategy_configs rows, waiting and refreshing every {refresh_interval_sec}s",
                     flush=True,
                 )
                 no_pairs_logged = True

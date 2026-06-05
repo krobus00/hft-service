@@ -23,6 +23,10 @@ def cfg_value(section: Dict[str, Any], global_config: Dict[str, Any], key: str, 
     if key in section and section.get(key) is not None:
         return section.get(key)
 
+    strategy_configs = global_config.get("strategy_configs", {}) if isinstance(global_config, dict) else {}
+    if isinstance(strategy_configs, dict) and key in strategy_configs and strategy_configs.get(key) is not None:
+        return strategy_configs.get(key)
+
     risk_controls = global_config.get("risk_controls", {}) if isinstance(global_config, dict) else {}
     if isinstance(risk_controls, dict) and key in risk_controls and risk_controls.get(key) is not None:
         return risk_controls.get(key)

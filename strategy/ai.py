@@ -140,6 +140,7 @@ class AIHybridStrategy(StrategyBase):
         "take_profit_pct",
         "stop_loss_pct",
         "trailing_stop_pct",
+        "trailing_stop_trigger_pct",
         "max_hold_bars",
         "cooldown_bars",
         "sl_cooldown_bars",
@@ -173,6 +174,7 @@ class AIHybridStrategy(StrategyBase):
         "active_take_profit_pct",
         "active_stop_loss_pct",
         "active_trailing_stop_pct",
+        "trailing_armed",
         "tp_anchor_price",
         "tp_ladder_steps",
         "intrabar_risk_guard",
@@ -215,6 +217,7 @@ class AIHybridStrategy(StrategyBase):
         self.take_profit_pct = float(cfg_value(section, GLOBAL_CONFIG, "take_profit_pct", 0.40))
         self.stop_loss_pct = float(cfg_value(section, GLOBAL_CONFIG, "stop_loss_pct", 0.25))
         self.trailing_stop_pct = float(cfg_value(section, GLOBAL_CONFIG, "trailing_stop_pct", 0.20))
+        self.trailing_stop_trigger_pct = float(cfg_value(section, GLOBAL_CONFIG, "trailing_stop_trigger_pct", 0.0))
         self.max_hold_bars = int(cfg_value(section, GLOBAL_CONFIG, "max_hold_bars", 24))
         self.cooldown_bars = int(cfg_value(section, GLOBAL_CONFIG, "cooldown_bars", 2))
         self.sl_cooldown_bars = int(
@@ -255,6 +258,7 @@ class AIHybridStrategy(StrategyBase):
         self.active_take_profit_pct = self.take_profit_pct
         self.active_stop_loss_pct = self.stop_loss_pct
         self.active_trailing_stop_pct = self.trailing_stop_pct
+        self.trailing_armed = False
         self.tp_anchor_price: Optional[float] = None
         self.tp_ladder_steps = 0
         self.intrabar_risk_guard = False
@@ -1078,10 +1082,22 @@ class AIHybridStrategy(StrategyBase):
                 tp_px = entry_price
 
             sl_px = entry_price * (1.0 - pct_to_frac(max(0.0, float(self.active_stop_loss_pct))))
-            trail_px = (self.highest_since_entry or high_px) * (
-                1.0 - pct_to_frac(max(0.0, float(self.active_trailing_stop_pct)))
-            )
-            sl_px = max(sl_px, trail_px)
+            trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+            trailing_trigger_px = entry_price * (1.0 + pct_to_frac(trailing_trigger_pct))
+            if trailing_trigger_pct <= 0 or high_px >= trailing_trigger_px:
+                self.trailing_armed = True
+
+            trail_px = None
+            if max(0.0, float(self.active_trailing_stop_pct)) > 0 and self.trailing_armed:
+                trail_px = (self.highest_since_entry or high_px) * (
+                    1.0 - pct_to_frac(max(0.0, float(self.active_trailing_stop_pct)))
+                )
+
+            effective_stop_px = max(sl_px, trail_px) if trail_px is not None else sl_px
+
+            metadata["trail_trigger_px"] = round(trailing_trigger_px, 8)
+            metadata["trail_px"] = round(trail_px, 8) if trail_px is not None else None
+            metadata["trail_armed"] = bool(self.trailing_armed)
 
             if high_px >= tp_px:
                 can_roll_tp = (
@@ -1097,11 +1113,18 @@ class AIHybridStrategy(StrategyBase):
                     metadata["tp_roll_steps"] = self.tp_ladder_steps
                     metadata["trade_condition"] = "HOLD"
                     return None
-                return self._close_long(candle.close, "TAKE_PROFIT_LONG", metadata)
-            if low_px <= sl_px:
-                return self._close_long(candle.close, "STOP_LOSS_LONG", metadata)
-            if low_px <= trail_px:
-                return self._close_long(candle.close, "TRAILING_STOP_LONG", metadata)
+                exit_px = max(candle.close, tp_px)
+                return self._close_long(exit_px, "TAKE_PROFIT_LONG", metadata)
+            if low_px <= effective_stop_px:
+                exit_px = min(candle.close, effective_stop_px)
+                trailing_tightest = (
+                    trail_px is not None
+                    and max(0.0, float(self.active_trailing_stop_pct)) > 0
+                    and trail_px >= sl_px
+                )
+                if trailing_tightest:
+                    return self._close_long(exit_px, "TRAILING_STOP_LONG", metadata)
+                return self._close_long(exit_px, "STOP_LOSS_LONG", metadata)
             if advance_bar and self.bars_in_pos >= self.max_hold_bars:
                 return self._close_long(candle.close, "EXIT_LONG_TIMEOUT", metadata)
 
@@ -1125,10 +1148,22 @@ class AIHybridStrategy(StrategyBase):
                 tp_px = entry_price
 
             sl_px = entry_price * (1.0 + pct_to_frac(max(0.0, float(self.active_stop_loss_pct))))
-            trail_px = (self.lowest_since_entry or low_px) * (
-                1.0 + pct_to_frac(max(0.0, float(self.active_trailing_stop_pct)))
-            )
-            sl_px = min(sl_px, trail_px)
+            trailing_trigger_pct = max(0.0, float(self.trailing_stop_trigger_pct))
+            trailing_trigger_px = entry_price * (1.0 - pct_to_frac(trailing_trigger_pct))
+            if trailing_trigger_pct <= 0 or low_px <= trailing_trigger_px:
+                self.trailing_armed = True
+
+            trail_px = None
+            if max(0.0, float(self.active_trailing_stop_pct)) > 0 and self.trailing_armed:
+                trail_px = (self.lowest_since_entry or low_px) * (
+                    1.0 + pct_to_frac(max(0.0, float(self.active_trailing_stop_pct)))
+                )
+
+            effective_stop_px = min(sl_px, trail_px) if trail_px is not None else sl_px
+
+            metadata["trail_trigger_px"] = round(trailing_trigger_px, 8)
+            metadata["trail_px"] = round(trail_px, 8) if trail_px is not None else None
+            metadata["trail_armed"] = bool(self.trailing_armed)
 
             if low_px <= tp_px:
                 can_roll_tp = (
@@ -1144,11 +1179,18 @@ class AIHybridStrategy(StrategyBase):
                     metadata["tp_roll_steps"] = self.tp_ladder_steps
                     metadata["trade_condition"] = "HOLD"
                     return None
-                return self._close_short(candle.close, "TAKE_PROFIT_SHORT", metadata)
-            if high_px >= sl_px:
-                return self._close_short(candle.close, "STOP_LOSS_SHORT", metadata)
-            if high_px >= trail_px:
-                return self._close_short(candle.close, "TRAILING_STOP_SHORT", metadata)
+                exit_px = min(candle.close, tp_px)
+                return self._close_short(exit_px, "TAKE_PROFIT_SHORT", metadata)
+            if high_px >= effective_stop_px:
+                exit_px = max(candle.close, effective_stop_px)
+                trailing_tightest = (
+                    trail_px is not None
+                    and max(0.0, float(self.active_trailing_stop_pct)) > 0
+                    and trail_px <= sl_px
+                )
+                if trailing_tightest:
+                    return self._close_short(exit_px, "TRAILING_STOP_SHORT", metadata)
+                return self._close_short(exit_px, "STOP_LOSS_SHORT", metadata)
             if advance_bar and self.bars_in_pos >= self.max_hold_bars:
                 return self._close_short(candle.close, "EXIT_SHORT_TIMEOUT", metadata)
 
@@ -1199,6 +1241,7 @@ class AIHybridStrategy(StrategyBase):
         self.active_take_profit_pct = self.take_profit_pct
         self.active_stop_loss_pct = self.stop_loss_pct
         self.active_trailing_stop_pct = self.trailing_stop_pct
+        self.trailing_armed = False
         self.bars_in_pos = 0
         if reason.startswith("STOP_LOSS"):
             self.stop_loss_streak += 1
@@ -1244,6 +1287,7 @@ class AIHybridStrategy(StrategyBase):
         self.active_take_profit_pct = self.take_profit_pct
         self.active_stop_loss_pct = self.stop_loss_pct
         self.active_trailing_stop_pct = self.trailing_stop_pct
+        self.trailing_armed = False
         self.bars_in_pos = 0
         if reason.startswith("STOP_LOSS"):
             self.stop_loss_streak += 1
@@ -1401,6 +1445,7 @@ class AIHybridStrategy(StrategyBase):
                     self.active_take_profit_pct = self.take_profit_pct
                     self.active_stop_loss_pct = self.stop_loss_pct
                     self.active_trailing_stop_pct = self.trailing_stop_pct
+                    self.trailing_armed = False
                     if ai_confidence >= self.override_confidence:
                         if self.ai_suggested_tp_pct is not None:
                             self.active_take_profit_pct = float(self.ai_suggested_tp_pct)
@@ -1424,6 +1469,7 @@ class AIHybridStrategy(StrategyBase):
                     self.active_take_profit_pct = self.take_profit_pct
                     self.active_stop_loss_pct = self.stop_loss_pct
                     self.active_trailing_stop_pct = self.trailing_stop_pct
+                    self.trailing_armed = False
                     if ai_confidence >= self.override_confidence:
                         if self.ai_suggested_tp_pct is not None:
                             self.active_take_profit_pct = float(self.ai_suggested_tp_pct)
@@ -1503,6 +1549,9 @@ async def run():
         raise ValueError("stop_loss_pct must be >= 0")
     if strategy.trailing_stop_pct < 0:
         raise ValueError("trailing_stop_pct must be >= 0")
+
+    if strategy.trailing_stop_trigger_pct < 0:
+        raise ValueError("trailing_stop_trigger_pct must be >= 0")
 
     if strategy.cooldown_bars < 0:
         raise ValueError("cooldown_bars must be >= 0")
