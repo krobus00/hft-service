@@ -394,6 +394,12 @@ For Python-based strategy scripts under `strategy/`:
 make run-strategy STRATEGY_FILE=krobot01
 ```
 
+Supertrend example:
+
+```bash
+make run-strategy STRATEGY_FILE=supertrend
+```
+
 This uses Docker image `python-strategy` and mounts local `strategy/` into `/app`.
 
 ### Configuration Checklist
