@@ -52,12 +52,13 @@ Main strategy design goals:
 - Position management: Supports TP ladder/roll behavior (hold winners and step TP) when trend and confidence remain supportive.
 - Safety controls: Intrabar risk guard blocks LLM calls during intrabar exit checks; hard risk exits still run locally.
 
-#### `supertrend.py` (Pure Supertrend Futures Strategy)
+#### `supertrend.py` (Pure Supertrend Trend-Following Strategy)
 
 - Signal style: Indicator-only trend following using Supertrend (ATR + multiplier).
-- Futures behavior: Uptrend signal sends LONG (`BUY`), downtrend signal sends SHORT (`SELL`).
+- Trade behavior: Uptrend signal sends LONG (`BUY`), downtrend signal sends SHORT (`SELL`).
 - Position behavior: Always-in-position model; on opposite signal, strategy reverses direction immediately (no intentional flat gap state).
 - Risk behavior: No local TP/SL/trailing-stop logic. Strategy fully trusts Supertrend direction changes.
+- Runtime standard: Pair routing, user mapping, and risk-config resolution are handled by `strategy_configs` + shared `core/framework.py` (no per-strategy `kline_subject`/`queue_name` settings).
 
 ## Quick Start
 

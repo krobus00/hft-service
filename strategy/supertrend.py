@@ -181,8 +181,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         source=section.get("source", "python-supertrend"),
         strategy_id=section.get("strategy_id", "python-supertrend"),
         need_notification=bool(section.get("need_notification", False)),
-        is_paper_trading=bool(section.get("is_paper_trading", True)),
-        order_type=section.get("order_type", "MARKET"),
+        is_paper_trading=section.get("is_paper_trading", True),
+        order_type=section.get("order_type", "LIMIT"),
         order_qty=float(section.get("order_qty", 10)),
         limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
         # Supertrend strategy intentionally uses no local risk-control exits.
@@ -191,6 +191,8 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 
 
 def build_strategy_config(section: dict) -> StrategyConfig:
+    # Symbol/interval routing is driven by kline_subscriptions in StrategyRunner.
+    # Keep placeholders only to satisfy StrategyConfig shape.
     return StrategyConfig(
         name=section.get("name", "SUPERTREND"),
         symbol="*",
@@ -205,7 +207,17 @@ async def run():
     if runtime.order_qty <= 0:
         raise ValueError("order_qty must be > 0")
 
+    if runtime.limit_slippage_pct < 0:
+        raise ValueError("limit_slippage_pct must be >= 0")
+
     strategy = SupertrendStrategy(build_strategy_config(SUPERTREND_CONFIG), SUPERTREND_CONFIG)
+
+    if strategy.atr_period <= 0:
+        raise ValueError("atr_period must be > 0")
+
+    if strategy.multiplier <= 0:
+        raise ValueError("multiplier must be > 0")
+
     runner = StrategyRunner(strategy=strategy, runtime=runtime)
     await runner.run()
 

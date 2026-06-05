@@ -263,6 +263,29 @@ services:
     networks:
       - hft-network
 
+  strategy-supertrend:
+    build:
+      context: .
+      dockerfile: tools/python-strategy/Dockerfile
+    command: ["bash", "-c", "python supertrend.py"]
+    working_dir: /app
+    volumes:
+      - ./strategy:/app
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    profiles:
+      - strategy
+    networks:
+      - hft-network
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis

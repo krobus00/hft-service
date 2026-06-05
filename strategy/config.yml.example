@@ -11,6 +11,7 @@ krobot01:
   source: python-krobot01
   strategy_id: python-krobot01-ema200-vwap-macd
   order_subject: order_engine.place_order
+  position_side: ONE_WAY # BOTH/ONE_WAY
 
   ema_period: 200
   vwap_window: 200
@@ -20,13 +21,12 @@ krobot01:
 
   historical_limit: 800
 
-  monitor_port: 19011
-
 krobot02:
   name: KROBOT02_VWAP_VOLUME
   source: python-krobot02
   strategy_id: python-krobot02-vwap-volume
   order_subject: order_engine.place_order
+  position_side: ONE_WAY # BOTH/ONE_WAY
 
   historical_limit: 800
 
@@ -35,13 +35,12 @@ krobot02:
   volume_window: 20
   volume_mult: 1.15
 
-  monitor_port: 19012
-
 krobot03:
   name: KROBOT03_EMA_BB_RSI
   source: python-krobot03
   strategy_id: python-krobot03-ema-bb-rsi
   order_subject: order_engine.place_order
+  position_side: ONE_WAY # BOTH/ONE_WAY
 
   historical_limit: 800
 
@@ -66,18 +65,15 @@ krobot03:
   rsi_buy_min: 52
   rsi_sell_max: 48
 
-  monitor_port: 19014
-
 template:
   name: TEMPLATE
   source: python-template
   strategy_id: python-template
   order_subject: order_engine.place_order
+  position_side: ONE_WAY # BOTH/ONE_WAY
 
   historical_limit: 500
   cooldown_bars: 1
-
-  monitor_port: 19019
 
 ai:
   name: AI-M2.7
@@ -86,6 +82,7 @@ ai:
   source: python-ai-minimax-m2-7
   strategy_id: python-ai-minimax-m2-7-hybrid
   order_subject: order_engine.place_order
+  position_side: ONE_WAY # BOTH/ONE_WAY
 
   # AI settings
   use_ai: true
@@ -104,28 +101,15 @@ ai:
   atr_n: 14
   rsi_period: 14
 
-  monitor_port: 19013
-
 supertrend:
   name: SUPERTREND
-  exchange: binance
-  market_type: futures
-  position_side: ONE_WAY
   source: python-supertrend
   strategy_id: python-supertrend
-  need_notification: true
-  is_paper_trading: true
-
-  kline_subject: KLINE.BINANCE.>
   order_subject: order_engine.place_order
-  queue_name: KLINE_STRATEGY_BINANCE_SUPERTREND
 
+  position_side: ONE_WAY # BOTH/ONE_WAY
+  
   # Supertrend indicator settings
   atr_period: 10
   multiplier: 3.0
   historical_limit: 600
-
-  # This strategy intentionally has no TP/SL/trailing risk controls.
-  enable_intrabar_risk_exit: false
-
-  monitor_port: 19014
