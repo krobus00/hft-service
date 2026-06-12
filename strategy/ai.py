@@ -2,6 +2,7 @@ import asyncio
 from collections import deque
 from contextlib import suppress
 import json
+import logging
 import os
 from typing import Any, Dict, Optional, Tuple
 
@@ -9,7 +10,7 @@ import httpx
 from openai import OpenAI
 import uvloop
 
-from core.common import cfg_value, load_full_config, pct_to_frac
+from core.common import cfg_value, load_full_config, pct_to_frac, runtime_options
 from core.framework import StrategyBase, StrategyRunner
 from core.indicators import ATR, EMA, MACD, RSI, RollingVWAP
 from core.models import Candle, RuntimeConfig, StrategyConfig
@@ -19,6 +20,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 CONFIG = load_full_config()
 GLOBAL_CONFIG = CONFIG.get("global", {})
 AI_CONFIG = CONFIG.get("ai", {})
+LOGGER = logging.getLogger("strategy.ai")
 
 AI_SYSTEM_PROMPT = (
     "You are an advanced quantitative crypto trading assistant.\n\n"
@@ -700,13 +702,13 @@ class AIHybridStrategy(StrategyBase):
         payload_timeframe = str(payload.get("timeframe", self.config.interval) or self.config.interval)
 
         user_payload_text = self._build_user_input_prompt(payload)
-        print(
-            (
-                f"[AI_REQUEST] symbol={payload_symbol} interval={payload_timeframe} "
-                f"model={self.model_name} "
-                f"prompt_len={len(AI_SYSTEM_PROMPT)} payload_len={len(user_payload_text)}"
-            ),
-            flush=True,
+        LOGGER.info(
+            "ai_request symbol=%s interval=%s model=%s prompt_len=%s payload_len=%s",
+            payload_symbol,
+            payload_timeframe,
+            self.model_name,
+            len(AI_SYSTEM_PROMPT),
+            len(user_payload_text),
         )
 
         try:
@@ -734,13 +736,13 @@ class AIHybridStrategy(StrategyBase):
                 finish_reason = getattr(first_choice, "finish_reason", None)
                 if isinstance(first_choice, dict):
                     finish_reason = first_choice.get("finish_reason")
-            print(
-                (
-                    f"[AI_RESPONSE_RAW] symbol={payload_symbol} interval={payload_timeframe} "
-                    f"model={self.model_name} finish_reason={finish_reason} "
-                    f"response={self._truncate_text(raw_text, 600)}"
-                ),
-                flush=True,
+            LOGGER.debug(
+                "ai_response_raw symbol=%s interval=%s model=%s finish_reason=%s response=%s",
+                payload_symbol,
+                payload_timeframe,
+                self.model_name,
+                finish_reason,
+                self._truncate_text(raw_text, 600),
             )
             if not raw_text:
                 raise RuntimeError(f"No text in response (finish_reason={finish_reason})")
@@ -775,22 +777,25 @@ class AIHybridStrategy(StrategyBase):
                 "suggested_trailing_stop_pct": suggested_trailing_stop_pct,
                 "suggested_tp_pct": suggested_tp_pct,
             }
-            print(
-                (
-                    f"[AI_RESPONSE_PARSED] symbol={payload_symbol} interval={payload_timeframe} "
-                    f"model={self.model_name} action={action} confidence={confidence:.4f} "
-                    f"reason={reason} risk_control={risk_feedback}"
-                ),
-                flush=True,
+            LOGGER.info(
+                "ai_response_parsed symbol=%s interval=%s model=%s action=%s confidence=%.4f reason=%s risk_control=%s",
+                payload_symbol,
+                payload_timeframe,
+                self.model_name,
+                action,
+                confidence,
+                reason,
+                risk_feedback,
             )
             return action, confidence, reason, risk_feedback
         except Exception as exc:
-            print(
-                (
-                    f"[AI_ERROR] symbol={payload_symbol} interval={payload_timeframe} "
-                    f"model={self.model_name} error={type(exc).__name__}:{exc}"
-                ),
-                flush=True,
+            LOGGER.warning(
+                "ai_error symbol=%s interval=%s model=%s error=%s:%s",
+                payload_symbol,
+                payload_timeframe,
+                self.model_name,
+                type(exc).__name__,
+                exc,
             )
             raise RuntimeError(f"LLM request failed: {type(exc).__name__}:{exc}") from exc
 
@@ -968,12 +973,12 @@ class AIHybridStrategy(StrategyBase):
         }
         test_payload_text = json.dumps(test_payload, separators=(",", ":"))
 
-        print(
-            (
-                f"[AI_INIT_TEST_REQUEST] symbol={self.config.symbol} interval={self.config.interval} "
-                f"model={self.model_name} payload={test_payload_text}"
-            ),
-            flush=True,
+        LOGGER.info(
+            "ai_init_test_request symbol=%s interval=%s model=%s payload=%s",
+            self.config.symbol,
+            self.config.interval,
+            self.model_name,
+            test_payload_text,
         )
 
         try:
@@ -1003,31 +1008,31 @@ class AIHybridStrategy(StrategyBase):
                     finish_reason = first_choice.get("finish_reason")
             if not raw_text:
                 if choices:
-                    print(
-                        (
-                            f"[AI_INIT_TEST_RESPONSE_NO_TEXT] symbol={self.config.symbol} interval={self.config.interval} "
-                            f"model={self.model_name} finish_reason={finish_reason} "
-                            "status=ok warning=empty_text_with_nonempty_choices"
-                        ),
-                        flush=True,
+                    LOGGER.warning(
+                        "ai_init_test_response_no_text symbol=%s interval=%s model=%s finish_reason=%s",
+                        self.config.symbol,
+                        self.config.interval,
+                        self.model_name,
+                        finish_reason,
                     )
                     return
                 raise RuntimeError("empty response from LLM init test")
 
-            print(
-                (
-                    f"[AI_INIT_TEST_RESPONSE] symbol={self.config.symbol} interval={self.config.interval} "
-                    f"model={self.model_name} response={raw_text}"
-                ),
-                flush=True,
+            LOGGER.info(
+                "ai_init_test_response symbol=%s interval=%s model=%s response=%s",
+                self.config.symbol,
+                self.config.interval,
+                self.model_name,
+                raw_text,
             )
         except Exception as exc:
-            print(
-                (
-                    f"[AI_INIT_TEST_ERROR] symbol={self.config.symbol} interval={self.config.interval} "
-                    f"model={self.model_name} error={type(exc).__name__}:{exc}"
-                ),
-                flush=True,
+            LOGGER.warning(
+                "ai_init_test_error symbol=%s interval=%s model=%s error=%s:%s",
+                self.config.symbol,
+                self.config.interval,
+                self.model_name,
+                type(exc).__name__,
+                exc,
             )
             raise RuntimeError(f"LLM init test failed: {type(exc).__name__}:{exc}") from exc
 
@@ -1362,15 +1367,17 @@ class AIHybridStrategy(StrategyBase):
             if tp_pct is not None:
                 self.active_take_profit_pct = float(tp_pct)
 
-        print(
-            (
-                f"[AI_DECISION] symbol={candle.symbol or self.config.symbol} "
-                f"interval={candle.interval or self.config.interval} "
-                f"close={candle.close:.6f} ai={ai_action}:{ai_confidence:.4f} "
-                f"final={final_action}:{final_confidence:.4f} "
-                f"queried={queried} reason={ai_reason}"
-            ),
-            flush=True,
+        LOGGER.info(
+            "ai_decision symbol=%s interval=%s close=%.6f ai=%s:%.4f final=%s:%.4f queried=%s reason=%s",
+            candle.symbol or self.config.symbol,
+            candle.interval or self.config.interval,
+            candle.close,
+            ai_action,
+            ai_confidence,
+            final_action,
+            final_confidence,
+            queried,
+            ai_reason,
         )
 
         metadata = {
@@ -1481,16 +1488,9 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
         nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
         nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-        order_subject=section.get("order_subject", "order_engine.place_order"),
-        position_side=section.get("position_side", "BOTH"),
-        source=section.get("source", "python-ai-minimax-m2-7"),
-        strategy_id=section.get("strategy_id", "python-ai-minimax-m2-7-hybrid"),
-        need_notification=bool(section.get("need_notification", False)),
-        is_paper_trading=section.get("is_paper_trading", True),
-        order_type=section.get("order_type", "LIMIT"),
-        order_qty=float(section.get("order_qty", 10)),
-        limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
-        enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", True)),
+        source="python-ai-minimax-m2-7",
+        strategy_id="python-ai-minimax-m2-7-hybrid",
+        **runtime_options(GLOBAL_CONFIG, section),
     )
 
 
@@ -1505,9 +1505,6 @@ def build_strategy_config(section: dict) -> StrategyConfig:
 
 async def run():
     runtime = build_runtime_config(AI_CONFIG)
-
-    if runtime.order_qty <= 0:
-        raise ValueError("order_qty must be > 0")
 
     strategy = AIHybridStrategy(build_strategy_config(AI_CONFIG), AI_CONFIG)
     if strategy.ai_client is None:

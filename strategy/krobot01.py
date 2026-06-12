@@ -1,9 +1,10 @@
 import asyncio
+import logging
 from typing import Dict, Optional
 
 import uvloop
 
-from core.common import cfg_value, load_full_config, pct_to_frac
+from core.common import cfg_value, load_full_config, pct_to_frac, runtime_options
 from core.framework import StrategyBase, StrategyRunner
 from core.indicators import EMA, MACD, RollingVWAP
 from core.models import Candle, RuntimeConfig, StrategyConfig
@@ -13,6 +14,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 CONFIG = load_full_config()
 GLOBAL_CONFIG = CONFIG.get("global", {})
 KROBOT01_CONFIG = CONFIG.get("krobot01", {})
+LOGGER = logging.getLogger("strategy.krobot01")
 
 
 class Krobot01Strategy(StrategyBase):
@@ -393,9 +395,16 @@ class Krobot01Strategy(StrategyBase):
         long_cond = candle.close > ema and candle.close > vwap_px and crossed_up
         short_cond = candle.close < ema and candle.close < vwap_px and crossed_down
 
-        print(
-            f"symbol={symbol} close={candle.close:.6f} ema={ema:.6f} vwap={vwap_px:.6f} crossed_up={crossed_up} crossed_down={crossed_down} long_cond={long_cond} short_cond={short_cond}",
-            flush=True,
+        LOGGER.debug(
+            "decision_context symbol=%s close=%.6f ema=%.6f vwap=%.6f crossed_up=%s crossed_down=%s long_cond=%s short_cond=%s",
+            symbol,
+            candle.close,
+            ema,
+            vwap_px,
+            crossed_up,
+            crossed_down,
+            long_cond,
+            short_cond,
         )
 
         if long_cond:
@@ -443,16 +452,9 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
         nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
         nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-        order_subject=section.get("order_subject", "order_engine.place_order"),
-        position_side=section.get("position_side", "BOTH"),
-        source=section.get("source", "python-krobot01"),
-        strategy_id=section.get("strategy_id", "python-krobot01-ema-vwap-macd"),
-        need_notification=bool(section.get("need_notification", False)),
-        is_paper_trading=section.get("is_paper_trading", True),
-        order_type=section.get("order_type", "LIMIT"),
-        order_qty=float(section.get("order_qty", 10)),
-        limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
-        enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", True)),
+        source="python-krobot01",
+        strategy_id="python-krobot01-ema200-vwap-macd",
+        **runtime_options(GLOBAL_CONFIG, section),
     )
 
 
@@ -467,9 +469,6 @@ def build_strategy_config(section: dict) -> StrategyConfig:
 
 async def run():
     runtime = build_runtime_config(KROBOT01_CONFIG)
-
-    if runtime.order_qty <= 0:
-        raise ValueError("order_qty must be > 0")
 
     strategy = Krobot01Strategy(build_strategy_config(KROBOT01_CONFIG), KROBOT01_CONFIG)
 

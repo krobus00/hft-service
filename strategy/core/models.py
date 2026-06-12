@@ -41,13 +41,23 @@ class RuntimeConfig:
     nats_connect_timeout_sec: int
     nats_ping_interval_sec: int
     nats_max_outstanding_pings: int
-    order_subject: str
-    position_side: str
-    source: str
-    strategy_id: str
-    need_notification: bool
-    is_paper_trading: bool
-    order_type: str
-    order_qty: float
-    limit_slippage_pct: float
+    position_side: str = "BOTH"
+    source: str = "python-strategy"
+    strategy_id: str = ""
+    need_notification: bool = False
+    is_paper_trading: bool = True
+    order_type: str = "LIMIT"
+    order_qty: float = 0.0
+    limit_slippage_pct: float = 0.0
     enable_intrabar_risk_exit: bool = False
+    strategy_config_refresh_interval_sec: int = 10
+    monitor_enabled: bool = False
+    monitor_host: str = "127.0.0.1"
+    monitor_port: int = 8088
+    redis_url: str = ""
+    redis_key_prefix: str = "hft:strategy"
+    redis_state_ttl_sec: int = 86400
+    redis_delete_removed_state: bool = False
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 4
+    message_queue_size: int = 1000

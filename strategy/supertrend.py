@@ -1,18 +1,24 @@
 import asyncio
+import logging
 from typing import Dict, Optional
 
-import uvloop
-
-from core.common import cfg_value, load_full_config
+from core.common import load_full_config, runtime_options
 from core.framework import StrategyBase, StrategyRunner
 from core.indicators import ATR
 from core.models import Candle, RuntimeConfig, StrategyConfig
 
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
+
+if uvloop is not None:
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 CONFIG = load_full_config()
 GLOBAL_CONFIG = CONFIG.get("global", {})
 SUPERTREND_CONFIG = CONFIG.get("supertrend", {})
+LOGGER = logging.getLogger("strategy.supertrend")
 
 
 class SupertrendStrategy(StrategyBase):
@@ -24,9 +30,13 @@ class SupertrendStrategy(StrategyBase):
         self.atr_period = max(1, int(section.get("atr_period", 10)))
         self.multiplier = max(0.1, float(section.get("multiplier", 3.0)))
 
-    def _symbol_key(self, candle: Candle) -> str:
+    def _state_key(self, candle: Candle) -> str:
         symbol = str(candle.symbol or self.config.symbol or "").strip().upper()
-        return symbol or str(self.config.symbol or "UNKNOWN").strip().upper()
+        interval = str(candle.interval or self.config.interval or "").strip()
+        symbol = symbol or str(self.config.symbol or "UNKNOWN").strip().upper()
+        if interval and interval != "*":
+            return f"{symbol}:{interval}"
+        return symbol
 
     def _get_state(self, symbol: str) -> dict:
         state = self.states.get(symbol)
@@ -140,29 +150,61 @@ class SupertrendStrategy(StrategyBase):
         if not self.allow_new_candle(candle):
             return None
 
-        symbol = self._symbol_key(candle)
-        state = self._get_state(symbol)
+        state_key = self._state_key(candle)
+        state = self._get_state(state_key)
 
         high_px = candle.high if candle.high is not None else candle.close
         low_px = candle.low if candle.low is not None else candle.close
         trend = self._update_supertrend(state, high_px, low_px, candle.close)
         if trend is None:
+            LOGGER.debug(
+                "supertrend_warming key=%s close_time_ms=%s atr_period=%s",
+                state_key,
+                candle.close_time_ms,
+                self.atr_period,
+            )
             return None
 
         if is_warmup:
             return None
 
+        trend_label = "UP" if trend > 0 else "DOWN"
+        current_side = str(state.get("position_side") or "").strip().upper() or "FLAT"
         metadata = {
-            "symbol": symbol,
-            "trend": "UP" if trend > 0 else "DOWN",
+            "symbol": str(candle.symbol or self.config.symbol or "").strip().upper(),
+            "state_key": state_key,
+            "trend": trend_label,
+            "current_side": current_side,
         }
 
-        if trend > 0 and state["position_side"] != "LONG":
+        has_tracked_entry = state.get("entry_price") is not None
+        if trend > 0 and (state["position_side"] != "LONG" or not has_tracked_entry):
+            LOGGER.info(
+                "supertrend_entry key=%s trend=%s previous_side=%s close=%.8f",
+                state_key,
+                trend_label,
+                current_side,
+                candle.close,
+            )
             return self._enter_long(state, candle, metadata)
 
-        if trend < 0 and state["position_side"] != "SHORT":
+        if trend < 0 and (state["position_side"] != "SHORT" or not has_tracked_entry):
+            LOGGER.info(
+                "supertrend_entry key=%s trend=%s previous_side=%s close=%.8f",
+                state_key,
+                trend_label,
+                current_side,
+                candle.close,
+            )
             return self._enter_short(state, candle, metadata)
 
+        LOGGER.debug(
+            "supertrend_hold key=%s trend=%s current_side=%s close=%.8f",
+            state_key,
+            trend_label,
+            current_side,
+            candle.close,
+        )
         return None
 
 
@@ -176,17 +218,9 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
         nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
         nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-        order_subject=section.get("order_subject", "order_engine.place_order"),
-        position_side=section.get("position_side", "BOTH"),
-        source=section.get("source", "python-supertrend"),
-        strategy_id=section.get("strategy_id", "python-supertrend"),
-        need_notification=bool(section.get("need_notification", False)),
-        is_paper_trading=section.get("is_paper_trading", True),
-        order_type=section.get("order_type", "LIMIT"),
-        order_qty=float(section.get("order_qty", 10)),
-        limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
-        # Supertrend strategy intentionally uses no local risk-control exits.
-        enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", False)),
+        source="python-supertrend",
+        strategy_id="python-supertrend",
+        **runtime_options(GLOBAL_CONFIG, section),
     )
 
 
@@ -203,12 +237,6 @@ def build_strategy_config(section: dict) -> StrategyConfig:
 
 async def run():
     runtime = build_runtime_config(SUPERTREND_CONFIG)
-
-    if runtime.order_qty <= 0:
-        raise ValueError("order_qty must be > 0")
-
-    if runtime.limit_slippage_pct < 0:
-        raise ValueError("limit_slippage_pct must be >= 0")
 
     strategy = SupertrendStrategy(build_strategy_config(SUPERTREND_CONFIG), SUPERTREND_CONFIG)
 

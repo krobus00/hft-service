@@ -1,17 +1,28 @@
 global:
   nats_url: nats://localhost:4222
+  nats_allow_reconnect: true
+  nats_max_reconnect_attempts: -1
+  nats_reconnect_time_wait_sec: 2
+  nats_connect_timeout_sec: 5
+  nats_ping_interval_sec: 30
+  nats_max_outstanding_pings: 3
   db_dsn: postgres://root:root@localhost:5432/market_data?sslmode=disable
-  monitor_enabled: true
-  monitor_host: 127.0.0.1
+  db_pool_min_size: 1
+  db_pool_max_size: 4
+  strategy_config_refresh_interval_sec: 10
+  message_queue_size: 1000
+  redis_url: redis://localhost:6379/0
+  redis_key_prefix: hft:strategy
+  redis_state_ttl_sec: 86400
+  redis_delete_removed_state: false
   proxy_host: https://llm.proxy
   api_key: YOUR_API_KEY
   max_tokens: 1200
 
 krobot01:
-  source: python-krobot01
-  strategy_id: python-krobot01-ema200-vwap-macd
-  order_subject: order_engine.place_order
-  position_side: ONE_WAY # BOTH/ONE_WAY
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19011
 
   ema_period: 200
   vwap_window: 200
@@ -23,10 +34,9 @@ krobot01:
 
 krobot02:
   name: KROBOT02_VWAP_VOLUME
-  source: python-krobot02
-  strategy_id: python-krobot02-vwap-volume
-  order_subject: order_engine.place_order
-  position_side: ONE_WAY # BOTH/ONE_WAY
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19012
 
   historical_limit: 800
 
@@ -37,10 +47,9 @@ krobot02:
 
 krobot03:
   name: KROBOT03_EMA_BB_RSI
-  source: python-krobot03
-  strategy_id: python-krobot03-ema-bb-rsi
-  order_subject: order_engine.place_order
-  position_side: ONE_WAY # BOTH/ONE_WAY
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19013
 
   historical_limit: 800
 
@@ -67,22 +76,19 @@ krobot03:
 
 template:
   name: TEMPLATE
-  source: python-template
-  strategy_id: python-template
-  order_subject: order_engine.place_order
-  position_side: ONE_WAY # BOTH/ONE_WAY
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19014
 
   historical_limit: 500
   cooldown_bars: 1
 
 ai:
   name: AI-M2.7
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19015
   historical_limit: 800
-
-  source: python-ai-minimax-m2-7
-  strategy_id: python-ai-minimax-m2-7-hybrid
-  order_subject: order_engine.place_order
-  position_side: ONE_WAY # BOTH/ONE_WAY
 
   # AI settings
   use_ai: true
@@ -103,11 +109,9 @@ ai:
 
 supertrend:
   name: SUPERTREND
-  source: python-supertrend
-  strategy_id: python-supertrend
-  order_subject: order_engine.place_order
-
-  position_side: ONE_WAY # BOTH/ONE_WAY
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19016
   
   # Supertrend indicator settings
   atr_period: 10

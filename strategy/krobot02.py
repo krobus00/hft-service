@@ -4,7 +4,7 @@ from typing import Optional
 
 import uvloop
 
-from core.common import cfg_value, load_full_config, pct_to_frac
+from core.common import cfg_value, load_full_config, pct_to_frac, runtime_options
 from core.framework import StrategyBase, StrategyRunner
 from core.indicators import EMA, RollingVWAP
 from core.models import Candle, RuntimeConfig, StrategyConfig
@@ -304,16 +304,9 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
 		nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
 		nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
 		nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-		order_subject=section.get("order_subject", "order_engine.place_order"),
-		position_side=section.get("position_side", "BOTH"),
-		source=section.get("source", "python-krobot02"),
-		strategy_id=section.get("strategy_id", "python-krobot02-vwap-volume"),
-		need_notification=bool(section.get("need_notification", False)),
-		is_paper_trading=section.get("is_paper_trading", True),
-		order_type=section.get("order_type", "LIMIT"),
-		order_qty=float(section.get("order_qty", 10)),
-		limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
-		enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", False)),
+		source="python-krobot02",
+		strategy_id="python-krobot02-vwap-volume",
+		**runtime_options(GLOBAL_CONFIG, section),
 	)
 
 
@@ -328,9 +321,6 @@ def build_strategy_config(section: dict) -> StrategyConfig:
 
 async def run():
 	runtime = build_runtime_config(KROBOT02_CONFIG)
-
-	if runtime.order_qty <= 0:
-		raise ValueError("order_qty must be > 0")
 
 	strategy = Krobot02VWAPVolumeStrategy(build_strategy_config(KROBOT02_CONFIG), KROBOT02_CONFIG)
 

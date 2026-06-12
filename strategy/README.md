@@ -9,6 +9,9 @@ This module contains executable strategy files plus a shared framework for:
 - Running warmup + live decision loops.
 - Publishing orders to the order engine.
 - Applying centralized risk controls from configuration.
+- Auto-resyncing `strategy_configs` rows while the process is running.
+- Persisting strategy state in Redis so restarts can continue from the last known indicator/position state.
+- Exposing a lightweight HTTP monitor endpoint.
 
 Main strategy design goals:
 - Keep strategy-specific logic inside each strategy file (for example `krobot01.py`, `ai.py`).
@@ -133,18 +136,7 @@ exchanges:
 
 ### 2) Strategy config (`strategy/config.yml`)
 
-Each strategy section should define runtime identity and execution settings, for example:
-
-- `source`
-- `strategy_id`
-- `order_subject`
-- `order_type`
-- `order_qty`
-- `position_side`
-- `need_notification`
-- `is_paper_trading`
-
-Do not define `user_id` in strategy config.
+Each strategy section should only define strategy-owned settings, such as indicator windows, thresholds, warmup limits, and its monitor port. Do not define `user_id`, `strategy_id`, `source`, `position_side`, order sizing, paper-trading flags, or risk controls in YAML. Those belong in `strategy_configs`. The order publish subject is shared by every strategy and is hardcoded in the framework as `order_engine.place_order`.
 
 ### 3) Strategy configs (`strategy_configs`)
 
@@ -152,25 +144,30 @@ Strategies now use pair-level config from this table (not from YAML), including 
 
 ```sql
 INSERT INTO strategy_configs
-(strategy, exchange, market_type, symbol, interval, user_id, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
+(strategy, exchange, market_type, symbol, interval, user_id, position_side, source,
+ need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
  cooldown_bars, sl_cooldown_bars, max_consecutive_stop_losses, sl_pause_bars,
  take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_stop_trigger_pct, max_hold_bars, max_positions, enable_intrabar_risk_exit)
 VALUES
-('python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02,
+('python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01',
+ 'BOTH', 'python-ai-minimax-m2-7',
+ true, false, 'MARKET', 10, 0.02,
  2, 3, 2, 10,
  0.25, 0.15, 0.12, 0.20, 24, 1, true);
 ```
 
 Rules:
 
-- `strategy` must match strategy runtime `strategy_id`.
+- `strategy` must match the strategy key used by the Python runner, for example `python-krobot01-ema200-vwap-macd`.
 - `symbol/interval/exchange/market_type` must match active market-data rows.
 - `user_id` must match a configured exchange account key.
+- `position_side` and `source` are stored in DB rows so one strategy process can route different pairs correctly.
+- Orders are always published to `order_engine.place_order`; this is framework behavior, not strategy config.
 
 ## Project Layout
 
 Shared reusable framework in `core/`:
-- `core/framework.py`: warmup flow, live feed handling, NATS subscribe, order publish, shared buy/sell helpers.
+- `core/framework.py`: warmup flow, live feed handling, NATS reconnect callbacks, DB config resync, Redis state persistence, monitor endpoints, order publish, shared buy/sell helpers.
 - `core/indicators.py`: reusable indicators (EMA, RollingVWAP, MACD).
 - `core/models.py`: shared candle/signal/runtime dataclasses.
 - `core/common.py`: config and utility helpers.
@@ -206,3 +203,73 @@ Resolution order used by each strategy runtime:
 - If trades are too frequent after losses: increase `sl_cooldown_bars`, reduce `max_consecutive_stop_losses`, increase `sl_pause_bars`.
 - If strategy exits too early: increase `stop_loss_pct` and/or `trailing_stop_pct` carefully.
 - If strategy holds losers too long: decrease `stop_loss_pct`, and for AI strategy decrease `max_hold_bars`.
+
+## Runtime Reliability
+
+### NATS reconnect
+
+The shared runner enables NATS reconnect through `RuntimeConfig`:
+
+- `nats_allow_reconnect`
+- `nats_max_reconnect_attempts`
+- `nats_reconnect_time_wait_sec`
+- `nats_connect_timeout_sec`
+- `nats_ping_interval_sec`
+- `nats_max_outstanding_pings`
+
+Callbacks log disconnect/reconnect/error/closed events. If the connection is fully closed, the runner exits so the process supervisor can restart it.
+
+### DB config resync
+
+The runner reloads `strategy_configs` every `global.strategy_config_refresh_interval_sec` seconds. Added rows are warmed up and subscribed. Removed or changed rows are unsubscribed and re-added with the latest config.
+
+Each active pair has its own in-memory queue and worker. NATS callbacks enqueue messages quickly, then the pair worker processes candles in order. Different pairs can run independently, while each individual pair stays sequential so indicator and position state remain consistent.
+
+Postgres access uses an asyncpg pool:
+
+```yaml
+global:
+  db_pool_min_size: 1
+  db_pool_max_size: 4
+  strategy_config_refresh_interval_sec: 10
+```
+
+### Redis state
+
+Set `global.redis_url` to persist per-pair strategy state:
+
+```yaml
+global:
+  redis_url: redis://localhost:6379/0
+  redis_key_prefix: hft:strategy
+  redis_state_ttl_sec: 86400
+  redis_delete_removed_state: false
+```
+
+The runner stores indicator state, position/risk state, remembered entry price, and entry order ID after each processed message. On startup or config resync, Redis state is restored first; DB warmup is used when no Redis state exists for the pair.
+
+### Monitor Endpoints
+
+Enable the built-in HTTP monitor:
+
+```yaml
+global:
+  # shared defaults only
+
+krobot01:
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19011
+
+krobot02:
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19012
+```
+
+Endpoints:
+
+- `GET /health`: process, NATS, Redis, and resync health.
+- `GET /metrics`: message, signal, order, reconnect, and config-resync counters.
+- `GET /state`: full active pair, subscription, and JSON-safe strategy state snapshot.
+- `GET /`: same as `/state`.
