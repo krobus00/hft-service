@@ -19,6 +19,30 @@ class EMA:
         return self.value
 
 
+class RMA:
+    __slots__ = ("period", "value", "count", "sum")
+
+    def __init__(self, period: int):
+        self.period = max(1, int(period))
+        self.value = 0.0
+        self.count = 0
+        self.sum = 0.0
+
+    def update(self, value: float) -> Optional[float]:
+        x = float(value)
+        self.count += 1
+
+        if self.count <= self.period:
+            self.sum += x
+            if self.count < self.period:
+                return None
+            self.value = self.sum / float(self.period)
+            return self.value
+
+        self.value = ((self.value * (self.period - 1.0)) + x) / float(self.period)
+        return self.value
+
+
 class RollingVWAP:
     __slots__ = ("window", "buf", "sum_pv", "sum_v")
 
@@ -90,30 +114,25 @@ class MACD:
 
 
 class ATR:
-    __slots__ = ("n", "prev_close", "buf", "sum")
+    __slots__ = ("n", "prev_close", "rma")
 
     def __init__(self, n: int):
         self.n = max(1, int(n))
         self.prev_close: Optional[float] = None
-        self.buf = deque()
-        self.sum = 0.0
+        self.rma = RMA(self.n)
 
     def update(self, high: float, low: float, close: float) -> Optional[float]:
+        hi = float(high)
+        lo = float(low)
+        px = float(close)
+
         if self.prev_close is None:
-            tr = high - low
+            tr = hi - lo
         else:
-            tr = max(high - low, abs(high - self.prev_close), abs(low - self.prev_close))
-        self.prev_close = close
+            tr = max(hi - lo, abs(hi - self.prev_close), abs(lo - self.prev_close))
+        self.prev_close = px
 
-        self.buf.append(tr)
-        self.sum += tr
-
-        if len(self.buf) > self.n:
-            self.sum -= self.buf.popleft()
-
-        if len(self.buf) < self.n:
-            return None
-        return self.sum / len(self.buf)
+        return self.rma.update(tr)
 
 
 class AnchoredVWAP:
@@ -201,14 +220,13 @@ class BollingerBands:
 
 
 class RSI:
-    __slots__ = ("period", "prev_close", "avg_gain", "avg_loss", "count")
+    __slots__ = ("period", "prev_close", "gain_rma", "loss_rma")
 
     def __init__(self, period: int):
         self.period = max(2, int(period))
         self.prev_close: Optional[float] = None
-        self.avg_gain = 0.0
-        self.avg_loss = 0.0
-        self.count = 0
+        self.gain_rma = RMA(self.period)
+        self.loss_rma = RMA(self.period)
 
     def update(self, close: float) -> Optional[float]:
         px = float(close)
@@ -222,21 +240,16 @@ class RSI:
         gain = max(delta, 0.0)
         loss = max(-delta, 0.0)
 
-        self.count += 1
-        if self.count <= self.period:
-            scale = float(self.count)
-            self.avg_gain = ((self.avg_gain * (scale - 1.0)) + gain) / scale
-            self.avg_loss = ((self.avg_loss * (scale - 1.0)) + loss) / scale
-            if self.count < self.period:
-                return None
-        else:
-            period = float(self.period)
-            self.avg_gain = ((self.avg_gain * (period - 1.0)) + gain) / period
-            self.avg_loss = ((self.avg_loss * (period - 1.0)) + loss) / period
+        avg_gain = self.gain_rma.update(gain)
+        avg_loss = self.loss_rma.update(loss)
+        if avg_gain is None or avg_loss is None:
+            return None
 
-        if self.avg_loss == 0.0:
+        if avg_loss == 0.0:
             return 100.0
-        rs = self.avg_gain / self.avg_loss
+        if avg_gain == 0.0:
+            return 0.0
+        rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
 
 
@@ -270,7 +283,7 @@ class Stochastic:
         period_low = min(self.low_buf)
         denom = period_high - period_low
         if denom <= 0:
-            k = 50.0
+            return None, None
         else:
             k = ((px - period_low) / denom) * 100.0
 

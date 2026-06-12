@@ -11,7 +11,7 @@ import uvloop
 
 from core.common import cfg_value, load_full_config, pct_to_frac
 from core.framework import StrategyBase, StrategyRunner
-from core.indicators import ATR, EMA, MACD, RollingVWAP
+from core.indicators import ATR, EMA, MACD, RSI, RollingVWAP
 from core.models import Candle, RuntimeConfig, StrategyConfig
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -121,6 +121,7 @@ class AIHybridStrategy(StrategyBase):
         "macd",
         "vwap",
         "atr",
+        "rsi",
         "position_side",
         "entry_price",
         "highest_since_entry",
@@ -150,10 +151,6 @@ class AIHybridStrategy(StrategyBase):
         "stop_loss_streak",
         "max_positions",
         "macd_ready_min",
-        "rsi_period",
-        "rsi_avg_gain",
-        "rsi_avg_loss",
-        "rsi_count",
         "prev_close",
         "prev_macd_hist",
         "prev_ema_spread_pct",
@@ -190,12 +187,14 @@ class AIHybridStrategy(StrategyBase):
         macd_signal = int(section.get("macd_signal", 9))
         vwap_window = int(section.get("vwap_window", 120))
         atr_period = int(section.get("atr_n", 14))
+        rsi_period = int(section.get("rsi_period", 14))
 
         self.ema_fast = EMA(ema_fast_period)
         self.ema_slow = EMA(ema_slow_period)
         self.macd = MACD(macd_fast, macd_slow, macd_signal)
         self.vwap = RollingVWAP(vwap_window)
         self.atr = ATR(atr_period)
+        self.rsi = RSI(rsi_period)
 
         self.position_side: Optional[str] = None
         self.entry_price: Optional[float] = None
@@ -233,10 +232,6 @@ class AIHybridStrategy(StrategyBase):
         self.max_positions = int(cfg_value(section, GLOBAL_CONFIG, "max_positions", 1))
 
         self.macd_ready_min = max(50, macd_slow + macd_signal)
-        self.rsi_period = max(2, int(section.get("rsi_period", 14)))
-        self.rsi_avg_gain = 0.0
-        self.rsi_avg_loss = 0.0
-        self.rsi_count = 0
 
         self.prev_close: Optional[float] = None
         self.prev_macd_hist: Optional[float] = None
@@ -820,31 +815,6 @@ class AIHybridStrategy(StrategyBase):
             return max(1, int(raw[:-1]) * 1440)
         return 1
 
-    def _update_rsi(self, close: float) -> Optional[float]:
-        if self.prev_close is None:
-            return None
-
-        delta = close - self.prev_close
-        gain = max(delta, 0.0)
-        loss = max(-delta, 0.0)
-
-        self.rsi_count += 1
-        if self.rsi_count <= self.rsi_period:
-            scale = float(self.rsi_count)
-            self.rsi_avg_gain = ((self.rsi_avg_gain * (scale - 1.0)) + gain) / scale
-            self.rsi_avg_loss = ((self.rsi_avg_loss * (scale - 1.0)) + loss) / scale
-            if self.rsi_count < self.rsi_period:
-                return None
-        else:
-            period = float(self.rsi_period)
-            self.rsi_avg_gain = ((self.rsi_avg_gain * (period - 1.0)) + gain) / period
-            self.rsi_avg_loss = ((self.rsi_avg_loss * (period - 1.0)) + loss) / period
-
-        if self.rsi_avg_loss == 0.0:
-            return 100.0
-        rs = self.rsi_avg_gain / self.rsi_avg_loss
-        return 100.0 - (100.0 / (1.0 + rs))
-
     def _build_ai_payload(
         self,
         candle: Candle,
@@ -1335,7 +1305,7 @@ class AIHybridStrategy(StrategyBase):
         atr_pct = atr / candle.close * 100.0 if candle.close != 0 else 0.0
         distance_from_ema = (candle.close - ema_slow) / ema_slow * 100.0 if ema_slow != 0 else 0.0
         ret_1_pct = ((candle.close - self.prev_close) / self.prev_close * 100.0) if self.prev_close else 0.0
-        rsi = self._update_rsi(candle.close)
+        rsi = self.rsi.update(candle.close)
 
         if is_warmup:
             self._update_bar_state(
