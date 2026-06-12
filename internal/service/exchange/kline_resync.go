@@ -30,6 +30,43 @@ type exchangeKlineResyncDeps struct {
 	KlineSubRepo      *repository.KlineSubscriptionRepository
 }
 
+type exchangeKlineWSOptions struct {
+	WSURLEnvKey        string
+	DefaultWSURL       string
+	ResolveWSURL       func(subscriptions []entity.KlineSubscription) string
+	HandleKlineMessage func(ctx context.Context, message []byte) error
+	SubscriptionsInURL bool
+}
+
+func newExchangeKlineWSConfig(deps exchangeKlineResyncDeps, options exchangeKlineWSOptions) klineWSSubscriberConfig {
+	return klineWSSubscriberConfig{
+		ExchangeName: deps.ExchangeName,
+		WSURLEnvKey:  options.WSURLEnvKey,
+		DefaultWSURL: options.DefaultWSURL,
+		ResolveWSURL: options.ResolveWSURL,
+		NormalizeSubscriptions: func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription {
+			normalized := normalizeExchangeSubscriptions(deps, subscriptions)
+			if options.SubscriptionsInURL {
+				clearSubscriptionPayloads(normalized)
+			}
+			return normalized
+		},
+		ResyncSubscriptions: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
+			return resyncExchangeKlineSubscriptions(ctx, conn, deps, fallback)
+		},
+		LoadCurrentResyncState: func(ctx context.Context) (klineResyncState, error) {
+			return loadExchangeResyncState(ctx, deps)
+		},
+		HandleKlineMessage: options.HandleKlineMessage,
+	}
+}
+
+func clearSubscriptionPayloads(subscriptions []entity.KlineSubscription) {
+	for i := range subscriptions {
+		subscriptions[i].Payload = ""
+	}
+}
+
 func effectiveMarketType(raw entity.MarketType) string {
 	return string(entity.NormalizeMarketType(string(raw)))
 }
@@ -315,6 +352,23 @@ func loadExchangeResyncState(ctx context.Context, deps exchangeKlineResyncDeps) 
 	}
 
 	return state, nil
+}
+
+func resyncExchangeKlineSubscriptions(ctx context.Context, conn *websocket.Conn, deps exchangeKlineResyncDeps, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
+	return resyncSymbolMappingAndSubscriptions(
+		ctx,
+		conn,
+		fallback,
+		func(ctx context.Context) error {
+			return refreshExchangeSymbolMapping(ctx, deps)
+		},
+		func(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
+			return loadExchangeLatestSubscriptions(ctx, deps, fallback)
+		},
+		func(ctx context.Context) (klineResyncState, error) {
+			return loadExchangeResyncState(ctx, deps)
+		},
+	)
 }
 
 func resyncSymbolMappingAndSubscriptions(

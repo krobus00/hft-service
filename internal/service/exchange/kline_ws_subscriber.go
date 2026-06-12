@@ -20,31 +20,40 @@ const (
 )
 
 type klineWSSubscriberConfig struct {
-	ExchangeName    entity.ExchangeName
-	WSURLEnvKey     string
-	DefaultWSURL    string
-	ResolveWSURL    func(subscriptions []entity.KlineSubscription) string
-	NormalizeSubs   func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription
-	Resync          func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error)
-	LoadResyncState func(ctx context.Context) (klineResyncState, error)
-	HandleMessage   func(ctx context.Context, message []byte) error
+	ExchangeName           entity.ExchangeName
+	WSURLEnvKey            string
+	DefaultWSURL           string
+	ResolveWSURL           func(subscriptions []entity.KlineSubscription) string
+	NormalizeSubscriptions func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription
+	ResyncSubscriptions    func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error)
+	LoadCurrentResyncState func(ctx context.Context) (klineResyncState, error)
+	HandleKlineMessage     func(ctx context.Context, message []byte) error
 }
 
 func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriberConfig, subscriptions []entity.KlineSubscription) error {
-	if cfg.HandleMessage == nil {
+	if cfg.HandleKlineMessage == nil {
 		return fmt.Errorf("%s handle message function is required", cfg.ExchangeName)
 	}
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	attempt := 0
 	activeSubscriptions := subscriptions
-	if cfg.NormalizeSubs != nil {
-		activeSubscriptions = cfg.NormalizeSubs(activeSubscriptions)
+	if cfg.NormalizeSubscriptions != nil {
+		activeSubscriptions = cfg.NormalizeSubscriptions(activeSubscriptions)
 	}
+	logrus.WithFields(logrus.Fields{
+		"exchange":                  cfg.ExchangeName,
+		"input_subscription_count":  len(subscriptions),
+		"active_subscription_count": len(activeSubscriptions),
+		"resync_interval":           wsResyncInterval.String(),
+		"websocket_url_env_key":     cfg.WSURLEnvKey,
+		"subscriptions_in_url":      cfg.ResolveWSURL != nil,
+	}).Info("kline websocket subscriber starting")
+
 	lastResyncState := klineResyncState{}
 
-	if cfg.LoadResyncState != nil {
-		state, err := cfg.LoadResyncState(ctx)
+	if cfg.LoadCurrentResyncState != nil {
+		state, err := cfg.LoadCurrentResyncState(ctx)
 		if err != nil {
 			logrus.WithError(err).Warnf("%s initial resync state load failed", cfg.ExchangeName)
 		} else {
@@ -52,8 +61,8 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 		}
 	}
 
-	if cfg.Resync != nil {
-		if resyncedSubscriptions, state, err := cfg.Resync(ctx, nil, activeSubscriptions); err != nil {
+	if cfg.ResyncSubscriptions != nil {
+		if resyncedSubscriptions, state, err := cfg.ResyncSubscriptions(ctx, nil, activeSubscriptions); err != nil {
 			logrus.WithError(err).Warnf("%s initial resync failed; starting with existing subscriptions", cfg.ExchangeName)
 		} else {
 			logrus.WithFields(logrus.Fields{
@@ -65,8 +74,8 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			}).Info("initial exchange resync completed")
 
 			activeSubscriptions = resyncedSubscriptions
-			if cfg.NormalizeSubs != nil {
-				activeSubscriptions = cfg.NormalizeSubs(activeSubscriptions)
+			if cfg.NormalizeSubscriptions != nil {
+				activeSubscriptions = cfg.NormalizeSubscriptions(activeSubscriptions)
 			}
 			lastResyncState = state
 		}
@@ -74,7 +83,7 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 
 	var resyncTicker *time.Ticker
 	var resyncTickerC <-chan time.Time
-	if cfg.Resync != nil && wsResyncInterval > 0 {
+	if cfg.ResyncSubscriptions != nil && wsResyncInterval > 0 {
 		resyncTicker = time.NewTicker(wsResyncInterval)
 		resyncTickerC = resyncTicker.C
 		defer resyncTicker.Stop()
@@ -82,6 +91,9 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 
 	for {
 		if err := ctx.Err(); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"exchange": cfg.ExchangeName,
+			}).Info("kline websocket subscriber stopped")
 			return nil
 		}
 
@@ -100,7 +112,11 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			return fmt.Errorf("invalid %s ws url: %w", cfg.ExchangeName, err)
 		}
 
-		logrus.Infof("connecting to %s", wsHost.String())
+		logrus.WithFields(logrus.Fields{
+			"exchange":           cfg.ExchangeName,
+			"websocket_url":      wsHost.String(),
+			"subscription_count": len(activeSubscriptions),
+		}).Info("connecting exchange websocket")
 		dialer := *websocket.DefaultDialer
 		dialer.HandshakeTimeout = wsDialTimeout
 
@@ -119,7 +135,10 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			}
 		}
 
-		logrus.Infof("connected to %s", wsHost.String())
+		logrus.WithFields(logrus.Fields{
+			"exchange":      cfg.ExchangeName,
+			"websocket_url": wsHost.String(),
+		}).Info("exchange websocket connected")
 
 		attempt = 0
 		if err := conn.SetReadDeadline(time.Now().Add(wsPongWait)); err != nil {
@@ -149,8 +168,17 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 				continue
 			}
 
-			logrus.Infof("start subscription for symbol: %s, interval: %s", v.Symbol, v.Interval)
-			logrus.Infof("subscription payload: %s", v.Payload)
+			logrus.WithFields(logrus.Fields{
+				"exchange": cfg.ExchangeName,
+				"symbol":   v.Symbol,
+				"interval": v.Interval,
+			}).Info("sending kline websocket subscription")
+			logrus.WithFields(logrus.Fields{
+				"exchange": cfg.ExchangeName,
+				"symbol":   v.Symbol,
+				"interval": v.Interval,
+				"payload":  v.Payload,
+			}).Debug("kline websocket subscription payload")
 
 			if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
 				_ = conn.Close()
@@ -246,10 +274,13 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 			case <-ctx.Done():
 				close(stopPing)
 				close(ctxDone)
+				logrus.WithFields(logrus.Fields{
+					"exchange": cfg.ExchangeName,
+				}).Info("kline websocket subscriber stopped")
 				return nil
 			case <-resyncTickerC:
-				if cfg.LoadResyncState != nil {
-					currentState, err := cfg.LoadResyncState(ctx)
+				if cfg.LoadCurrentResyncState != nil {
+					currentState, err := cfg.LoadCurrentResyncState(ctx)
 					if err != nil {
 						logrus.WithError(err).Warnf("%s resync state load failed", cfg.ExchangeName)
 						continue
@@ -270,7 +301,7 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 				}
 
 				previousCount := len(activeSubscriptions)
-				resyncedSubscriptions, state, err := cfg.Resync(ctx, conn, activeSubscriptions)
+				resyncedSubscriptions, state, err := cfg.ResyncSubscriptions(ctx, conn, activeSubscriptions)
 				if err != nil {
 					logrus.WithError(err).Warnf("%s resync failed", cfg.ExchangeName)
 					continue
@@ -285,13 +316,13 @@ func subscribeKlineDataWithAutoResync(ctx context.Context, cfg klineWSSubscriber
 				}).Info("exchange resync completed")
 
 				activeSubscriptions = resyncedSubscriptions
-				if cfg.NormalizeSubs != nil {
-					activeSubscriptions = cfg.NormalizeSubs(activeSubscriptions)
+				if cfg.NormalizeSubscriptions != nil {
+					activeSubscriptions = cfg.NormalizeSubscriptions(activeSubscriptions)
 				}
 				lastResyncState = state
 				shouldResubscribe = true
 			case message := <-messageCh:
-				err := cfg.HandleMessage(ctx, message)
+				err := cfg.HandleKlineMessage(ctx, message)
 				if err != nil {
 					logrus.Errorf("%s ws handle kline data failed: %v", cfg.ExchangeName, err)
 					continue

@@ -2,11 +2,8 @@ package exchange
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/krobus00/hft-service/internal/config"
 	"github.com/krobus00/hft-service/internal/constant"
 	"github.com/krobus00/hft-service/internal/entity"
@@ -33,12 +29,12 @@ import (
 var tokocryptoClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 type TokocryptoExchange struct {
-	apiKey     string
-	apiSecret  string
-	userCredentials map[string]config.ExchangeAccountConfig
-	baseURL    string
-	recvWindow int64
-	httpClient *http.Client
+	apiKey          string
+	apiSecret       string
+	userCredentials map[string]exchangeCredentials
+	baseURL         string
+	recvWindow      int64
+	httpClient      *http.Client
 
 	symbolPrecisionMu sync.RWMutex
 	symbolPrecision   map[string]tokocryptoSymbolPrecision
@@ -58,13 +54,6 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 	symbolMapping, err := symbolMappingRepo.GetByExchange(ctx, string(entity.ExchangeTokoCrypto))
 	util.ContinueOrFatal(err)
 
-	recvWindow := int64(5000)
-	if raw := strings.TrimSpace(os.Getenv("TOKOCRYPTO_RECV_WINDOW")); raw != "" {
-		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 && parsed <= 60000 {
-			recvWindow = parsed
-		}
-	}
-
 	baseURL := strings.TrimSpace(os.Getenv("TOKOCRYPTO_BASE_URL"))
 	if baseURL == "" {
 		baseURL = "https://www.tokocrypto.com"
@@ -73,24 +62,14 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 	newExchange := &TokocryptoExchange{
 		apiKey:            strings.TrimSpace(exchangeConfig.APIKey),
 		apiSecret:         strings.TrimSpace(exchangeConfig.APISecret),
-		userCredentials:   make(map[string]config.ExchangeAccountConfig),
+		userCredentials:   loadExchangeAccounts(exchangeConfig.Accounts),
 		baseURL:           strings.TrimRight(baseURL, "/"),
-		recvWindow:        recvWindow,
+		recvWindow:        recvWindowFromEnv("TOKOCRYPTO_RECV_WINDOW"),
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
 		js:                js,
 		marketKlineRepo:   marketKlineRepo,
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
-	}
-	for rawUserID, account := range exchangeConfig.Accounts {
-		userID := strings.TrimSpace(rawUserID)
-		if userID == "" {
-			continue
-		}
-		newExchange.userCredentials[userID] = config.ExchangeAccountConfig{
-			APIKey:    strings.TrimSpace(account.APIKey),
-			APISecret: strings.TrimSpace(account.APISecret),
-		}
 	}
 	persistSymbolMapping(&newExchange.symbolMapping, symbolMapping)
 
@@ -105,115 +84,22 @@ func InitTokocryptoExchange(ctx context.Context, exchangeConfig config.ExchangeC
 }
 
 func (e *TokocryptoExchange) credentialsForUser(userID string) (string, string, error) {
-	trimmedUserID := strings.TrimSpace(userID)
-	if trimmedUserID != "" {
-		if account, ok := e.userCredentials[trimmedUserID]; ok {
-			apiKey := strings.TrimSpace(account.APIKey)
-			apiSecret := strings.TrimSpace(account.APISecret)
-			if apiKey != "" && apiSecret != "" {
-				return apiKey, apiSecret, nil
-			}
-			return "", "", fmt.Errorf("tokocrypto credentials are missing for user_id=%s", trimmedUserID)
-		}
-	}
-
-	apiKey := strings.TrimSpace(e.apiKey)
-	apiSecret := strings.TrimSpace(e.apiSecret)
-	if apiKey == "" || apiSecret == "" {
-		if trimmedUserID != "" {
-			return "", "", fmt.Errorf("tokocrypto credentials are missing for user_id=%s and no default credentials configured", trimmedUserID)
-		}
-		return "", "", fmt.Errorf("tokocrypto credentials are missing in config")
-	}
-
-	return apiKey, apiSecret, nil
+	return credentialsForUser(entity.ExchangeTokoCrypto, exchangeCredentials{
+		APIKey:    e.apiKey,
+		APISecret: e.apiSecret,
+	}, e.userCredentials, userID)
 }
 
 func (e *TokocryptoExchange) JetstreamEventInit(ctx context.Context) error {
-	streamConfig := &nats.StreamConfig{
-		Name:      constant.KlineStreamName,
-		Subjects:  []string{constant.KlineStreamSubjectAll},
-		Storage:   nats.FileStorage, // use MemoryStorage for ultra-low latency
-		Retention: nats.LimitsPolicy,
-		MaxAge:    5 * time.Minute,
-		Replicas:  1,
-	}
-
-	stream, err := e.js.StreamInfo(constant.KlineStreamName, nats.Context(ctx))
-	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
-		logrus.Error(err)
-		return err
-	}
-
-	if stream == nil {
-		logrus.Infof("creating stream: %s", constant.KlineStreamName)
-		_, err = e.js.AddStream(streamConfig, nats.Context(ctx))
-		return err
-	}
-
-	logrus.Infof("updating stream: %s", constant.KlineStreamName)
-	_, err = e.js.UpdateStream(streamConfig, nats.Context(ctx))
-	if err != nil {
-		logrus.Error(err)
-		return err
-	}
-
-	logrus.Infof("stream %s is ready", constant.KlineStreamName)
-
-	return nil
+	return ensureKlineStream(ctx, e.js)
 }
 
 func (e *TokocryptoExchange) JetstreamEventSubscribe(ctx context.Context) error {
-	err := e.JetstreamEventInit(ctx)
-	if err != nil {
-		logrus.Error(err)
-		return err
-	}
-
-	consumerName := constant.GetKlineInsertQueueGroup(string(entity.ExchangeTokoCrypto))
-	_, err = e.js.QueueSubscribe(
-		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeTokoCrypto)),
-		consumerName,
-		func(msg *nats.Msg) {
-			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], config.Env.NatsJetstream.MaxRetries, msg, e.handleKlineDataEvent)
-			if err != nil {
-				logrus.Errorf("error processing message: %v", err)
-				return
-			}
-		},
-		nats.ManualAck(),
-		nats.Durable(consumerName),
-		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
-	)
-	util.ContinueOrFatal(err)
-
-	return nil
+	return subscribeKlineInsertEvents(ctx, e.js, entity.ExchangeTokoCrypto, e.handleKlineDataEvent)
 }
 
 func (e *TokocryptoExchange) handleKlineDataEvent(ctx context.Context, msg *nats.Msg) (err error) {
-	logger := logrus.WithFields(logrus.Fields{
-		"req": string(msg.Data),
-	})
-
-	var req *entity.MarketKlineEvent
-	err = json.Unmarshal(msg.Data, &req)
-	if err != nil {
-		logger.Error(err)
-		return err
-	}
-
-	if req.Data.EventTime.UTC().Add(1 * time.Minute).Before(time.Now().UTC()) {
-		logger.Info("skipping kline data event that is too old")
-		return nil
-	}
-
-	err = e.marketKlineRepo.Create(ctx, &req.Data)
-	if err != nil {
-		logger.Error(err)
-		return err
-	}
-
-	return nil
+	return insertKlineEvent(ctx, e.marketKlineRepo, msg)
 }
 
 func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte) error {
@@ -301,13 +187,7 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 	if symbol == "" {
 		symbol = strings.TrimSpace(payload.Data.Symbol)
 	}
-	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
-		MarketType:        entity.MarketTypeSpot,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}, symbol)
+	symbol = resolveInternalSymbolFromMapping(e.klineResyncDeps(), symbol)
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeTokoCrypto),
@@ -343,42 +223,37 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 }
 
 func (e *TokocryptoExchange) SubscribeKlineData(ctx context.Context, subscriptions []entity.KlineSubscription) error {
-	deps := exchangeKlineResyncDeps{
+	deps := e.klineResyncDeps()
+
+	logrus.WithFields(logrus.Fields{
+		"exchange":           entity.ExchangeTokoCrypto,
+		"subscription_count": len(subscriptions),
+	}).Info("starting exchange kline subscriptions")
+
+	cfg := newExchangeKlineWSConfig(deps, exchangeKlineWSOptions{
+		WSURLEnvKey:        "TOKOCRYPTO_WS_URL",
+		DefaultWSURL:       "wss://stream-cloud.tokocrypto.site/stream",
+		HandleKlineMessage: e.HandleKlineData,
+	})
+
+	err := subscribeKlineDataWithAutoResync(ctx, cfg, subscriptions)
+	if err != nil {
+		logrus.WithError(err).WithField("exchange", entity.ExchangeTokoCrypto).Warn("exchange kline subscription stopped with error")
+		return err
+	}
+
+	logrus.WithField("exchange", entity.ExchangeTokoCrypto).Info("exchange kline subscriptions stopped")
+	return nil
+}
+
+func (e *TokocryptoExchange) klineResyncDeps() exchangeKlineResyncDeps {
+	return exchangeKlineResyncDeps{
 		ExchangeName:      entity.ExchangeTokoCrypto,
 		MarketType:        entity.MarketTypeSpot,
 		SymbolMapping:     &e.symbolMapping,
 		SymbolMappingRepo: e.symbolMappingRepo,
 		KlineSubRepo:      e.klineSubRepo,
 	}
-
-	return subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
-		ExchangeName: entity.ExchangeTokoCrypto,
-		WSURLEnvKey:  "TOKOCRYPTO_WS_URL",
-		DefaultWSURL: "wss://stream-cloud.tokocrypto.site/stream",
-		NormalizeSubs: func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription {
-			return normalizeExchangeSubscriptions(deps, subscriptions)
-		},
-		Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
-			return resyncSymbolMappingAndSubscriptions(
-				ctx,
-				conn,
-				fallback,
-				func(ctx context.Context) error {
-					return refreshExchangeSymbolMapping(ctx, deps)
-				},
-				func(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
-					return loadExchangeLatestSubscriptions(ctx, deps, fallback)
-				},
-				func(ctx context.Context) (klineResyncState, error) {
-					return loadExchangeResyncState(ctx, deps)
-				},
-			)
-		},
-		LoadResyncState: func(ctx context.Context) (klineResyncState, error) {
-			return loadExchangeResyncState(ctx, deps)
-		},
-		HandleMessage: e.HandleKlineData,
-	}, subscriptions)
 }
 
 func (e *TokocryptoExchange) BackfillMarketKlines(ctx context.Context, req entity.MarketKlineBackfillRequest) (int, error) {
@@ -401,13 +276,7 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, err
 	}
 
-	deps := exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
-		MarketType:        entity.MarketTypeSpot,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}
+	deps := e.klineResyncDeps()
 
 	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, order.Symbol)
 	if strings.TrimSpace(orderSymbol) == "" {
@@ -423,6 +292,22 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 	if err != nil {
 		return nil, err
 	}
+
+	startedAt := time.Now()
+	orderLogger := logrus.WithFields(logrus.Fields{
+		"exchange":     entity.ExchangeTokoCrypto,
+		"market_type":  entity.MarketTypeSpot,
+		"request_id":   order.RequestID,
+		"user_id":      order.UserID,
+		"symbol":       order.Symbol,
+		"order_symbol": orderSymbol,
+		"type":         order.Type,
+		"type_code":    typeCode,
+		"side":         order.Side,
+		"side_code":    sideCode,
+		"source":       order.Source,
+	})
+	orderLogger.Info("placing exchange order")
 
 	normalizedQuantity := order.Quantity
 	normalizedPrice := order.Price
@@ -467,13 +352,22 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		)
 	}
 
+	orderLogger = orderLogger.WithFields(logrus.Fields{
+		"quantity":              order.Quantity.String(),
+		"normalized_quantity":   normalizedQuantity.String(),
+		"price":                 order.Price.String(),
+		"normalized_price":      normalizedPrice.String(),
+		"requested_at_exchange": order.RequestedAt,
+	})
+	orderLogger.Info("submitting exchange order")
+
 	pairs = append(pairs,
 		"timestamp="+timestamp,
 		"recvWindow="+strconv.FormatInt(e.recvWindow, 10),
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := hmacSHA256Hex(apiSecret, payload)
+	signature := signPayload(apiSecret, payload)
 	bodyPayload := payload + "&signature=" + signature
 
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("TOKOCRYPTO_DEBUG_SIGN")), "true") {
@@ -493,6 +387,9 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
+		orderLogger.WithFields(logrus.Fields{
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		}).WithError(err).Warn("exchange order submit failed")
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -524,7 +421,12 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 			errMsg = "unknown error"
 		}
 
-		logrus.Infof("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
+		orderLogger.WithFields(logrus.Fields{
+			"http_status": resp.StatusCode,
+			"code":        apiResp.Code,
+			"message":     errMsg,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		}).Info("tokocrypto order rejected")
 
 		return nil, fmt.Errorf("tokocrypto order rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
 	}
@@ -539,17 +441,12 @@ func (e *TokocryptoExchange) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, err
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"exchange":         order.Exchange,
-		"symbol":           orderSymbol,
-		"type":             order.Type,
-		"side":             order.Side,
-		"price":            normalizedPrice.String(),
-		"quantity":         normalizedQuantity.String(),
-		"source":           order.Source,
+	orderLogger.WithFields(logrus.Fields{
+		"http_status":      resp.StatusCode,
 		"response":         string(apiResp.Data),
 		"history_order_id": orderHistory.OrderID,
 		"history_status":   orderHistory.Status,
+		"duration_ms":      time.Since(startedAt).Milliseconds(),
 	}).Info("order placed")
 
 	return &orderHistory, nil
@@ -564,13 +461,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 		return nil, err
 	}
 
-	deps := exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
-		MarketType:        entity.MarketTypeSpot,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}
+	deps := e.klineResyncDeps()
 
 	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, orderHistory.Symbol)
 	orderSymbol = strings.TrimSpace(orderSymbol)
@@ -581,6 +472,20 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	if strings.TrimSpace(orderHistory.OrderID) == "" && !orderHistory.ClientOrderID.Valid {
 		return nil, fmt.Errorf("tokocrypto order history missing order id")
 	}
+
+	startedAt := time.Now()
+	logger := logrus.WithFields(logrus.Fields{
+		"exchange":        entity.ExchangeTokoCrypto,
+		"market_type":     entity.MarketTypeSpot,
+		"request_id":      orderHistory.RequestID,
+		"user_id":         orderHistory.UserID,
+		"symbol":          orderHistory.Symbol,
+		"order_symbol":    orderSymbol,
+		"order_id":        orderHistory.OrderID,
+		"client_order_id": orderHistory.ClientOrderID.String,
+		"status":          orderHistory.Status,
+	})
+	logger.Info("syncing exchange order history")
 
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	pairs := []string{
@@ -599,7 +504,7 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := hmacSHA256Hex(apiSecret, payload)
+	signature := signPayload(apiSecret, payload)
 	endpoint := e.baseURL + "/open/v1/orders/detail?" + payload + "&signature=" + signature
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -642,6 +547,13 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 			errMsg = "unknown error"
 		}
 
+		logger.WithFields(logrus.Fields{
+			"http_status": resp.StatusCode,
+			"code":        apiResp.Code,
+			"message":     errMsg,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		}).Info("tokocrypto order detail rejected")
+
 		return nil, fmt.Errorf("tokocrypto order detail rejected: status=%d code=%d message=%s", resp.StatusCode, apiResp.Code, errMsg)
 	}
 
@@ -654,6 +566,14 @@ func (e *TokocryptoExchange) SyncOrderHistory(ctx context.Context, orderHistory 
 	if err != nil {
 		return nil, err
 	}
+
+	logger.WithFields(logrus.Fields{
+		"http_status":        resp.StatusCode,
+		"updated_status":     updatedHistory.Status,
+		"filled_quantity":    updatedHistory.FilledQuantity.String(),
+		"has_avg_fill_price": updatedHistory.AvgFillPrice != nil,
+		"duration_ms":        time.Since(startedAt).Milliseconds(),
+	}).Info("exchange order history synced")
 
 	return &updatedHistory, nil
 }
@@ -697,26 +617,14 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 	now := time.Now().UTC()
 
 	clientOrderID := sql.NullString{String: strings.TrimSpace(resp.ClientID), Valid: strings.TrimSpace(resp.ClientID) != ""}
-	strategyID := sql.NullString{}
-	if order.StrategyID != nil {
-		trimmed := strings.TrimSpace(*order.StrategyID)
-		if trimmed != "" {
-			strategyID = sql.NullString{String: trimmed, Valid: true}
-		}
-	}
+	strategyID := orderStrategyID(order.StrategyID)
 
 	createdAtExchange := sql.NullTime{}
 	if resp.CreateTime > 0 {
 		createdAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
 	}
 
-	sentAt := sql.NullTime{
-		Time:  time.Now(),
-		Valid: true,
-	}
-	if order.RequestedAt > 0 {
-		sentAt = sql.NullTime{Time: time.UnixMilli(order.RequestedAt).UTC(), Valid: true}
-	}
+	sentAt := orderSentAt(order.RequestedAt)
 
 	acknowledgedAt := sql.NullTime{Time: now, Valid: true}
 
@@ -725,13 +633,7 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 		avgFillPrice = &executedPrice
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
-		MarketType:        entity.MarketTypeSpot,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}, resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(e.klineResyncDeps(), resp.Symbol)
 	if resolvedSymbol == "" {
 		resolvedSymbol = order.Symbol
 	}
@@ -768,12 +670,12 @@ func (e *TokocryptoExchange) mapPlaceOrderResponseToOrderHistory(order entity.Or
 }
 
 func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp entity.TokocryptoOrderDetailResponse) (entity.OrderHistory, error) {
-	filledQuantity, err := tokocryptoDecimalOrZero(resp.ExecutedQty)
+	filledQuantity, err := decimalOrZero(resp.ExecutedQty)
 	if err != nil {
 		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto filled quantity: %w", err)
 	}
 
-	executedPrice, err := tokocryptoDecimalOrZero(resp.ExecutedPrice)
+	executedPrice, err := decimalOrZero(resp.ExecutedPrice)
 	if err != nil {
 		return entity.OrderHistory{}, fmt.Errorf("invalid tokocrypto executed price: %w", err)
 	}
@@ -808,13 +710,7 @@ func (e *TokocryptoExchange) mapOrderHistorySyncResponse(orderHistory entity.Ord
 		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.CreateTime).UTC(), Valid: true}
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeTokoCrypto,
-		MarketType:        entity.MarketTypeSpot,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}, resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(e.klineResyncDeps(), resp.Symbol)
 	if resolvedSymbol != "" {
 		orderHistory.Symbol = resolvedSymbol
 	}
@@ -861,14 +757,6 @@ func tokocryptoOrderStatusFromCode(code int32) string {
 	}
 }
 
-func tokocryptoDecimalOrZero(raw string) (decimal.Decimal, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return decimal.Zero, nil
-	}
-	return decimal.NewFromString(trimmed)
-}
-
 func tokocryptoOrderTypeCode(orderType entity.OrderType) (int, error) {
 	switch orderType {
 	case entity.OrderTypeLimit:
@@ -910,12 +798,6 @@ func normalizeTokocryptoClientID(raw string) (string, error) {
 	return normalized, nil
 }
 
-func hmacSHA256Hex(secret, payload string) string {
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(payload))
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
 func (e *TokocryptoExchange) getSymbolPrecision(ctx context.Context, symbol string) (tokocryptoSymbolPrecision, bool, error) {
 	normalizedSymbol := strings.ToUpper(strings.TrimSpace(symbol))
 	if normalizedSymbol == "" {
@@ -947,6 +829,13 @@ func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol 
 	}
 
 	endpoint := e.baseURL + "/bapi/asset/v1/public/asset-service/product/get-exchange-info?symbol=" + url.QueryEscape(normalizedSymbol)
+	logger := logrus.WithFields(logrus.Fields{
+		"exchange":    entity.ExchangeTokoCrypto,
+		"market_type": entity.MarketTypeSpot,
+		"symbol":      normalizedSymbol,
+	})
+	logger.Debug("refreshing symbol precision")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -998,6 +887,11 @@ func (e *TokocryptoExchange) refreshSymbolPrecision(ctx context.Context, symbol 
 		}
 		e.symbolPrecisionMu.Unlock()
 	}
+
+	logger.WithFields(logrus.Fields{
+		"http_status":  resp.StatusCode,
+		"symbol_count": len(symbolsResp.Data),
+	}).Debug("symbol precision refreshed")
 
 	return nil
 }

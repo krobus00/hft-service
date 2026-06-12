@@ -2,11 +2,8 @@ package exchange
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/krobus00/hft-service/internal/config"
 	"github.com/krobus00/hft-service/internal/constant"
 	"github.com/krobus00/hft-service/internal/entity"
@@ -35,7 +31,7 @@ var binanceClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 type BinanceExchange struct {
 	apiKey            string
 	apiSecret         string
-	userCredentials   map[string]config.ExchangeAccountConfig
+	userCredentials   map[string]exchangeCredentials
 	spotBaseURL       string
 	futuresBaseURL    string
 	defaultMarketType entity.MarketType
@@ -64,13 +60,6 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 
 	defaultMarketType := entity.NormalizeMarketType(os.Getenv("BINANCE_TRADE_MODE"))
 
-	recvWindow := int64(5000)
-	if raw := strings.TrimSpace(os.Getenv("BINANCE_RECV_WINDOW")); raw != "" {
-		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 && parsed <= 60000 {
-			recvWindow = parsed
-		}
-	}
-
 	spotBaseURL := strings.TrimSpace(os.Getenv("BINANCE_BASE_URL"))
 	if spotBaseURL == "" {
 		spotBaseURL = strings.TrimSpace(os.Getenv("BINANCE_SPOT_BASE_URL"))
@@ -87,26 +76,16 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 	newExchange := &BinanceExchange{
 		apiKey:            strings.TrimSpace(exchangeConfig.APIKey),
 		apiSecret:         strings.TrimSpace(exchangeConfig.APISecret),
-		userCredentials:   make(map[string]config.ExchangeAccountConfig),
+		userCredentials:   loadExchangeAccounts(exchangeConfig.Accounts),
 		spotBaseURL:       strings.TrimRight(spotBaseURL, "/"),
 		futuresBaseURL:    strings.TrimRight(futuresBaseURL, "/"),
 		defaultMarketType: defaultMarketType,
-		recvWindow:        recvWindow,
+		recvWindow:        recvWindowFromEnv("BINANCE_RECV_WINDOW"),
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
 		js:                js,
 		marketKlineRepo:   marketKlineRepo,
 		symbolMappingRepo: symbolMappingRepo,
 		klineSubRepo:      klineSubRepo,
-	}
-	for rawUserID, account := range exchangeConfig.Accounts {
-		userID := strings.TrimSpace(rawUserID)
-		if userID == "" {
-			continue
-		}
-		newExchange.userCredentials[userID] = config.ExchangeAccountConfig{
-			APIKey:    strings.TrimSpace(account.APIKey),
-			APISecret: strings.TrimSpace(account.APISecret),
-		}
 	}
 	persistSymbolMapping(&newExchange.symbolMapping, symbolMapping)
 
@@ -123,115 +102,22 @@ func InitBinanceExchange(ctx context.Context, exchangeConfig config.ExchangeConf
 }
 
 func (e *BinanceExchange) credentialsForUser(userID string) (string, string, error) {
-	trimmedUserID := strings.TrimSpace(userID)
-	if trimmedUserID != "" {
-		if account, ok := e.userCredentials[trimmedUserID]; ok {
-			apiKey := strings.TrimSpace(account.APIKey)
-			apiSecret := strings.TrimSpace(account.APISecret)
-			if apiKey != "" && apiSecret != "" {
-				return apiKey, apiSecret, nil
-			}
-			return "", "", fmt.Errorf("binance credentials are missing for user_id=%s", trimmedUserID)
-		}
-	}
-
-	apiKey := strings.TrimSpace(e.apiKey)
-	apiSecret := strings.TrimSpace(e.apiSecret)
-	if apiKey == "" || apiSecret == "" {
-		if trimmedUserID != "" {
-			return "", "", fmt.Errorf("binance credentials are missing for user_id=%s and no default credentials configured", trimmedUserID)
-		}
-		return "", "", fmt.Errorf("binance credentials are missing in config")
-	}
-
-	return apiKey, apiSecret, nil
+	return credentialsForUser(entity.ExchangeBinance, exchangeCredentials{
+		APIKey:    e.apiKey,
+		APISecret: e.apiSecret,
+	}, e.userCredentials, userID)
 }
 
 func (e *BinanceExchange) JetstreamEventInit(ctx context.Context) error {
-	streamConfig := &nats.StreamConfig{
-		Name:      constant.KlineStreamName,
-		Subjects:  []string{constant.KlineStreamSubjectAll},
-		Storage:   nats.FileStorage, // use MemoryStorage for ultra-low latency
-		Retention: nats.LimitsPolicy,
-		MaxAge:    5 * time.Minute,
-		Replicas:  1,
-	}
-
-	stream, err := e.js.StreamInfo(constant.KlineStreamName, nats.Context(ctx))
-	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
-		logrus.Error(err)
-		return err
-	}
-
-	if stream == nil {
-		logrus.Infof("creating stream: %s", constant.KlineStreamName)
-		_, err = e.js.AddStream(streamConfig, nats.Context(ctx))
-		return err
-	}
-
-	logrus.Infof("updating stream: %s", constant.KlineStreamName)
-	_, err = e.js.UpdateStream(streamConfig, nats.Context(ctx))
-	if err != nil {
-		logrus.Error(err)
-		return err
-	}
-
-	logrus.Infof("stream %s is ready", constant.KlineStreamName)
-
-	return nil
+	return ensureKlineStream(ctx, e.js)
 }
 
 func (e *BinanceExchange) JetstreamEventSubscribe(ctx context.Context) error {
-	err := e.JetstreamEventInit(ctx)
-	if err != nil {
-		logrus.Error(err)
-		return err
-	}
-
-	consumerName := constant.GetKlineInsertQueueGroup(string(entity.ExchangeBinance))
-	_, err = e.js.QueueSubscribe(
-		constant.GetKlineExchangeStreamSubject(string(entity.ExchangeBinance)),
-		consumerName,
-		func(msg *nats.Msg) {
-			err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], config.Env.NatsJetstream.MaxRetries, msg, e.handleKlineDataEvent)
-			if err != nil {
-				logrus.Errorf("error processing message: %v", err)
-				return
-			}
-		},
-		nats.ManualAck(),
-		nats.Durable(consumerName),
-		nats.DeliverNew(), // only process new messages, ignore old messages when subscribe for the first time
-	)
-	util.ContinueOrFatal(err)
-
-	return nil
+	return subscribeKlineInsertEvents(ctx, e.js, entity.ExchangeBinance, e.handleKlineDataEvent)
 }
 
 func (e *BinanceExchange) handleKlineDataEvent(ctx context.Context, msg *nats.Msg) (err error) {
-	logger := logrus.WithFields(logrus.Fields{
-		"req": string(msg.Data),
-	})
-
-	var req *entity.MarketKlineEvent
-	err = json.Unmarshal(msg.Data, &req)
-	if err != nil {
-		logger.Error(err)
-		return err
-	}
-
-	if req.Data.EventTime.UTC().Add(1 * time.Minute).Before(time.Now().UTC()) {
-		logger.Info("skipping kline data event that is too old")
-		return nil
-	}
-
-	err = e.marketKlineRepo.Create(ctx, &req.Data)
-	if err != nil {
-		logger.Error(err)
-		return err
-	}
-
-	return nil
+	return insertKlineEvent(ctx, e.marketKlineRepo, msg)
 }
 
 func (e *BinanceExchange) HandleKlineData(ctx context.Context, message []byte) error {
@@ -362,13 +248,7 @@ func (e *BinanceExchange) handleKlineDataByMarketType(ctx context.Context, messa
 	if symbol == "" {
 		symbol = strings.TrimSpace(payload.Symbol)
 	}
-	symbol = resolveInternalSymbolFromMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeBinance,
-		MarketType:        marketType,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}, symbol)
+	symbol = resolveInternalSymbolFromMapping(e.klineResyncDeps(marketType), symbol)
 
 	data := entity.MarketKline{
 		Exchange:         string(entity.ExchangeBinance),
@@ -408,15 +288,14 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 	errCh := make(chan error, len(typesToRun))
 	started := 0
 
+	logrus.WithFields(logrus.Fields{
+		"exchange":           entity.ExchangeBinance,
+		"subscription_count": len(subscriptions),
+	}).Info("starting exchange kline subscriptions")
+
 	for _, marketType := range typesToRun {
 		marketType := marketType
-		deps := exchangeKlineResyncDeps{
-			ExchangeName:      entity.ExchangeBinance,
-			MarketType:        marketType,
-			SymbolMapping:     &e.symbolMapping,
-			SymbolMappingRepo: e.symbolMappingRepo,
-			KlineSubRepo:      e.klineSubRepo,
-		}
+		deps := e.klineResyncDeps(marketType)
 
 		normalized := normalizeExchangeSubscriptions(deps, subscriptions)
 		if len(normalized) == 0 {
@@ -425,58 +304,56 @@ func (e *BinanceExchange) SubscribeKlineData(ctx context.Context, subscriptions 
 
 		started++
 		go func(subs []entity.KlineSubscription) {
-			errCh <- subscribeKlineDataWithAutoResync(ctx, klineWSSubscriberConfig{
-				ExchangeName: entity.ExchangeBinance,
-				WSURLEnvKey:  e.wsURLEnvKeyByMarketType(marketType),
-				DefaultWSURL: e.defaultWSURLByMarketType(marketType),
+			cfg := newExchangeKlineWSConfig(deps, exchangeKlineWSOptions{
+				WSURLEnvKey:        e.wsURLEnvKeyByMarketType(marketType),
+				DefaultWSURL:       e.defaultWSURLByMarketType(marketType),
+				SubscriptionsInURL: true,
 				ResolveWSURL: func(subscriptions []entity.KlineSubscription) string {
 					return e.resolveBinanceKlineWSURL(marketType, deps, subscriptions)
 				},
-				NormalizeSubs: func(subscriptions []entity.KlineSubscription) []entity.KlineSubscription {
-					normalized := normalizeExchangeSubscriptions(deps, subscriptions)
-					for i := range normalized {
-						normalized[i].Payload = ""
-					}
-					return normalized
-				},
-				Resync: func(ctx context.Context, conn *websocket.Conn, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, klineResyncState, error) {
-					return resyncSymbolMappingAndSubscriptions(
-						ctx,
-						conn,
-						fallback,
-						func(ctx context.Context) error {
-							return refreshExchangeSymbolMapping(ctx, deps)
-						},
-						func(ctx context.Context, fallback []entity.KlineSubscription) ([]entity.KlineSubscription, error) {
-							return loadExchangeLatestSubscriptions(ctx, deps, fallback)
-						},
-						func(ctx context.Context) (klineResyncState, error) {
-							return loadExchangeResyncState(ctx, deps)
-						},
-					)
-				},
-				LoadResyncState: func(ctx context.Context) (klineResyncState, error) {
-					return loadExchangeResyncState(ctx, deps)
-				},
-				HandleMessage: func(ctx context.Context, message []byte) error {
+				HandleKlineMessage: func(ctx context.Context, message []byte) error {
 					return e.handleKlineDataByMarketType(ctx, message, marketType)
 				},
-			}, subs)
+			})
+			errCh <- subscribeKlineDataWithAutoResync(ctx, cfg, subs)
 		}(normalized)
 	}
 
 	if started == 0 {
+		logrus.WithFields(logrus.Fields{
+			"exchange":           entity.ExchangeBinance,
+			"subscription_count": len(subscriptions),
+		}).Info("no exchange kline subscriptions to start")
 		return nil
 	}
 
 	for i := 0; i < started; i++ {
 		err := <-errCh
 		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"exchange": entity.ExchangeBinance,
+				"started":  started,
+			}).Warn("exchange kline subscription stopped with error")
 			return err
 		}
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"exchange": entity.ExchangeBinance,
+		"started":  started,
+	}).Info("exchange kline subscriptions stopped")
+
 	return nil
+}
+
+func (e *BinanceExchange) klineResyncDeps(marketType entity.MarketType) exchangeKlineResyncDeps {
+	return exchangeKlineResyncDeps{
+		ExchangeName:      entity.ExchangeBinance,
+		MarketType:        marketType,
+		SymbolMapping:     &e.symbolMapping,
+		SymbolMappingRepo: e.symbolMappingRepo,
+		KlineSubRepo:      e.klineSubRepo,
+	}
 }
 
 func (e *BinanceExchange) BackfillMarketKlines(ctx context.Context, req entity.MarketKlineBackfillRequest) (int, error) {
@@ -508,13 +385,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		return nil, fmt.Errorf("unsupported order side for market type %s", marketType)
 	}
 
-	deps := exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeBinance,
-		MarketType:        marketType,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}
+	deps := e.klineResyncDeps(marketType)
 
 	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, order.Symbol)
 	if strings.TrimSpace(orderSymbol) == "" {
@@ -530,6 +401,22 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 	if err != nil {
 		return nil, err
 	}
+
+	startedAt := time.Now()
+	orderLogger := logrus.WithFields(logrus.Fields{
+		"exchange":     entity.ExchangeBinance,
+		"market_type":  marketType,
+		"request_id":   order.RequestID,
+		"user_id":      order.UserID,
+		"symbol":       order.Symbol,
+		"order_symbol": orderSymbol,
+		"type":         order.Type,
+		"type_code":    typeCode,
+		"side":         order.Side,
+		"side_code":    sideCode,
+		"source":       order.Source,
+	})
+	orderLogger.Info("placing exchange order")
 
 	normalizedQuantity := order.Quantity
 	normalizedPrice := order.Price
@@ -587,6 +474,16 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		order.PositionSide = futuresPositionSide
 	}
 
+	orderLogger = orderLogger.WithFields(logrus.Fields{
+		"quantity":              order.Quantity.String(),
+		"normalized_quantity":   normalizedQuantity.String(),
+		"price":                 order.Price.String(),
+		"normalized_price":      normalizedPrice.String(),
+		"position_side":         futuresPositionSide,
+		"requested_at_exchange": order.RequestedAt,
+	})
+	orderLogger.Info("submitting exchange order")
+
 	submitOrder := func(positionSide string) (int, []byte, error) {
 		pairs := make([]string, 0, len(basePairs)+3)
 		pairs = append(pairs, basePairs...)
@@ -601,7 +498,7 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 		)
 
 		payload := strings.Join(pairs, "&")
-		signature := binanceHMACSHA256Hex(apiSecret, payload)
+		signature := signPayload(apiSecret, payload)
 		bodyPayload := payload + "&signature=" + signature
 
 		if strings.EqualFold(strings.TrimSpace(os.Getenv("BINANCE_DEBUG_SIGN")), "true") {
@@ -635,6 +532,9 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 
 	statusCode, body, err := submitOrder(futuresPositionSide)
 	if err != nil {
+		orderLogger.WithFields(logrus.Fields{
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		}).WithError(err).Warn("exchange order submit failed")
 		return nil, err
 	}
 
@@ -676,17 +576,11 @@ func (e *BinanceExchange) PlaceOrder(ctx context.Context, order entity.OrderRequ
 			}
 		}
 
-		logrus.WithFields(logrus.Fields{
-			"status":        statusCode,
-			"code":          apiErr.Code,
-			"message":       apiErr.Msg,
-			"market_type":   marketType,
-			"symbol":        orderSymbol,
-			"side":          sideCode,
-			"type":          typeCode,
-			"quantity":      normalizedQuantity.String(),
-			"price":         normalizedPrice.String(),
-			"position_side": futuresPositionSide,
+		orderLogger.WithFields(logrus.Fields{
+			"status":      statusCode,
+			"code":        apiErr.Code,
+			"message":     apiErr.Msg,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
 		}).Info("binance order rejected")
 
 		return nil, fmt.Errorf("binance order rejected: status=%d code=%d message=%s", statusCode, apiErr.Code, apiErr.Msg)
@@ -703,18 +597,12 @@ parseSuccess:
 		return nil, err
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"exchange":         order.Exchange,
-		"symbol":           orderSymbol,
-		"type":             order.Type,
-		"side":             order.Side,
-		"position_side":    futuresPositionSide,
-		"price":            normalizedPrice.String(),
-		"quantity":         normalizedQuantity.String(),
-		"source":           order.Source,
+	orderLogger.WithFields(logrus.Fields{
+		"status":           statusCode,
 		"response":         string(body),
 		"history_order_id": orderHistory.OrderID,
 		"history_status":   orderHistory.Status,
+		"duration_ms":      time.Since(startedAt).Milliseconds(),
 	}).Info("order placed")
 
 	return &orderHistory, nil
@@ -732,13 +620,7 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	marketType := e.resolveMarketType(orderHistory.MarketType)
 	orderHistory.MarketType = string(marketType)
 
-	deps := exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeBinance,
-		MarketType:        marketType,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}
+	deps := e.klineResyncDeps(marketType)
 
 	orderSymbol := resolveExchangeOrderSymbolFromMapping(deps, orderHistory.Symbol)
 	orderSymbol = strings.TrimSpace(orderSymbol)
@@ -749,6 +631,20 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	if strings.TrimSpace(orderHistory.OrderID) == "" && !orderHistory.ClientOrderID.Valid {
 		return nil, fmt.Errorf("binance order history missing order id")
 	}
+
+	startedAt := time.Now()
+	logger := logrus.WithFields(logrus.Fields{
+		"exchange":        entity.ExchangeBinance,
+		"market_type":     marketType,
+		"request_id":      orderHistory.RequestID,
+		"user_id":         orderHistory.UserID,
+		"symbol":          orderHistory.Symbol,
+		"order_symbol":    orderSymbol,
+		"order_id":        orderHistory.OrderID,
+		"client_order_id": orderHistory.ClientOrderID.String,
+		"status":          orderHistory.Status,
+	})
+	logger.Info("syncing exchange order history")
 
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	pairs := []string{
@@ -767,7 +663,7 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	)
 
 	payload := strings.Join(pairs, "&")
-	signature := binanceHMACSHA256Hex(apiSecret, payload)
+	signature := signPayload(apiSecret, payload)
 	endpoint := e.baseURLByMarketType(marketType) + e.orderPathByMarketType(marketType) + "?" + payload + "&signature=" + signature
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -797,6 +693,13 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 			return nil, fmt.Errorf("binance order detail rejected: status=%d body=%s", resp.StatusCode, string(body))
 		}
 
+		logger.WithFields(logrus.Fields{
+			"http_status": resp.StatusCode,
+			"code":        apiErr.Code,
+			"message":     apiErr.Msg,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		}).Info("binance order detail rejected")
+
 		return nil, fmt.Errorf("binance order detail rejected: status=%d code=%d message=%s", resp.StatusCode, apiErr.Code, apiErr.Msg)
 	}
 
@@ -809,6 +712,14 @@ func (e *BinanceExchange) SyncOrderHistory(ctx context.Context, orderHistory ent
 	if err != nil {
 		return nil, err
 	}
+
+	logger.WithFields(logrus.Fields{
+		"http_status":        resp.StatusCode,
+		"updated_status":     updatedHistory.Status,
+		"filled_quantity":    updatedHistory.FilledQuantity.String(),
+		"has_avg_fill_price": updatedHistory.AvgFillPrice != nil,
+		"duration_ms":        time.Since(startedAt).Milliseconds(),
+	}).Info("exchange order history synced")
 
 	return &updatedHistory, nil
 }
@@ -833,7 +744,7 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 
 	executedPrice := decimal.Zero
 	if filledQuantity.GreaterThan(decimal.Zero) {
-		quoteQty, err := binanceDecimalOrZero(resp.CumulativeQuoteQty)
+		quoteQty, err := decimalOrZero(resp.CumulativeQuoteQty)
 		if err != nil {
 			return entity.OrderHistory{}, fmt.Errorf("invalid binance cumulative quote quantity: %w", err)
 		}
@@ -872,26 +783,14 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 	now := time.Now().UTC()
 
 	clientOrderID := sql.NullString{String: strings.TrimSpace(resp.ClientOrderID), Valid: strings.TrimSpace(resp.ClientOrderID) != ""}
-	strategyID := sql.NullString{}
-	if order.StrategyID != nil {
-		trimmed := strings.TrimSpace(*order.StrategyID)
-		if trimmed != "" {
-			strategyID = sql.NullString{String: trimmed, Valid: true}
-		}
-	}
+	strategyID := orderStrategyID(order.StrategyID)
 
 	createdAtExchange := sql.NullTime{}
 	if resp.EventTime > 0 {
 		createdAtExchange = sql.NullTime{Time: time.UnixMilli(resp.EventTime).UTC(), Valid: true}
 	}
 
-	sentAt := sql.NullTime{
-		Time:  time.Now(),
-		Valid: true,
-	}
-	if order.RequestedAt > 0 {
-		sentAt = sql.NullTime{Time: time.UnixMilli(order.RequestedAt).UTC(), Valid: true}
-	}
+	sentAt := orderSentAt(order.RequestedAt)
 
 	acknowledgedAt := sql.NullTime{Time: now, Valid: true}
 
@@ -900,13 +799,7 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 		avgFillPrice = &executedPrice
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeBinance,
-		MarketType:        marketType,
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}, resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(e.klineResyncDeps(marketType), resp.Symbol)
 	if resolvedSymbol == "" {
 		resolvedSymbol = order.Symbol
 	}
@@ -943,14 +836,14 @@ func (e *BinanceExchange) mapPlaceOrderResponseToOrderHistory(order entity.Order
 }
 
 func (e *BinanceExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderHistory, resp binanceOrderResponseSnapshot) (entity.OrderHistory, error) {
-	filledQuantity, err := binanceDecimalOrZero(resp.ExecutedQty)
+	filledQuantity, err := decimalOrZero(resp.ExecutedQty)
 	if err != nil {
 		return entity.OrderHistory{}, fmt.Errorf("invalid binance filled quantity: %w", err)
 	}
 
 	executedPrice := decimal.Zero
 	if filledQuantity.GreaterThan(decimal.Zero) {
-		quoteQty, err := binanceDecimalOrZero(resp.CumulativeQuoteQty)
+		quoteQty, err := decimalOrZero(resp.CumulativeQuoteQty)
 		if err != nil {
 			return entity.OrderHistory{}, fmt.Errorf("invalid binance cumulative quote quantity: %w", err)
 		}
@@ -988,13 +881,7 @@ func (e *BinanceExchange) mapOrderHistorySyncResponse(orderHistory entity.OrderH
 		orderHistory.CreatedAtExchange = sql.NullTime{Time: time.UnixMilli(resp.EventTime).UTC(), Valid: true}
 	}
 
-	resolvedSymbol := resolveInternalSymbolFromOrderMapping(exchangeKlineResyncDeps{
-		ExchangeName:      entity.ExchangeBinance,
-		MarketType:        e.resolveMarketType(orderHistory.MarketType),
-		SymbolMapping:     &e.symbolMapping,
-		SymbolMappingRepo: e.symbolMappingRepo,
-		KlineSubRepo:      e.klineSubRepo,
-	}, resp.Symbol)
+	resolvedSymbol := resolveInternalSymbolFromOrderMapping(e.klineResyncDeps(e.resolveMarketType(orderHistory.MarketType)), resp.Symbol)
 	if resolvedSymbol != "" {
 		orderHistory.Symbol = resolvedSymbol
 	}
@@ -1043,14 +930,6 @@ func binanceOrderStatusFromCode(code string) string {
 
 		return code
 	}
-}
-
-func binanceDecimalOrZero(raw string) (decimal.Decimal, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return decimal.Zero, nil
-	}
-	return decimal.NewFromString(trimmed)
 }
 
 func binanceOrderTypeCode(orderType entity.OrderType) (string, error) {
@@ -1110,12 +989,6 @@ func normalizeBinanceClientID(raw string) (string, error) {
 	return normalized, nil
 }
 
-func binanceHMACSHA256Hex(secret, payload string) string {
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write([]byte(payload))
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
 func quantizeDownByStep(value decimal.Decimal, step decimal.Decimal) decimal.Decimal {
 	if !step.GreaterThan(decimal.Zero) {
 		return value
@@ -1157,6 +1030,13 @@ func (e *BinanceExchange) refreshSymbolPrecision(ctx context.Context, marketType
 
 	marketType = entity.NormalizeMarketType(string(marketType))
 	endpoint := e.baseURLByMarketType(marketType) + e.exchangeInfoPathByMarketType(marketType) + "?symbol=" + url.QueryEscape(normalizedSymbol)
+	logger := logrus.WithFields(logrus.Fields{
+		"exchange":    entity.ExchangeBinance,
+		"market_type": marketType,
+		"symbol":      normalizedSymbol,
+	})
+	logger.Debug("refreshing symbol precision")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -1240,6 +1120,11 @@ func (e *BinanceExchange) refreshSymbolPrecision(ctx context.Context, marketType
 		}
 		e.symbolPrecisionMu.Unlock()
 	}
+
+	logger.WithFields(logrus.Fields{
+		"http_status":  resp.StatusCode,
+		"symbol_count": len(symbolsResp.Symbols),
+	}).Debug("symbol precision refreshed")
 
 	return nil
 }

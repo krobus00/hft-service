@@ -15,6 +15,7 @@ import (
 	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/repository"
 	"github.com/shopspring/decimal"
+	"github.com/sirupsen/logrus"
 )
 
 const marketKlineBackfillBatchLimit = 1000
@@ -28,7 +29,7 @@ type marketKlineBackfillDeps struct {
 	SymbolMapping *atomic.Value
 }
 
-func backfillMarketKlines(ctx context.Context, deps marketKlineBackfillDeps, marketKlineRepo *repository.MarketKlineRepository, req entity.MarketKlineBackfillRequest) (int, error) {
+func backfillMarketKlines(ctx context.Context, deps marketKlineBackfillDeps, marketKlineRepo *repository.MarketKlineRepository, req entity.MarketKlineBackfillRequest) (insertedCount int, err error) {
 	if marketKlineRepo == nil {
 		return 0, fmt.Errorf("market kline repository is not initialized")
 	}
@@ -59,8 +60,30 @@ func backfillMarketKlines(ctx context.Context, deps marketKlineBackfillDeps, mar
 		exchangeSymbol = normalizedSymbol
 	}
 
+	startedAt := time.Now()
+	logger := logrus.WithFields(logrus.Fields{
+		"exchange":        deps.ExchangeName,
+		"market_type":     effectiveMarketType(deps.MarketType),
+		"symbol":          normalizedSymbol,
+		"exchange_symbol": exchangeSymbol,
+		"interval":        normalizedInterval,
+		"start_time":      req.StartTime.UTC().Format(time.RFC3339),
+		"end_time":        req.EndTime.UTC().Format(time.RFC3339),
+	})
+	logger.Info("kline backfill started")
+	defer func() {
+		fields := logrus.Fields{
+			"inserted_count": insertedCount,
+			"duration_ms":    time.Since(startedAt).Milliseconds(),
+		}
+		if err != nil {
+			logger.WithFields(fields).WithError(err).Warn("kline backfill failed")
+			return
+		}
+		logger.WithFields(fields).Info("kline backfill completed")
+	}()
+
 	nextStartMs := startMs
-	insertedCount := 0
 
 	for nextStartMs < endMs {
 		rows, err := fetchKlineRows(ctx, deps, exchangeSymbol, normalizedInterval, nextStartMs, endMs)
@@ -68,8 +91,16 @@ func backfillMarketKlines(ctx context.Context, deps marketKlineBackfillDeps, mar
 			return insertedCount, err
 		}
 		if len(rows) == 0 {
+			logger.WithFields(logrus.Fields{
+				"batch_start_time": time.UnixMilli(nextStartMs).UTC().Format(time.RFC3339),
+			}).Debug("kline backfill returned no rows")
 			break
 		}
+
+		logger.WithFields(logrus.Fields{
+			"batch_start_time": time.UnixMilli(nextStartMs).UTC().Format(time.RFC3339),
+			"row_count":        len(rows),
+		}).Debug("kline backfill batch fetched")
 
 		lastOpenTime := int64(0)
 		now := time.Now().UTC()
@@ -143,7 +174,6 @@ func fetchKlineRows(ctx context.Context, deps marketKlineBackfillDeps, symbol, i
 
 	endpoint := strings.TrimRight(deps.BaseURL, "/") + deps.KlinePath + "?" + query.Encode()
 
-	fmt.Println(endpoint)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
