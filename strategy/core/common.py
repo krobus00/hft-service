@@ -2,7 +2,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -35,6 +35,29 @@ def cfg_value(section: Dict[str, Any], global_config: Dict[str, Any], key: str, 
         return global_config.get(key)
 
     return default
+
+
+def runtime_options(global_config: Dict[str, Any], section: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Shared non-strategy runtime features.
+
+    Strategy files pass this into RuntimeConfig so monitoring, config refresh,
+    and state persistence stay consistent across all strategy runners.
+    """
+
+    section = section or {}
+    return {
+        "strategy_config_refresh_interval_sec": int(global_config.get("strategy_config_refresh_interval_sec", 10)),
+        "monitor_enabled": bool(section.get("monitor_enabled", global_config.get("monitor_enabled", False))),
+        "monitor_host": str(section.get("monitor_host", global_config.get("monitor_host", "127.0.0.1"))),
+        "monitor_port": int(section.get("monitor_port", global_config.get("monitor_port", 8088))),
+        "redis_url": str(global_config.get("redis_url", "") or ""),
+        "redis_key_prefix": str(global_config.get("redis_key_prefix", "hft:strategy")),
+        "redis_state_ttl_sec": int(global_config.get("redis_state_ttl_sec", 86400)),
+        "redis_delete_removed_state": bool(global_config.get("redis_delete_removed_state", False)),
+        "db_pool_min_size": int(global_config.get("db_pool_min_size", 1)),
+        "db_pool_max_size": int(global_config.get("db_pool_max_size", 4)),
+        "message_queue_size": int(global_config.get("message_queue_size", 1000)),
+    }
 
 
 def parse_iso_to_ms(value: str) -> int:

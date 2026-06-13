@@ -2,7 +2,7 @@ import asyncio
 
 import uvloop
 
-from core.common import cfg_value, load_full_config
+from core.common import cfg_value, load_full_config, runtime_options
 from core.framework import StrategyBase, StrategyRunner
 from core.models import Candle, RuntimeConfig, StrategyConfig
 
@@ -49,16 +49,9 @@ def build_runtime_config(section: dict) -> RuntimeConfig:
         nats_connect_timeout_sec=GLOBAL_CONFIG.get("nats_connect_timeout_sec", 5),
         nats_ping_interval_sec=GLOBAL_CONFIG.get("nats_ping_interval_sec", 30),
         nats_max_outstanding_pings=GLOBAL_CONFIG.get("nats_max_outstanding_pings", 3),
-        order_subject=section.get("order_subject", "order_engine.place_order"),
-        position_side=section.get("position_side", "BOTH"),
-        source=section.get("source", "python-template"),
-        strategy_id=section.get("strategy_id", "python-template"),
-        need_notification=bool(section.get("need_notification", False)),
-        is_paper_trading=section.get("is_paper_trading", True),
-        order_type=section.get("order_type", "LIMIT"),
-        order_qty=float(section.get("order_qty", 10)),
-        limit_slippage_pct=float(section.get("limit_slippage_pct", section.get("limit_slippage_bps", 2) / 100.0)),
-        enable_intrabar_risk_exit=bool(cfg_value(section, GLOBAL_CONFIG, "enable_intrabar_risk_exit", False)),
+        source="python-template",
+        strategy_id="python-template",
+        **runtime_options(GLOBAL_CONFIG, section),
     )
 
 
