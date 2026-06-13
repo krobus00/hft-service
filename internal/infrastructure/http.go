@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	defaultHTTPAddr         = ":8080"
-	defaultReadTimeout      = 5 * time.Second
+	defaultHTTPAddr          = ":8080"
+	defaultReadTimeout       = 5 * time.Second
 	defaultReadHeaderTimeout = 2 * time.Second
-	defaultWriteTimeout     = 15 * time.Second
-	defaultIdleTimeout      = 60 * time.Second
-	defaultShutdownTimeout  = 10 * time.Second
-	defaultMaxHeaderBytes   = 1 << 20
+	defaultWriteTimeout      = 15 * time.Second
+	defaultIdleTimeout       = 60 * time.Second
+	defaultShutdownTimeout   = 10 * time.Second
+	defaultMaxHeaderBytes    = 1 << 20
 )
 
 type HTTPServer struct {
@@ -67,6 +67,7 @@ func NewHTTPServerWithConfig(cfg HTTPServerConfig, handler http.Handler) *HTTPSe
 		httpRequestIDMiddleware,
 		httpRecoveryMiddleware,
 		httpSecurityHeadersMiddleware,
+		httpCORSMiddleware,
 		httpAccessLogMiddleware,
 	)
 
@@ -173,6 +174,25 @@ func httpSecurityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func httpCORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Request-Id")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+		}
+
+		if origin != "" && r.Method == http.MethodOptions && strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")) != "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }

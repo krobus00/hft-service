@@ -30,11 +30,23 @@ func (r *APISettingRepository) FindByID(ctx context.Context, id string) (map[str
 	return items[0], nil
 }
 
+func (r *APISettingRepository) FindByKey(ctx context.Context, key string) (map[string]any, error) {
+	query := `SELECT id, key, value, created_at, updated_at FROM settings WHERE key = $1 LIMIT 1`
+	items, err := selectMaps(ctx, r.db, query, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return items[0], nil
+}
+
 func (r *APISettingRepository) Create(ctx context.Context, values map[string]any) (map[string]any, error) {
 	queryBuilder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
 		Insert("settings").
 		Columns("key", "value").
-		Values(normalizeConfigValue(values["key"]), normalizeConfigValue(values["value"])).
+		Values(normalizeSettingKey(values["key"]), normalizeConfigValue(values["value"])).
 		Suffix("RETURNING id, key, value, created_at, updated_at")
 
 	query, args, err := queryBuilder.ToSql()
@@ -51,7 +63,7 @@ func (r *APISettingRepository) Create(ctx context.Context, values map[string]any
 func (r *APISettingRepository) Update(ctx context.Context, id string, values map[string]any) (map[string]any, error) {
 	queryBuilder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).Update("settings")
 	if value, ok := values["key"]; ok {
-		queryBuilder = queryBuilder.Set("key", normalizeConfigValue(value))
+		queryBuilder = queryBuilder.Set("key", normalizeSettingKey(value))
 	}
 	if value, ok := values["value"]; ok {
 		queryBuilder = queryBuilder.Set("value", normalizeConfigValue(value))

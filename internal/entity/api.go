@@ -72,6 +72,23 @@ type APIPermission struct {
 	CreatedAt   time.Time `db:"created_at" json:"created_at"`
 }
 
+func (p *APIPermission) GetColumn() map[string]string {
+	return map[string]string{
+		"id":          "id",
+		"name":        "name",
+		"description": "description",
+		"created_at":  "created_at",
+	}
+}
+
+func (p *APIPermission) DefaultSort() apiutil.SortReq {
+	return apiutil.SortReq{Field: "name", Direction: "ASC"}
+}
+
+func (p *APIPermission) SearchableFields() []string {
+	return []string{"name", "description"}
+}
+
 type APISetting struct {
 	ID        string    `db:"id" json:"id"`
 	Key       string    `db:"key" json:"key"`
@@ -98,8 +115,52 @@ func (s *APISetting) SearchableFields() []string {
 	return []string{"key"}
 }
 
+type APIDashboardPage struct {
+	ID               string    `db:"id" json:"id"`
+	ResourceKey      string    `db:"resource_key" json:"resource_key"`
+	ParentKey        string    `db:"parent_key" json:"parent_key"`
+	Label            string    `db:"label" json:"label"`
+	Description      string    `db:"description" json:"description"`
+	ShortDescription string    `db:"short_description" json:"short_description"`
+	Icon             string    `db:"icon" json:"icon"`
+	Path             string    `db:"path" json:"path"`
+	ReadPermission   string    `db:"read_permission" json:"read_permission"`
+	WritePermission  string    `db:"write_permission" json:"write_permission"`
+	SortOrder        int       `db:"sort_order" json:"sort_order"`
+	Visible          bool      `db:"visible" json:"visible"`
+	CreatedAt        time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt        time.Time `db:"updated_at" json:"updated_at"`
+}
+
+func (p *APIDashboardPage) GetColumn() map[string]string {
+	return map[string]string{
+		"id":                "id",
+		"resource_key":      "resource_key",
+		"parent_key":        "parent_key",
+		"label":             "label",
+		"description":       "description",
+		"short_description": "short_description",
+		"icon":              "icon",
+		"path":              "path",
+		"read_permission":   "read_permission",
+		"write_permission":  "write_permission",
+		"sort_order":        "sort_order",
+		"visible":           "visible",
+		"created_at":        "created_at",
+		"updated_at":        "updated_at",
+	}
+}
+
+func (p *APIDashboardPage) DefaultSort() apiutil.SortReq {
+	return apiutil.SortReq{Field: "sort_order", Direction: "ASC"}
+}
+
+func (p *APIDashboardPage) SearchableFields() []string {
+	return []string{"resource_key", "parent_key", "label", "description", "path", "read_permission", "write_permission"}
+}
+
 type StrategyConfig struct {
-	ID                       int64           `db:"id" json:"id"`
+	ID                       string          `db:"id" json:"id"`
 	Strategy                 string          `db:"strategy" json:"strategy"`
 	Exchange                 string          `db:"exchange" json:"exchange"`
 	MarketType               string          `db:"market_type" json:"market_type"`

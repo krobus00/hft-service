@@ -163,6 +163,12 @@ func (r *OrderHistoryRepository) GetPagination(ctx context.Context, req *apiutil
 	return apiutil.NewPaginationResp(req.Paginate.Page, req.Paginate.Limit, total, items), nil
 }
 
+func (r *OrderHistoryRepository) ListExchanges(ctx context.Context) ([]string, error) {
+	items := []string{}
+	err := r.db.SelectContext(ctx, &items, "SELECT DISTINCT exchange FROM order_histories WHERE exchange <> '' ORDER BY exchange")
+	return items, err
+}
+
 func (r *OrderHistoryRepository) GetByStatus(ctx context.Context, statuses []string) ([]entity.OrderHistory, error) {
 	if len(statuses) == 0 {
 		return []entity.OrderHistory{}, nil
@@ -193,14 +199,35 @@ func (r *OrderHistoryRepository) Update(ctx context.Context, orderHistory *entit
 	queryBuilder := sq.StatementBuilder.
 		PlaceholderFormat(sq.Dollar).
 		Update(orderHistory.TableName()).
+		Set("request_id", orderHistory.RequestID).
+		Set("user_id", orderHistory.UserID).
+		Set("exchange", orderHistory.Exchange).
+		Set("market_type", orderHistory.MarketType).
+		Set("position_side", orderHistory.PositionSide).
+		Set("symbol", orderHistory.Symbol).
+		Set("order_id", orderHistory.OrderID).
+		Set("entry_order_id", orderHistory.EntryOrderID).
+		Set("client_order_id", orderHistory.ClientOrderID).
+		Set("side", orderHistory.Side).
+		Set("type", orderHistory.Type).
 		Set("price", orderHistory.Price).
+		Set("quantity", orderHistory.Quantity).
 		Set("filled_quantity", orderHistory.FilledQuantity).
 		Set("avg_fill_price", orderHistory.AvgFillPrice).
 		Set("status", orderHistory.Status).
+		Set("leverage", orderHistory.Leverage).
 		Set("fee", orderHistory.Fee).
 		Set("realized_pnl", orderHistory.RealizedPnl).
+		Set("created_at_exchange", orderHistory.CreatedAtExchange).
+		Set("sent_at", orderHistory.SentAt).
 		Set("acknowledged_at", orderHistory.AcknowledgedAt).
 		Set("filled_at", orderHistory.FilledAt).
+		Set("strategy_id", orderHistory.StrategyID).
+		Set("trade_condition", orderHistory.TradeCondition).
+		Set("order_reason", orderHistory.OrderReason).
+		Set("exit_type", orderHistory.ExitType).
+		Set("error_message", orderHistory.ErrorMessage).
+		Set("is_paper_trading", orderHistory.IsPaperTrading).
 		Set("updated_at", orderHistory.UpdatedAt).
 		Where(sq.Eq{"id": orderHistory.ID})
 
@@ -209,6 +236,25 @@ func (r *OrderHistoryRepository) Update(ctx context.Context, orderHistory *entit
 		return err
 	}
 
-	_, err = r.db.ExecContext(ctx, query, args...)
-	return err
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *OrderHistoryRepository) Delete(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, "DELETE FROM order_histories WHERE id = $1", id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }

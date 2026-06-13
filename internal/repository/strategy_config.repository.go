@@ -102,6 +102,12 @@ func (r *StrategyConfigRepository) Delete(ctx context.Context, id string) error 
 	return nil
 }
 
+func (r *StrategyConfigRepository) ListExchanges(ctx context.Context) ([]string, error) {
+	items := []string{}
+	err := r.db.SelectContext(ctx, &items, "SELECT DISTINCT exchange FROM strategy_configs WHERE exchange <> '' ORDER BY exchange")
+	return items, err
+}
+
 func (r *StrategyConfigRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
 	model := &entity.StrategyConfig{}
 	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).

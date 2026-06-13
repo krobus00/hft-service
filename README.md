@@ -19,9 +19,12 @@ Most of the code in this repository was written with AI assistance.
 - [System Architecture](#system-architecture)
 - [Services and Use Cases](#services-and-use-cases)
 - [API Service Documentation](docs/API_SERVICE.md)
+- [Dashboard](#dashboard)
 - [Supported Exchanges](#supported-exchanges)
 - [Market Type Support](#market-type-support)
 - [Quick Start (Local)](#quick-start-local)
+- [Production Docker Compose](#production-docker-compose)
+- [Database Backups](#database-backups)
 - [How to Run Strategy](#how-to-run-strategy)
 - [Profit Results](#profit-results)
 - [Test Order API](#test-order-api)
@@ -145,6 +148,75 @@ flowchart TB
 
 - Runs DB migration for `api`, `market_data`, and `order_engine`.
 
+## Dashboard
+
+The dashboard is ready and lives in [`web/`](web/). It is a Next.js TypeScript app for operating the Krobot API service.
+
+Dashboard capabilities:
+
+- First-admin setup flow at `/setup`.
+- Login, refresh-token session handling, and logout.
+- RBAC-aware navigation and protected dashboard pages.
+- Orders, market data, symbol mappings, kline subscriptions, strategy configs, dashboard settings, users, roles, permissions, and dashboard page management.
+
+### Screenshot
+
+![Dashboard auth](docs/dashboard-login.png)
+
+![Dashboard screenshot](docs/dashboard-screenshot.png)
+
+### Local Dashboard Setup
+
+Start the infrastructure and API dependencies first:
+
+```bash
+docker compose -f compose-dev.yaml up -d postgresql redis nats
+```
+
+Create the API database if it does not already exist:
+
+```sql
+CREATE DATABASE api;
+```
+
+Run API migrations:
+
+```bash
+go run . migrate --databaseName=api
+```
+
+Start the API service:
+
+```bash
+go run . api
+```
+
+In another terminal, start the dashboard:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+PowerShell on some Windows machines blocks `npm.ps1`; use `npm.cmd install` and `npm.cmd run dev` if needed.
+
+The dashboard uses this API base URL by default:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://localhost:9804/api/v1
+```
+
+Open:
+
+- Dashboard setup: `http://localhost:3000/setup`
+- Dashboard login/app: `http://localhost:3000`
+
+Production and local Docker Compose include the web service through the `web` profile. The default ports are:
+
+- API: `http://localhost:9804/api/v1`
+- Dashboard: `http://localhost:3000`
+
 ## Supported Exchanges
 
 - Tokocrypto
@@ -170,6 +242,12 @@ Copy config template:
 
 ```bash
 copy config.yml.example config.yml
+```
+
+Copy environment template for Docker Compose and Makefile defaults:
+
+```bash
+copy .env.example .env
 ```
 
 Update required values in `config.yml`:
@@ -214,6 +292,26 @@ Host mapping reminder:
 - Run app locally (`go run`): use `localhost` hosts.
 - Run app in Docker: use compose service names (`postgresql`, `redis`, `nats`).
 
+Optional Redis/NATS authentication:
+
+- If Docker Compose starts Redis with `REDIS_PASSWORD`, update every Redis DSN to include that password.
+- If Docker Compose starts NATS with `NATS_PASSWORD`, update every NATS URL to include the configured user and password.
+
+Docker service URL examples:
+
+```yaml
+nats_jetstream:
+  url: "nats://hft:REPLACE_WITH_NATS_PASSWORD@nats:4222"
+
+redis:
+  api:
+    cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/2"
+  market_data:
+    cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/0"
+  strategy:
+    cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/1"
+```
+
 ### 3) Start infrastructure
 
 ```bash
@@ -225,6 +323,7 @@ docker compose -f compose-dev.yaml up -d postgresql redis nats
 Run in PostgreSQL:
 
 ```sql
+CREATE DATABASE api;
 CREATE DATABASE market_data;
 CREATE DATABASE order_engine;
 ```
@@ -232,6 +331,7 @@ CREATE DATABASE order_engine;
 ### 5) Run migrations
 
 ```bash
+go run . migrate --databaseName=api
 go run . migrate --databaseName=market_data
 go run . migrate --databaseName=order_engine
 ```
@@ -334,6 +434,10 @@ Notes:
 ### 9) Run services (separate terminals)
 
 ```bash
+go run . api
+```
+
+```bash
 go run . market-data-gateway
 ```
 
@@ -356,6 +460,135 @@ go run . notification-service
 ```bash
 make build-strategy
 make run-strategy
+```
+
+## Production Docker Compose
+
+The production [compose.yaml](compose.yaml) does not build local application images. It runs images already released to Docker Hub under `krobus00`.
+
+Copy and edit `.env` first:
+
+```bash
+copy .env.example .env
+```
+
+Docker Compose reads `.env` automatically. The Makefile also includes `.env` when it exists, so image tags, ports, credentials, profiles, and backup settings can live in one place.
+
+Default image tags:
+
+- `krobus00/hft-service:${HFT_VERSION:-latest}`
+- `krobus00/krobot-web:${WEB_VERSION:-latest}`
+- `krobus00/python-strategy:${STRATEGY_VERSION:-latest}`
+
+Build and push release images:
+
+```bash
+make build-images VERSION=1.0.0 NEXT_PUBLIC_API_BASE_URL=http://YOUR_HOST:9804/api/v1
+make push-images VERSION=1.0.0
+```
+
+Run released images:
+
+Set `HFT_VERSION`, `WEB_VERSION`, and `STRATEGY_VERSION` in `.env`, then run:
+
+```bash
+make compose-pull
+make up-service
+```
+
+Default profiles are `infra app web`. To also run strategies:
+
+Set this in `.env`:
+
+```env
+PROFILES=infra app web strategy
+```
+
+Then run:
+
+```bash
+make up-service
+```
+
+Redis and NATS passwords are optional. If you set them in Compose, also update `config.yml` and `strategy/config.yml` URLs to match.
+
+Set these in `.env`:
+
+```env
+REDIS_PASSWORD=REPLACE_WITH_REDIS_PASSWORD
+NATS_USER=hft
+NATS_PASSWORD=REPLACE_WITH_NATS_PASSWORD
+```
+
+Credentialed URL formats:
+
+```yaml
+nats_jetstream:
+  url: "nats://hft:REPLACE_WITH_NATS_PASSWORD@nats:4222"
+
+redis:
+  api:
+    cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/2"
+```
+
+For local development infrastructure, the same password variables work with `compose-dev.yaml`:
+
+```bash
+REDIS_PASSWORD='REPLACE_WITH_REDIS_PASSWORD' \
+NATS_USER=hft \
+NATS_PASSWORD='REPLACE_WITH_NATS_PASSWORD' \
+docker compose -f compose-dev.yaml up -d postgresql redis nats
+```
+
+Useful production commands:
+
+```bash
+make compose-config
+make compose-logs
+make down-service
+```
+
+For local images that already exist on your machine, use [compose-local.yaml](compose-local.yaml):
+
+```bash
+make build-local-images
+make up-local-service
+```
+
+Local image names can be overridden in `.env`:
+
+```env
+HFT_LOCAL_IMAGE=hft-service:local
+WEB_LOCAL_IMAGE=krobot-web:local
+STRATEGY_LOCAL_IMAGE=python-strategy:local
+```
+
+## Database Backups
+
+Backups are written to `backups/`, which is ignored by git.
+
+Back up one database:
+
+```bash
+make backup-db DB=api
+```
+
+Back up all configured databases:
+
+```bash
+make backup-databases
+```
+
+Default database list:
+
+```text
+hft market_data order_engine api analytics
+```
+
+Override the list:
+
+```bash
+make backup-databases DATABASES="market_data order_engine api"
 ```
 
 ## How to Run Strategy
@@ -520,7 +753,6 @@ curl --request POST \
 - Support HA deployment for all services.
 - Improve multi-user credential management UX (dashboard/admin APIs).
 - Support multiple exchanges.
-- Dashboard
 
 ## Support This Project
 

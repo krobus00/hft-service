@@ -1,5 +1,7 @@
 global:
   nats_url: nats://localhost:4222
+  # If NATS auth is enabled:
+  # nats_url: nats://hft:REPLACE_WITH_NATS_PASSWORD@localhost:4222
   nats_allow_reconnect: true
   nats_max_reconnect_attempts: -1
   nats_reconnect_time_wait_sec: 2
@@ -12,6 +14,8 @@ global:
   strategy_config_refresh_interval_sec: 10
   message_queue_size: 1000
   redis_url: redis://localhost:6379/0
+  # If Redis auth is enabled:
+  # redis_url: redis://:REPLACE_WITH_REDIS_PASSWORD@localhost:6379/0
   redis_key_prefix: hft:strategy
   redis_state_ttl_sec: 86400
   redis_delete_removed_state: false

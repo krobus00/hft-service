@@ -25,6 +25,7 @@ type MarketKlineEvent struct {
 }
 
 type MarketKline struct {
+	ID               string          `db:"id" json:"id"`
 	Exchange         string          `db:"exchange" json:"exchange"`
 	MarketType       string          `db:"market_type" json:"market_type"`
 	EventType        string          `db:"event_type" json:"event_type"`
@@ -53,6 +54,7 @@ func (m MarketKline) TableName() string {
 
 func (m *MarketKline) GetColumn() map[string]string {
 	return map[string]string{
+		"id":          "id",
 		"exchange":    "exchange",
 		"market_type": "market_type",
 		"event_type":  "event_type",

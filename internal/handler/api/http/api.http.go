@@ -32,14 +32,18 @@ func NewAPIHTTPHandler(authService *apiservice.AuthService, dataService *apiserv
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/setup", h.Setup)
 	mux.HandleFunc("/api/v1/auth/login", h.Login)
+	mux.HandleFunc("/api/v1/auth/config", h.AuthConfig)
 	mux.HandleFunc("/api/v1/auth/refresh", h.Refresh)
 	mux.HandleFunc("/api/v1/auth/logout", h.withAuth(h.Logout))
 	mux.HandleFunc("/api/v1/auth/me", h.withAuth(h.Me))
+	mux.HandleFunc("/api/v1/auth/profile", h.withAuth(h.Profile))
+	mux.HandleFunc("/api/v1/form/enums", h.withAuth(h.FormEnums))
+	mux.HandleFunc("/api/v1/dashboard/pages/menu", h.withAuth(h.DashboardPageMenu))
 
-	mux.HandleFunc("/api/v1/orders", h.withPermission(constant.PermissionOrderRead, h.ListOrders))
-	mux.HandleFunc("/api/v1/orders/", h.withPermission(constant.PermissionOrderRead, h.GetOrder))
-	mux.HandleFunc("/api/v1/market/klines", h.withPermission(constant.PermissionMarketRead, h.ListMarketKlines))
-	mux.HandleFunc("/api/v1/market/klines/", h.withPermission(constant.PermissionMarketRead, h.GetMarketKline))
+	mux.HandleFunc("/api/v1/orders", h.withPermission(constant.PermissionOrderRead, h.Orders))
+	mux.HandleFunc("/api/v1/orders/", h.withPermission(constant.PermissionOrderRead, h.OrderByID))
+	mux.HandleFunc("/api/v1/market/klines", h.withPermission(constant.PermissionMarketRead, h.MarketKlines))
+	mux.HandleFunc("/api/v1/market/klines/", h.withPermission(constant.PermissionMarketRead, h.MarketKlineByID))
 	mux.HandleFunc("/api/v1/market/symbol-mappings", h.withPermission(constant.PermissionMarketRead, h.SymbolMappings))
 	mux.HandleFunc("/api/v1/market/symbol-mappings/", h.withPermission(constant.PermissionMarketRead, h.SymbolMappingByID))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptions))
@@ -52,6 +56,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/users/", h.withPermission(constant.PermissionUserRead, h.UserByID))
 	mux.HandleFunc("/api/v1/roles", h.withPermission(constant.PermissionUserRead, h.Roles))
 	mux.HandleFunc("/api/v1/roles/", h.withPermission(constant.PermissionUserRead, h.RoleByID))
+	mux.HandleFunc("/api/v1/permissions", h.withPermission(constant.PermissionPermissionRead, h.Permissions))
+	mux.HandleFunc("/api/v1/permissions/", h.withPermission(constant.PermissionPermissionRead, h.PermissionByID))
+	mux.HandleFunc("/api/v1/dashboard/pages", h.withPermission(constant.PermissionDashboardPageRead, h.DashboardPages))
+	mux.HandleFunc("/api/v1/dashboard/pages/", h.withPermission(constant.PermissionDashboardPageRead, h.DashboardPageByID))
 }
 
 type setupRequest struct {
@@ -67,6 +75,11 @@ type loginRequest struct {
 
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
+}
+
+type profileRequest struct {
+	Name     string `json:"name"`
+	Password string `json:"password"`
 }
 
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +122,22 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	writeAuthResult(w, result, err)
 }
 
+func (h *Handler) AuthConfig(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	result, err := h.dataService.GetAuthConfig(r.Context())
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) FormEnums(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	result, err := h.dataService.GetFormEnums(r.Context())
+	writeDataResult(w, result, err)
+}
+
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -137,52 +166,135 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	writeDataResult(w, user, err)
 }
 
-func (h *Handler) ListOrders(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPatch) {
+		return
+	}
+	claims := claimsFromContext(r.Context())
+	if claims == nil || strings.TrimSpace(claims.Subject) == "" {
+		apiutil.WriteError(w, http.StatusUnauthorized, constant.UnauthorizedStatusCode, "invalid authorization token")
+		return
+	}
+	var req profileRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	user, err := h.authService.UpdateProfile(r.Context(), claims.Subject, req.Name, req.Password)
+	writeDataResult(w, user, err)
+}
+
+func (h *Handler) DashboardPageMenu(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
-	req, ok := parsePagination(w, r, &entity.OrderHistory{})
-	if !ok {
-		return
-	}
-	result, err := h.dataService.ListOrders(r.Context(), req)
+	result, err := h.dataService.ListVisibleDashboardPages(r.Context())
 	writeDataResult(w, result, err)
 }
 
-func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
+func (h *Handler) Orders(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.OrderHistory{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListOrders(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionOrderWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateOrder(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
+}
+
+func (h *Handler) OrderByID(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "/api/v1/orders/")
 	if !ok {
 		return
 	}
-	result, err := h.dataService.GetOrder(r.Context(), id)
-	writeDataResult(w, result, err)
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetOrder(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionOrderWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateOrder(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionOrderWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteOrder(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
 }
 
-func (h *Handler) ListMarketKlines(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
+func (h *Handler) MarketKlines(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.MarketKline{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListMarketKlines(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionMarketWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateMarketKline(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
-	req, ok := parsePagination(w, r, &entity.MarketKline{})
-	if !ok {
-		return
-	}
-	result, err := h.dataService.ListMarketKlines(r.Context(), req)
-	writeDataResult(w, result, err)
 }
 
-func (h *Handler) GetMarketKline(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
-	}
+func (h *Handler) MarketKlineByID(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "/api/v1/market/klines/")
 	if !ok {
 		return
 	}
-	result, err := h.dataService.GetMarketKline(r.Context(), id)
-	writeDataResult(w, result, err)
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetMarketKline(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionMarketWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateMarketKline(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionMarketWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteMarketKline(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
 }
 
 func (h *Handler) SymbolMappings(w http.ResponseWriter, r *http.Request) {
@@ -398,51 +510,215 @@ func (h *Handler) SettingByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.APIUser{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListUsers(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionUserWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateUser(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
-	req, ok := parsePagination(w, r, &entity.APIUser{})
-	if !ok {
-		return
-	}
-	result, err := h.dataService.ListUsers(r.Context(), req)
-	writeDataResult(w, result, err)
 }
 
 func (h *Handler) UserByID(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
-	}
 	id, ok := pathID(w, r, "/api/v1/users/")
 	if !ok {
 		return
 	}
-	result, err := h.dataService.GetUser(r.Context(), id)
-	writeDataResult(w, result, err)
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetUser(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionUserWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateUser(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionUserWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteUser(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
 }
 
 func (h *Handler) Roles(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.APIRole{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListRoles(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionUserWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateRole(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
-	req, ok := parsePagination(w, r, &entity.APIRole{})
-	if !ok {
-		return
-	}
-	result, err := h.dataService.ListRoles(r.Context(), req)
-	writeDataResult(w, result, err)
 }
 
 func (h *Handler) RoleByID(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
-	}
 	id, ok := pathID(w, r, "/api/v1/roles/")
 	if !ok {
 		return
 	}
-	result, err := h.dataService.GetRole(r.Context(), id)
-	writeDataResult(w, result, err)
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetRole(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionUserWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateRole(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionUserWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteRole(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) Permissions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.APIPermission{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListPermissions(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionPermissionWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreatePermission(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) PermissionByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/permissions/")
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetPermission(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionPermissionWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdatePermission(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionPermissionWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeletePermission(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) DashboardPages(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.APIDashboardPage{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListDashboardPages(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionDashboardPageWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateDashboardPage(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) DashboardPageByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/dashboard/pages/")
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetDashboardPage(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionDashboardPageWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateDashboardPage(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionDashboardPageWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteDashboardPage(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -465,7 +741,24 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (h *Handler) withPermission(permission string, next http.HandlerFunc) http.HandlerFunc {
 	return h.withAuth(func(w http.ResponseWriter, r *http.Request) {
-		if !hasPermission(claimsFromContext(r.Context()), permission) {
+		claims := claimsFromContext(r.Context())
+		if claims == nil || strings.TrimSpace(claims.Subject) == "" {
+			apiutil.WriteError(w, http.StatusUnauthorized, constant.UnauthorizedStatusCode, "invalid authorization token")
+			return
+		}
+
+		user, err := h.authService.Me(r.Context(), claims.Subject)
+		if err != nil {
+			writeAuthAccessError(w, err)
+			return
+		}
+
+		claims.Roles = user.Roles
+		claims.Permissions = user.Permissions
+		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
+		r = r.WithContext(ctx)
+
+		if !hasPermission(claims, permission) {
 			apiutil.WriteError(w, http.StatusForbidden, constant.ForbiddenStatusCode, "permission denied")
 			return
 		}
@@ -556,6 +849,17 @@ func writeAuthResult(w http.ResponseWriter, result *apiservice.AuthResult, err e
 		apiutil.WriteError(w, http.StatusUnauthorized, constant.UnauthorizedStatusCode, err.Error())
 	case errors.Is(err, apiservice.ErrInactiveUser), errors.Is(err, apiservice.ErrSetupAlreadyDone):
 		apiutil.WriteError(w, http.StatusConflict, constant.ConflictStatusCode, err.Error())
+	default:
+		apiutil.WriteError(w, http.StatusInternalServerError, constant.InternalStatusCode, "internal server error")
+	}
+}
+
+func writeAuthAccessError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		apiutil.WriteError(w, http.StatusUnauthorized, constant.UnauthorizedStatusCode, "invalid authorization token")
+	case errors.Is(err, apiservice.ErrInactiveUser):
+		apiutil.WriteError(w, http.StatusUnauthorized, constant.UnauthorizedStatusCode, err.Error())
 	default:
 		apiutil.WriteError(w, http.StatusInternalServerError, constant.InternalStatusCode, "internal server error")
 	}
