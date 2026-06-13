@@ -1,9 +1,10 @@
 "use client";
 
-import { LogOut, Menu, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
+import { LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings, User, X } from "lucide-react";
 import { ReactNode, useState } from "react";
 
 import { BrandWordmark } from "@/components/atoms/brand-wordmark";
+import { ProfileSettingsModal } from "@/components/molecules/profile-settings-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ type DashboardTemplateProps = {
   pageDescription: string;
   user: AuthUser;
   onLogout: () => void;
+  onUserChange: (user: AuthUser) => void;
 };
 
 export function DashboardTemplate({
@@ -25,9 +27,12 @@ export function DashboardTemplate({
   pageDescription,
   user,
   onLogout,
+  onUserChange,
 }: DashboardTemplateProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   return (
     <main className="min-h-screen bg-background">
@@ -125,13 +130,63 @@ export function DashboardTemplate({
                 <p className="truncate text-xs text-muted-foreground">{pageDescription}</p>
               </div>
             </div>
-            <div className="min-w-0 text-right sm:hidden">
-              <h1 className="truncate text-sm font-semibold">{pageTitle}</h1>
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 text-right sm:hidden">
+                <h1 className="truncate text-sm font-semibold">{pageTitle}</h1>
+              </div>
+              <div className="relative">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 rounded-full"
+                  onClick={() => setIsUserMenuOpen((current) => !current)}
+                  title="User menu"
+                >
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+                    {(user.name || user.email || "U").slice(0, 1).toUpperCase()}
+                  </span>
+                </Button>
+                {isUserMenuOpen ? (
+                  <div className="absolute right-0 top-11 z-50 w-56 rounded-md border bg-card p-2 shadow-lg">
+                    <div className="border-b px-2 py-2">
+                      <p className="truncate text-sm font-medium">{user.name || "User"}</p>
+                      <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted"
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        setIsProfileOpen(true);
+                      }}
+                    >
+                      <Settings className="h-4 w-4" />
+                      Profile settings
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-destructive hover:bg-muted"
+                      onClick={onLogout}
+                    >
+                      <LogOut className="h-4 w-4" />
+                      Logout
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
         </header>
         <div className="w-full px-4 py-6 sm:px-6 lg:px-8">{children}</div>
       </div>
+      {isProfileOpen ? (
+        <ProfileSettingsModal
+          user={user}
+          onSaved={onUserChange}
+          onClose={() => setIsProfileOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -154,7 +209,7 @@ function UserBlock({ collapsed, user }: { collapsed: boolean; user: AuthUser }) 
       </div>
       {collapsed ? (
         <div className="mx-auto flex h-8 w-8 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
-          {(user.name || user.email || "U").slice(0, 1).toUpperCase()}
+          <User className="h-4 w-4" />
         </div>
       ) : null}
     </div>

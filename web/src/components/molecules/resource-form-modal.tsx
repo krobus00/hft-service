@@ -1,11 +1,10 @@
 import { Eye, EyeOff, Plus, Save, Trash2 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 
 import { ModalShell } from "@/components/molecules/modal-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getFormEnums } from "@/lib/api-client";
 import type { ResourceConfig } from "@/types/api";
 
 type FieldValue = string | number | boolean | string[] | Record<string, string>;
@@ -14,6 +13,7 @@ type ResourceFormModalProps = {
   title: string;
   resource: ResourceConfig;
   initialValue: Record<string, unknown>;
+  enums: Record<string, string[]>;
   submitLabel: string;
   disabled?: boolean;
   onSubmit: (value: Record<string, unknown>) => Promise<void>;
@@ -24,6 +24,7 @@ export function ResourceFormModal({
   title,
   resource,
   initialValue,
+  enums,
   submitLabel,
   disabled,
   onSubmit,
@@ -36,32 +37,8 @@ export function ResourceFormModal({
   const [values, setValues] = useState<Record<string, FieldValue>>(() =>
     buildInitialValues(fields, resource.sampleBody ?? {}, initialValue),
   );
-  const [enums, setEnums] = useState<Record<string, string[]>>({});
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  useEffect(() => {
-    let isMounted = true;
-    async function loadEnums() {
-      if (!resource.enumFields || Object.keys(resource.enumFields).length === 0) {
-        return;
-      }
-      try {
-        const result = await getFormEnums();
-        if (isMounted) {
-          setEnums(result);
-        }
-      } catch {
-        if (isMounted) {
-          setEnums({});
-        }
-      }
-    }
-    void loadEnums();
-    return () => {
-      isMounted = false;
-    };
-  }, [resource.enumFields]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -183,6 +160,18 @@ function renderField(props: {
         value={String(value ?? "")}
         disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
+      />
+    );
+  }
+
+  if (isTimestampField(field)) {
+    return (
+      <Input
+        id={field}
+        type="datetime-local"
+        value={String(value ?? "")}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
       />
     );
   }
@@ -395,6 +384,10 @@ function buildInitialValues(
       result[field] = Number(rawValue);
       return result;
     }
+    if (isTimestampField(field)) {
+      result[field] = toLocalDateTimeInput(rawValue);
+      return result;
+    }
     result[field] = stripOuterQuotes(String(rawValue ?? ""));
     return result;
   }, {});
@@ -423,6 +416,10 @@ function normalizeSubmitValues(
       result[field] = stripOuterQuotes(value);
       return result;
     }
+    if (isTimestampField(field) && typeof value === "string") {
+      result[field] = fromLocalDateTimeInput(value);
+      return result;
+    }
     if (resource.key === "settings" && field === "value" && typeof value === "string") {
       result[field] = parseSettingValue(value);
       return result;
@@ -434,6 +431,33 @@ function normalizeSubmitValues(
     result[field] = value;
     return result;
   }, {});
+}
+
+function isTimestampField(field: string) {
+  return field.endsWith("_at") || field.endsWith("_time");
+}
+
+function toLocalDateTimeInput(value: unknown) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromLocalDateTimeInput(value: string) {
+  if (!value.trim()) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toISOString();
 }
 
 function parseSettingValue(value: string) {

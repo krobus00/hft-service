@@ -15,12 +15,24 @@ services:
   redis:
     image: redis:7-alpine
     container_name: hft-redis
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+        fi
+        exec redis-server --appendonly yes
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - if [ -n "$$REDIS_PASSWORD" ]; then redis-cli -a "$$REDIS_PASSWORD" ping; else redis-cli ping; fi
       interval: 5s
       timeout: 3s
       retries: 20
@@ -32,11 +44,19 @@ services:
     image: nats:2.12.4-alpine
     container_name: hft-nats
     command:
-      - "-c"
-      - "/etc/nats/nats.conf"
+      - sh
+      - -ec
+      - |
+        if [ -n "$$NATS_PASSWORD" ]; then
+          exec nats-server -c /etc/nats/nats.conf --user "$$NATS_USER" --pass "$$NATS_PASSWORD"
+        fi
+        exec nats-server -c /etc/nats/nats.conf
+    environment:
+      NATS_USER: ${NATS_USER:-hft}
+      NATS_PASSWORD: ${NATS_PASSWORD:-}
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "${NATS_CLIENT_PORT:-4222}:4222"
+      - "${NATS_MONITOR_PORT:-8222}:8222"
     volumes:
       - nats_data:/data
       - ./tools/nats/nats.conf:/etc/nats/nats.conf:ro
@@ -53,15 +73,16 @@ services:
     build: ./tools/postgre
     container_name: hft-postgresql
     environment:
-      POSTGRES_DB: hft
-      POSTGRES_USER: root
-      POSTGRES_PASSWORD: root
+      POSTGRES_DB: ${POSTGRES_DB:-hft}
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root}
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-market_data,order_engine,api,analytics}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U root -d hft"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 20

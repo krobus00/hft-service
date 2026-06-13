@@ -185,6 +185,32 @@ func (s *AuthService) Me(ctx context.Context, userID string) (*AuthUser, error) 
 	return authUser, nil
 }
 
+func (s *AuthService) UpdateProfile(ctx context.Context, userID, name, password string) (*AuthUser, error) {
+	user, err := s.repo.GetUserByID(ctx, strings.TrimSpace(userID))
+	if err != nil {
+		return nil, err
+	}
+	if !user.Active {
+		return nil, ErrInactiveUser
+	}
+	nextName := strings.TrimSpace(name)
+	if nextName == "" {
+		nextName = user.Name
+	}
+	passwordHash := ""
+	if strings.TrimSpace(password) != "" {
+		passwordHash, err = hashPassword(password)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := s.repo.UpdateUserProfile(ctx, user.ID, nextName, passwordHash); err != nil {
+		return nil, err
+	}
+	_ = s.cache.DeleteUser(ctx, user.ID)
+	return s.Me(ctx, user.ID)
+}
+
 func (s *AuthService) issue(ctx context.Context, user *entity.APIUser) (*AuthResult, error) {
 	roles, err := s.repo.ListRoleNamesByUserID(ctx, user.ID)
 	if err != nil {

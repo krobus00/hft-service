@@ -45,6 +45,8 @@ exchanges:
         api_secret: "user-b api secret"
 nats_jetstream:
   url: "nats://nats:4222"
+  # If NATS_PASSWORD is set in Docker Compose, use:
+  # url: "nats://hft:REPLACE_WITH_NATS_PASSWORD@nats:4222"
   max_retries: 5
   reconnect_factor: 2.0
   min_jitter: 100ms
@@ -90,6 +92,8 @@ database:
 redis:
   api:
     cache_dsn: "redis://redis:6379/2"
+    # If REDIS_PASSWORD is set in Docker Compose, use:
+    # cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/2"
     default_cache_duration: 5m
     max_retry: 5
     max_idle_conns: 10
@@ -97,6 +101,8 @@ redis:
     max_conn_lifetime: 1h
   market_data:
     cache_dsn: "redis://redis:6379/0"
+    # If REDIS_PASSWORD is set in Docker Compose, use:
+    # cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/0"
     default_cache_duration: 5m
     max_retry: 5
     max_idle_conns: 10
@@ -104,6 +110,8 @@ redis:
     max_conn_lifetime: 1h
   strategy:
     cache_dsn: "redis://redis:6379/1"
+    # If REDIS_PASSWORD is set in Docker Compose, use:
+    # cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/1"
     default_cache_duration: 5m
     max_retry: 5
     max_idle_conns: 10

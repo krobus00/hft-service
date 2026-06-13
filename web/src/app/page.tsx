@@ -1,5 +1,5 @@
-import { DashboardApp } from "@/components/organisms/dashboard-app";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <DashboardApp />;
+  redirect("/dashboard/orders");
 }

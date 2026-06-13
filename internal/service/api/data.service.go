@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"exchange":         exchanges,
 		"role":             roles,
 		"permission":       permissions,
+		"dashboard_page":   {"orders", "marketKlines", "symbolMappings", "klineSubscriptions", "strategyConfigs", "settings", "users", "roles", "permissions", "dashboardPages"},
 		"market_type":      {"spot", "futures"},
 		"position_side":    {"BOTH", "LONG", "SHORT"},
 		"order_side":       {"BUY", "SELL", "LONG", "SHORT"},
@@ -88,7 +90,31 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 }
 
 func (s *DataService) listExchangeEnums(ctx context.Context) ([]string, error) {
-	return []string{"tokocrypto", "binance"}, nil
+	sources := []func(context.Context) ([]string, error){
+		s.orderHistoryRepo.ListExchanges,
+		s.marketKlineRepo.ListExchanges,
+		s.symbolMappingRepo.ListExchanges,
+		s.strategyConfigRepo.ListExchanges,
+	}
+	seen := map[string]struct{}{}
+	for _, source := range sources {
+		items, err := source(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			value := strings.TrimSpace(item)
+			if value != "" {
+				seen[value] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for item := range seen {
+		result = append(result, item)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func (s *DataService) ListOrders(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
@@ -407,6 +433,79 @@ func (s *DataService) DeleteRole(ctx context.Context, id string) error {
 	return s.authRepo.DeleteRole(ctx, id)
 }
 
+func (s *DataService) ListPermissions(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	return s.authRepo.GetPermissionsPagination(ctx, req)
+}
+
+func (s *DataService) GetPermission(ctx context.Context, id string) (*entity.APIPermission, error) {
+	return s.authRepo.FindPermissionByID(ctx, id)
+}
+
+func (s *DataService) CreatePermission(ctx context.Context, values map[string]any) (*entity.APIPermission, error) {
+	permission := &entity.APIPermission{
+		Name:        stringValue(values, "name", ""),
+		Description: stringValue(values, "description", ""),
+	}
+	if err := s.authRepo.CreatePermission(ctx, permission); err != nil {
+		return nil, err
+	}
+	return s.GetPermission(ctx, permission.ID)
+}
+
+func (s *DataService) UpdatePermission(ctx context.Context, id string, values map[string]any) (*entity.APIPermission, error) {
+	current, err := s.authRepo.FindPermissionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	current.Name = stringValue(values, "name", current.Name)
+	current.Description = stringValue(values, "description", current.Description)
+	if err := s.authRepo.UpdatePermission(ctx, current); err != nil {
+		return nil, err
+	}
+	return s.GetPermission(ctx, id)
+}
+
+func (s *DataService) DeletePermission(ctx context.Context, id string) error {
+	return s.authRepo.DeletePermission(ctx, id)
+}
+
+func (s *DataService) ListVisibleDashboardPages(ctx context.Context) ([]entity.APIDashboardPage, error) {
+	return s.authRepo.ListVisibleDashboardPages(ctx)
+}
+
+func (s *DataService) ListDashboardPages(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	return s.authRepo.GetDashboardPagesPagination(ctx, req)
+}
+
+func (s *DataService) GetDashboardPage(ctx context.Context, id string) (*entity.APIDashboardPage, error) {
+	return s.authRepo.FindDashboardPageByID(ctx, id)
+}
+
+func (s *DataService) CreateDashboardPage(ctx context.Context, values map[string]any) (*entity.APIDashboardPage, error) {
+	page := mapDashboardPage(values, nil)
+	if err := s.authRepo.CreateDashboardPage(ctx, page); err != nil {
+		return nil, err
+	}
+	return s.GetDashboardPage(ctx, page.ID)
+}
+
+func (s *DataService) UpdateDashboardPage(ctx context.Context, id string, values map[string]any) (*entity.APIDashboardPage, error) {
+	current, err := s.authRepo.FindDashboardPageByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	page := mapDashboardPage(values, current)
+	page.ID = id
+	if err := s.authRepo.UpdateDashboardPage(ctx, page); err != nil {
+		return nil, err
+	}
+	return s.GetDashboardPage(ctx, id)
+}
+
+func (s *DataService) DeleteDashboardPage(ctx context.Context, id string) error {
+	return s.authRepo.DeleteDashboardPage(ctx, id)
+}
+
 func ensureFound[T any](item *T, err error) (*T, error) {
 	if err != nil {
 		return nil, err
@@ -415,6 +514,25 @@ func ensureFound[T any](item *T, err error) (*T, error) {
 		return nil, sql.ErrNoRows
 	}
 	return item, nil
+}
+
+func mapDashboardPage(values map[string]any, current *entity.APIDashboardPage) *entity.APIDashboardPage {
+	item := &entity.APIDashboardPage{Visible: true}
+	if current != nil {
+		item = current
+	}
+	item.ResourceKey = stringValue(values, "resource_key", item.ResourceKey)
+	item.ParentKey = stringValue(values, "parent_key", item.ParentKey)
+	item.Label = stringValue(values, "label", item.Label)
+	item.Description = stringValue(values, "description", item.Description)
+	item.ShortDescription = stringValue(values, "short_description", item.ShortDescription)
+	item.Icon = stringValue(values, "icon", item.Icon)
+	item.Path = stringValue(values, "path", item.Path)
+	item.ReadPermission = stringValue(values, "read_permission", item.ReadPermission)
+	item.WritePermission = stringValue(values, "write_permission", item.WritePermission)
+	item.SortOrder = intValue(values, "sort_order", item.SortOrder)
+	item.Visible = boolValue(values, "visible", item.Visible)
+	return item
 }
 
 func mapOrderHistory(values map[string]any, current *entity.OrderHistory) *entity.OrderHistory {

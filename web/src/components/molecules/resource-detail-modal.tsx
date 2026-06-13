@@ -27,16 +27,18 @@ export function ResourceDetailModal({
           {Object.entries(data).map(([key, value]) => (
             <div key={key} className="grid gap-2">
               <Label htmlFor={`detail-${key}`}>{humanize(key)}</Label>
-              <Input id={`detail-${key}`} value={formatValue(value)} readOnly />
+              <Input id={`detail-${key}`} value={formatValue(value, key)} readOnly />
             </div>
           ))}
         </div>
-        <div className="flex justify-end">
-          <Button type="button" onClick={onEdit} disabled={!canWrite}>
-            <Edit className="h-4 w-4" />
-            Edit
-          </Button>
-        </div>
+        {canWrite ? (
+          <div className="flex justify-end">
+            <Button type="button" onClick={onEdit}>
+              <Edit className="h-4 w-4" />
+              Edit
+            </Button>
+          </div>
+        ) : null}
       </div>
     </ModalShell>
   );
@@ -49,17 +51,39 @@ function humanize(value: string) {
     .join(" ");
 }
 
-function formatValue(value: unknown): string {
+function formatValue(value: unknown, field = ""): string {
   if (value == null) {
     return "";
+  }
+  if (isTimestampField(field) && (typeof value === "string" || typeof value === "number")) {
+    return formatLocalTime(value);
   }
   if (typeof value === "boolean") {
     return value ? "true" : "false";
   }
   if (typeof value === "object") {
     return Object.entries(value as Record<string, unknown>)
-      .map(([key, nestedValue]) => `${key}: ${formatValue(nestedValue)}`)
+      .map(([key, nestedValue]) => `${key}: ${formatValue(nestedValue, key)}`)
       .join(", ");
   }
   return String(value);
+}
+
+function isTimestampField(field: string) {
+  return field.endsWith("_at") || field.endsWith("_time");
+}
+
+function formatLocalTime(value: string | number) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
 }

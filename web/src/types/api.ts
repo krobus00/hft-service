@@ -1,17 +1,6 @@
 import type { AuthTokens } from "@/types/auth";
 
-export type Permission =
-  | "order:read"
-  | "order:write"
-  | "market:read"
-  | "market:write"
-  | "market_config:write"
-  | "strategy_config:read"
-  | "strategy_config:write"
-  | "settings:read"
-  | "settings:write"
-  | "user:read"
-  | "user:write";
+export type Permission = string;
 
 export type ApiEnvelope<T> = {
   message: string;
@@ -46,7 +35,9 @@ export type ResourceKey =
   | "strategyConfigs"
   | "settings"
   | "users"
-  | "roles";
+  | "roles"
+  | "permissions"
+  | "dashboardPages";
 
 export type ResourceMode = "readonly" | "mutable";
 
@@ -62,6 +53,7 @@ export type ResourceConfig = {
   writePermission?: Permission;
   columns: string[];
   searchableFields: string[];
+  filterFields?: string[];
   enumFields?: Record<string, string>;
   multiEnumFields?: string[];
   defaultSort: {
@@ -69,14 +61,32 @@ export type ResourceConfig = {
     direction: SortDirection;
   };
   sampleBody?: Record<string, unknown>;
+  navParent?: string;
+  navOrder?: number;
 };
 
 export type ListQuery = {
   page: number;
   limit: number;
   keyword: string;
+  filters: Record<string, string>;
   sortField: string;
   sortDirection: SortDirection;
+};
+
+export type DashboardPageConfig = {
+  id: string;
+  resource_key: ResourceKey;
+  parent_key: string;
+  label: string;
+  description: string;
+  short_description: string;
+  icon: string;
+  path: string;
+  read_permission: Permission;
+  write_permission: Permission | "";
+  sort_order: number;
+  visible: boolean;
 };
 
 export type SessionTokens = Pick<AuthTokens, "access_token" | "refresh_token">;

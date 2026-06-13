@@ -36,7 +36,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/refresh", h.Refresh)
 	mux.HandleFunc("/api/v1/auth/logout", h.withAuth(h.Logout))
 	mux.HandleFunc("/api/v1/auth/me", h.withAuth(h.Me))
+	mux.HandleFunc("/api/v1/auth/profile", h.withAuth(h.Profile))
 	mux.HandleFunc("/api/v1/form/enums", h.withAuth(h.FormEnums))
+	mux.HandleFunc("/api/v1/dashboard/pages/menu", h.withAuth(h.DashboardPageMenu))
 
 	mux.HandleFunc("/api/v1/orders", h.withPermission(constant.PermissionOrderRead, h.Orders))
 	mux.HandleFunc("/api/v1/orders/", h.withPermission(constant.PermissionOrderRead, h.OrderByID))
@@ -54,6 +56,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/users/", h.withPermission(constant.PermissionUserRead, h.UserByID))
 	mux.HandleFunc("/api/v1/roles", h.withPermission(constant.PermissionUserRead, h.Roles))
 	mux.HandleFunc("/api/v1/roles/", h.withPermission(constant.PermissionUserRead, h.RoleByID))
+	mux.HandleFunc("/api/v1/permissions", h.withPermission(constant.PermissionPermissionRead, h.Permissions))
+	mux.HandleFunc("/api/v1/permissions/", h.withPermission(constant.PermissionPermissionRead, h.PermissionByID))
+	mux.HandleFunc("/api/v1/dashboard/pages", h.withPermission(constant.PermissionDashboardPageRead, h.DashboardPages))
+	mux.HandleFunc("/api/v1/dashboard/pages/", h.withPermission(constant.PermissionDashboardPageRead, h.DashboardPageByID))
 }
 
 type setupRequest struct {
@@ -69,6 +75,11 @@ type loginRequest struct {
 
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
+}
+
+type profileRequest struct {
+	Name     string `json:"name"`
+	Password string `json:"password"`
 }
 
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +164,31 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := h.authService.Me(r.Context(), claims.Subject)
 	writeDataResult(w, user, err)
+}
+
+func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPatch) {
+		return
+	}
+	claims := claimsFromContext(r.Context())
+	if claims == nil || strings.TrimSpace(claims.Subject) == "" {
+		apiutil.WriteError(w, http.StatusUnauthorized, constant.UnauthorizedStatusCode, "invalid authorization token")
+		return
+	}
+	var req profileRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	user, err := h.authService.UpdateProfile(r.Context(), claims.Subject, req.Name, req.Password)
+	writeDataResult(w, user, err)
+}
+
+func (h *Handler) DashboardPageMenu(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	result, err := h.dataService.ListVisibleDashboardPages(r.Context())
+	writeDataResult(w, result, err)
 }
 
 func (h *Handler) Orders(w http.ResponseWriter, r *http.Request) {
@@ -574,6 +610,112 @@ func (h *Handler) RoleByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeDeleteResult(w, h.dataService.DeleteRole(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) Permissions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.APIPermission{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListPermissions(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionPermissionWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreatePermission(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) PermissionByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/permissions/")
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetPermission(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionPermissionWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdatePermission(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionPermissionWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeletePermission(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) DashboardPages(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.APIDashboardPage{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListDashboardPages(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionDashboardPageWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateDashboardPage(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) DashboardPageByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/dashboard/pages/")
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetDashboardPage(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionDashboardPageWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateDashboardPage(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionDashboardPageWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteDashboardPage(r.Context(), id))
 	default:
 		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}

@@ -24,4 +24,8 @@ const (
 	PermissionSettingsWrite       = "settings:write"
 	PermissionUserRead            = "user:read"
 	PermissionUserWrite           = "user:write"
+	PermissionDashboardPageRead   = "dashboard_page:read"
+	PermissionDashboardPageWrite  = "dashboard_page:write"
+	PermissionPermissionRead      = "permission:read"
+	PermissionPermissionWrite     = "permission:write"
 )

@@ -1,13 +1,94 @@
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
+DOCKER_NAMESPACE ?= krobus00
+VERSION ?= latest
+HFT_VERSION ?= $(VERSION)
+WEB_VERSION ?= $(VERSION)
+STRATEGY_VERSION ?= $(VERSION)
+NEXT_PUBLIC_API_BASE_URL ?= http://localhost:9804/api/v1
+
+HFT_IMAGE ?= $(DOCKER_NAMESPACE)/hft-service:$(HFT_VERSION)
+WEB_IMAGE ?= $(DOCKER_NAMESPACE)/krobot-web:$(WEB_VERSION)
+STRATEGY_IMAGE ?= $(DOCKER_NAMESPACE)/python-strategy:$(STRATEGY_VERSION)
+
+PROFILES ?= infra app web
+COMPOSE_PROFILE_FLAGS := $(foreach profile,$(PROFILES),--profile=$(profile))
+
+POSTGRES_USER ?= root
+POSTGRES_PASSWORD ?= root
+REDIS_PASSWORD ?=
+NATS_USER ?= hft
+NATS_PASSWORD ?=
+POSTGRES_SERVICE ?= postgresql
+DATABASES ?= hft market_data order_engine api analytics
+DB ?= hft
+BACKUP_DIR ?= backups
+TIMESTAMP ?= $(shell date +%Y%m%d%H%M%S)
+
 STRATEGY_FILE ?= krobot01
 STRATEGY_FILES ?= $(filter-out standard_strategy_template,$(basename $(notdir $(wildcard strategy/*.py))))
 
-.PHONY: run-strategy rerun-all-strategy
+.PHONY: build-service build-web build-strategy build-images push-service push-web push-strategy push-images compose-pull up-service down-service compose-logs compose-config run-strategy rerun-all-strategy backup-db backup-databases backup-all
+
+build-service:
+	@docker build \
+		-t $(HFT_IMAGE) \
+		--target final \
+		.
+
+build-web:
+	@docker build \
+		-t $(WEB_IMAGE) \
+		--build-arg NEXT_PUBLIC_API_BASE_URL=$(NEXT_PUBLIC_API_BASE_URL) \
+		-f web/Dockerfile \
+		web
+
+build-strategy:
+	@docker build \
+		-t $(STRATEGY_IMAGE) \
+		-f tools/python-strategy/Dockerfile \
+		.
+
+build-images: build-service build-web build-strategy
+
+push-service:
+	@docker push $(HFT_IMAGE)
+
+push-web:
+	@docker push $(WEB_IMAGE)
+
+push-strategy:
+	@docker push $(STRATEGY_IMAGE)
+
+push-images: push-service push-web push-strategy
+
+compose-pull:
+	@HFT_VERSION=$(HFT_VERSION) WEB_VERSION=$(WEB_VERSION) STRATEGY_VERSION=$(STRATEGY_VERSION) REDIS_PASSWORD="$(REDIS_PASSWORD)" NATS_USER="$(NATS_USER)" NATS_PASSWORD="$(NATS_PASSWORD)" \
+		docker compose $(COMPOSE_PROFILE_FLAGS) pull
+
+up-service:
+	@HFT_VERSION=$(HFT_VERSION) WEB_VERSION=$(WEB_VERSION) STRATEGY_VERSION=$(STRATEGY_VERSION) REDIS_PASSWORD="$(REDIS_PASSWORD)" NATS_USER="$(NATS_USER)" NATS_PASSWORD="$(NATS_PASSWORD)" \
+		docker compose $(COMPOSE_PROFILE_FLAGS) up -d
+
+down-service:
+	@docker compose $(COMPOSE_PROFILE_FLAGS) down
+
+compose-logs:
+	@docker compose $(COMPOSE_PROFILE_FLAGS) logs -f --tail=200
+
+compose-config:
+	@HFT_VERSION=$(HFT_VERSION) WEB_VERSION=$(WEB_VERSION) STRATEGY_VERSION=$(STRATEGY_VERSION) REDIS_PASSWORD="$(REDIS_PASSWORD)" NATS_USER="$(NATS_USER)" NATS_PASSWORD="$(NATS_PASSWORD)" \
+		docker compose $(COMPOSE_PROFILE_FLAGS) config
+
 run-strategy:
 	@docker run --rm -d \
 	  --name $(STRATEGY_FILE)-runner \
 	  -v $(CURDIR)/strategy:/app \
 	  -w /app \
-	  python-strategy:latest \
+	  $(STRATEGY_IMAGE) \
 	  bash -c "python $(STRATEGY_FILE).py"
 
 rerun-all-strategy:
@@ -18,15 +99,29 @@ rerun-all-strategy:
 	    --name $$strategy-runner \
 	    -v $(CURDIR)/strategy:/app \
 	    -w /app \
-	    python-strategy:latest \
+	    $(STRATEGY_IMAGE) \
 	    bash -c "python $$strategy.py"; \
 	done
 
-build-strategy:
-	@docker build \
-		-t python-strategy:latest \
-		-f tools/python-strategy/Dockerfile \
-		. --no-cache
+backup-db:
+	@mkdir -p $(BACKUP_DIR)
+	@echo "Backing up database $(DB)"
+	@docker compose exec -T \
+		-e PGPASSWORD=$(POSTGRES_PASSWORD) \
+		$(POSTGRES_SERVICE) \
+		pg_dump -U $(POSTGRES_USER) -d $(DB) -Fc \
+		> $(BACKUP_DIR)/$(DB)-$(TIMESTAMP).dump
+	@echo "$(BACKUP_DIR)/$(DB)-$(TIMESTAMP).dump"
 
-up-service:
-	@docker compose --profile=infra --profile=app --profile=strategy up -d --build
+backup-databases:
+	@mkdir -p $(BACKUP_DIR)
+	@for db in $(DATABASES); do \
+	  echo "Backing up database $$db"; \
+	  docker compose exec -T \
+	    -e PGPASSWORD=$(POSTGRES_PASSWORD) \
+	    $(POSTGRES_SERVICE) \
+	    pg_dump -U $(POSTGRES_USER) -d $$db -Fc \
+	    > $(BACKUP_DIR)/$$db-$(TIMESTAMP).dump; \
+	done
+
+backup-all: backup-databases

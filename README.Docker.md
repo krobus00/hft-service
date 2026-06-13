@@ -1,45 +1,95 @@
-### Building and running your application
+# Docker
 
-When you're ready, start your application by running:
-`docker compose up --build`.
+Production Compose uses released Docker Hub images. It does not build application images during `up`.
 
-Your application will be available at http://localhost:8080.
+Copy and edit the environment template first:
 
-### Deploying your application to the cloud
+```bash
+copy .env.example .env
+```
 
-First, build your image, e.g.: `docker build -t myapp .`.
-If your cloud uses a different CPU architecture than your development
-machine (e.g., you are on a Mac M1 and your cloud provider is amd64),
-you'll want to build the image for that platform, e.g.:
-`docker build --platform=linux/amd64 -t myapp .`.
+Docker Compose reads `.env` automatically, and the Makefile includes `.env` when present. Keep image tags, ports, credentials, profiles, and backup defaults there.
 
-Then, push it to your registry, e.g. `docker push myregistry.com/myapp`.
+## Images
 
-Consult Docker's [getting started](https://docs.docker.com/go/get-started-sharing/)
-docs for more detail on building and pushing.
+Default image references:
 
-### References
-* [Docker's Go guide](https://docs.docker.com/language/golang/)
+- `krobus00/hft-service:${HFT_VERSION:-latest}`
+- `krobus00/krobot-web:${WEB_VERSION:-latest}`
+- `krobus00/python-strategy:${STRATEGY_VERSION:-latest}`
 
-### Generate Go protobuf files (dev)
+## Build And Publish
 
-Protobuf tool image is located at `tools/protobuf/Dockerfile`.
+```bash
+make build-images VERSION=1.0.0 NEXT_PUBLIC_API_BASE_URL=http://YOUR_HOST:9804/api/v1
+make push-images VERSION=1.0.0
+```
 
-Run protobuf generation with the dedicated dev tools profile:
+## Run Released Images
 
-`docker compose -f compose-dev.yaml --profile tools run --rm --build protobuf`
+Set versions in `.env`:
 
-This generates Go files for:
-- `pb/order_engine/order.proto`
-- `pb/order_engine/order_engine.proto`
-- `pb/market_data/market_data.proto`
+```env
+HFT_VERSION=1.0.0
+WEB_VERSION=1.0.0
+STRATEGY_VERSION=1.0.0
+```
 
-### Binance dual market env (spot + futures)
+Then run:
 
-Optional environment variables:
-- `BINANCE_SPOT_BASE_URL` (default `https://api.binance.com`)
-- `BINANCE_FUTURES_BASE_URL` (default `https://fapi.binance.com`)
-- `BINANCE_WS_URL` (spot websocket, default `wss://stream.binance.com:9443/stream`)
-- `BINANCE_FUTURES_WS_URL` (futures websocket, default `wss://fstream.binance.com/stream`)
+```bash
+make compose-pull
+make up-service
+```
 
-`market_type` defaults to `spot` when omitted in API payloads.
+Default profiles are `infra app web`. Add strategies with:
+
+Set `PROFILES=infra app web strategy` in `.env`, then run `make up-service`.
+
+## Redis And NATS Passwords
+
+Redis and NATS passwords are optional.
+
+Set these in `.env`:
+
+```env
+REDIS_PASSWORD=REPLACE_WITH_REDIS_PASSWORD
+NATS_USER=hft
+NATS_PASSWORD=REPLACE_WITH_NATS_PASSWORD
+```
+
+If those passwords are set, update `config.yml` and `strategy/config.yml` URLs:
+
+```yaml
+nats_jetstream:
+  url: "nats://hft:REPLACE_WITH_NATS_PASSWORD@nats:4222"
+
+redis:
+  api:
+    cache_dsn: "redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/2"
+```
+
+Strategy config examples:
+
+```yaml
+global:
+  nats_url: nats://hft:REPLACE_WITH_NATS_PASSWORD@nats:4222
+  redis_url: redis://:REPLACE_WITH_REDIS_PASSWORD@redis:6379/0
+```
+
+## Backups
+
+```bash
+make backup-db DB=api
+make backup-databases
+```
+
+Backup files are written under `backups/` and ignored by git.
+
+## Dev Tools
+
+Generate Go protobuf files with the dev tools profile:
+
+```bash
+docker compose -f compose-dev.yaml --profile tools run --rm --build protobuf
+```

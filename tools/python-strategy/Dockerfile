@@ -4,3 +4,4 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 COPY ./strategy/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+COPY ./strategy .

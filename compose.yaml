@@ -1,12 +1,29 @@
+x-hft-service: &hft-service
+  image: krobus00/hft-service:${HFT_VERSION:-latest}
+  working_dir: /bin
+  volumes:
+    - ./config.yml:/bin/config.yml:ro
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - hft-network
+
+x-strategy-service: &strategy-service
+  image: krobus00/python-strategy:${STRATEGY_VERSION:-latest}
+  working_dir: /app
+  volumes:
+    - ./strategy/config.yml:/app/config.yml:ro
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - hft-network
+
 services:
   market-data-gateway:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["market-data-gateway"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -17,23 +34,15 @@ services:
       migrate-market-data:
         condition: service_completed_successfully
     ports:
-      - "9802:9802"
-    restart: unless-stopped
+      - "${MARKET_DATA_GATEWAY_PORT:-9802}:9802"
     profiles:
       - app
     cpus: "1.0"
     mem_limit: 512m
-    networks:
-      - hft-network
 
   market-data-worker:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["market-data-worker"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -43,22 +52,14 @@ services:
         condition: service_healthy
       migrate-market-data:
         condition: service_completed_successfully
-    restart: unless-stopped
     profiles:
       - app
     cpus: "1.0"
     mem_limit: 512m
-    networks:
-      - hft-network
 
   order-engine-gateway:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["order-engine-gateway"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -69,24 +70,16 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "9800:9800"
-      - "9801:9801"
-    restart: unless-stopped
+      - "${ORDER_ENGINE_HTTP_PORT:-9800}:9800"
+      - "${ORDER_ENGINE_GRPC_PORT:-9801}:9801"
     profiles:
       - app
     cpus: "1.0"
     mem_limit: 512m
-    networks:
-      - hft-network
 
   order-engine-worker:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["order-engine-worker"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -96,41 +89,25 @@ services:
         condition: service_healthy
       migrate-order-engine:
         condition: service_completed_successfully
-    restart: unless-stopped
     profiles:
       - app
     cpus: "1.0"
     mem_limit: 512m
-    networks:
-      - hft-network
 
   notification-service:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["notification-service"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       nats:
         condition: service_healthy
-    restart: unless-stopped
     profiles:
       - app
     cpus: "0.50"
     mem_limit: 256m
-    networks:
-      - hft-network
 
   api:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["api"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -143,23 +120,32 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "9804:9804"
-    restart: unless-stopped
+      - "${API_PORT:-9804}:9804"
     profiles:
       - app
     cpus: "0.75"
     mem_limit: 512m
+
+  web:
+    image: krobus00/krobot-web:${WEB_VERSION:-latest}
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    restart: unless-stopped
+    profiles:
+      - web
+    cpus: "0.50"
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true
     networks:
       - hft-network
 
   strategy-krobot01:
-    build:
-      context: .
-      dockerfile: tools/python-strategy/Dockerfile
+    <<: *strategy-service
     command: ["bash", "-c", "python krobot01.py"]
-    working_dir: /app
-    volumes:
-      - ./strategy:/app
     depends_on:
       nats:
         condition: service_healthy
@@ -170,31 +156,13 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "19011:19011"
-    # healthcheck:
-    #   test:
-    #     [
-    #       "CMD-SHELL",
-    #       "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19011/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19011/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
-    #     ]
-    #   interval: 10s
-    #   timeout: 3s
-    #   retries: 10
-    #   start_period: 30s
-    restart: unless-stopped
+      - "${STRATEGY_KROBOT01_PORT:-19011}:19011"
     profiles:
       - strategy
-    networks:
-      - hft-network
 
   strategy-krobot02:
-    build:
-      context: .
-      dockerfile: tools/python-strategy/Dockerfile
+    <<: *strategy-service
     command: ["bash", "-c", "python krobot02.py"]
-    working_dir: /app
-    volumes:
-      - ./strategy:/app
     depends_on:
       nats:
         condition: service_healthy
@@ -205,31 +173,13 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "19012:19012"
-    # healthcheck:
-    #   test:
-    #     [
-    #       "CMD-SHELL",
-    #       "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19012/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19012/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
-    #     ]
-    #   interval: 10s
-    #   timeout: 3s
-    #   retries: 10
-    #   start_period: 30s
-    restart: unless-stopped
+      - "${STRATEGY_KROBOT02_PORT:-19012}:19012"
     profiles:
       - strategy
-    networks:
-      - hft-network
 
   strategy-krobot03:
-    build:
-      context: .
-      dockerfile: tools/python-strategy/Dockerfile
+    <<: *strategy-service
     command: ["bash", "-c", "python krobot03.py"]
-    working_dir: /app
-    volumes:
-      - ./strategy:/app
     depends_on:
       nats:
         condition: service_healthy
@@ -240,31 +190,13 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "19014:19014"
-    # healthcheck:
-    #   test:
-    #     [
-    #       "CMD-SHELL",
-    #       "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19014/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19014/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
-    #     ]
-    #   interval: 10s
-    #   timeout: 3s
-    #   retries: 10
-    #   start_period: 30s
-    restart: unless-stopped
+      - "${STRATEGY_KROBOT03_PORT:-19014}:19014"
     profiles:
       - strategy
-    networks:
-      - hft-network
 
   strategy-ai:
-    build:
-      context: .
-      dockerfile: tools/python-strategy/Dockerfile
+    <<: *strategy-service
     command: ["bash", "-c", "python ai.py"]
-    working_dir: /app
-    volumes:
-      - ./strategy:/app
     depends_on:
       nats:
         condition: service_healthy
@@ -275,31 +207,13 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "19013:19013"
-    # healthcheck:
-    #   test:
-    #     [
-    #       "CMD-SHELL",
-    #       "python -c \"import json,urllib.request; h=json.load(urllib.request.urlopen('http://localhost:19013/_internal/healthz', timeout=2)); r=json.load(urllib.request.urlopen('http://localhost:19013/_internal/readyz', timeout=2)); import sys; sys.exit(0 if h.get('status')=='ok' and 'ready' in r else 1)\"",
-    #     ]
-    #   interval: 10s
-    #   timeout: 3s
-    #   retries: 10
-    #   start_period: 45s
-    restart: unless-stopped
+      - "${STRATEGY_AI_PORT:-19013}:19013"
     profiles:
       - strategy
-    networks:
-      - hft-network
 
   strategy-supertrend:
-    build:
-      context: .
-      dockerfile: tools/python-strategy/Dockerfile
+    <<: *strategy-service
     command: ["bash", "-c", "python supertrend.py"]
-    working_dir: /app
-    volumes:
-      - ./strategy:/app
     depends_on:
       nats:
         condition: service_healthy
@@ -309,21 +223,30 @@ services:
         condition: service_completed_successfully
       migrate-order-engine:
         condition: service_completed_successfully
-    restart: unless-stopped
     profiles:
       - strategy
-    networks:
-      - hft-network
 
   redis:
     image: redis:7-alpine
     container_name: hft-redis
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+        fi
+        exec redis-server --appendonly yes
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - if [ -n "$$REDIS_PASSWORD" ]; then redis-cli -a "$$REDIS_PASSWORD" ping; else redis-cli ping; fi
       interval: 5s
       timeout: 3s
       retries: 20
@@ -333,6 +256,8 @@ services:
       - infra
     cpus: "0.50"
     mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true
     networks:
       - hft-network
 
@@ -340,17 +265,24 @@ services:
     image: nats:2.12.4-alpine
     container_name: hft-nats
     command:
-      - "-c"
-      - "/etc/nats/nats.conf"
+      - sh
+      - -ec
+      - |
+        if [ -n "$$NATS_PASSWORD" ]; then
+          exec nats-server -c /etc/nats/nats.conf --user "$$NATS_USER" --pass "$$NATS_PASSWORD"
+        fi
+        exec nats-server -c /etc/nats/nats.conf
+    environment:
+      NATS_USER: ${NATS_USER:-hft}
+      NATS_PASSWORD: ${NATS_PASSWORD:-}
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "${NATS_CLIENT_PORT:-4222}:4222"
+      - "${NATS_MONITOR_PORT:-8222}:8222"
     volumes:
       - nats_data:/data
       - ./tools/nats/nats.conf:/etc/nats/nats.conf:ro
     healthcheck:
-      test:
-        ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz | grep -q ok"]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz | grep -q ok"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -360,24 +292,26 @@ services:
       - infra
     cpus: "0.50"
     mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true
     networks:
       - hft-network
 
   postgresql:
-    build: ./tools/postgre
+    image: postgres:16-alpine
     container_name: hft-postgresql
     environment:
-      POSTGRES_USER: root
-      POSTGRES_PASSWORD: root
-      POSTGRES_DB: hft
-      POSTGRES_MULTIPLE_DATABASES: market_data,order_engine,api,analytics
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root}
+      POSTGRES_DB: ${POSTGRES_DB:-hft}
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-market_data,order_engine,api,analytics}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./tools/postgre/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U root -d hft"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -387,6 +321,8 @@ services:
       - infra
     cpus: "1.0"
     mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
     networks:
       - hft-network
 
@@ -397,80 +333,63 @@ services:
       postgresql:
         condition: service_healthy
     environment:
-      PGPASSWORD: root
+      PGPASSWORD: ${POSTGRES_PASSWORD:-root}
       PGHOST: postgresql
       PGPORT: 5432
-      PGUSER: root
-      PGDATABASE: hft
+      PGUSER: ${POSTGRES_USER:-root}
+      PGDATABASE: ${POSTGRES_DB:-hft}
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-market_data,order_engine,api,analytics}
     entrypoint: ["sh", "-ec"]
-    command: |
-      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='market_data'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE market_data;"
-      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='order_engine'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE order_engine;"
-      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='api'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE api;"
+    command: >
+      for db in $$(echo "$$POSTGRES_MULTIPLE_DATABASES" | tr ',' ' '); do
+      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1
+      || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE $$db;";
+      done
     cpus: "0.50"
     mem_limit: 256m
     restart: "no"
     profiles:
       - infra
+    security_opt:
+      - no-new-privileges:true
     networks:
       - hft-network
 
   migrate-market-data:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["migrate", "--databaseName=market_data"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       database-init:
         condition: service_completed_successfully
-    cpus: "0.50"
-    mem_limit: 256m
     restart: "no"
     profiles:
       - infra
-    networks:
-      - hft-network
+    cpus: "0.50"
+    mem_limit: 256m
 
   migrate-order-engine:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["migrate", "--databaseName=order_engine"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       database-init:
         condition: service_completed_successfully
-    cpus: "0.50"
-    mem_limit: 256m
     restart: "no"
     profiles:
       - infra
-    networks:
-      - hft-network
+    cpus: "0.50"
+    mem_limit: 256m
 
   migrate-api:
-    build:
-      context: .
-      target: final
+    <<: *hft-service
     command: ["migrate", "--databaseName=api"]
-    working_dir: /bin
-    volumes:
-      - ./config.yml:/bin/config.yml:ro
     depends_on:
       database-init:
         condition: service_completed_successfully
-    cpus: "0.50"
-    mem_limit: 256m
     restart: "no"
     profiles:
       - infra
-    networks:
-      - hft-network
+    cpus: "0.50"
+    mem_limit: 256m
 
 volumes:
   redis_data:
