@@ -23,6 +23,7 @@ func (r *MarketKlineRepository) Create(ctx context.Context, data *entity.MarketK
 		PlaceholderFormat(sq.Dollar).
 		Insert(data.TableName()).
 		Columns(
+			"id",
 			"exchange",
 			"market_type",
 			"event_type",
@@ -45,6 +46,7 @@ func (r *MarketKlineRepository) Create(ctx context.Context, data *entity.MarketK
 			"updated_at",
 		).
 		Values(
+			nullDefaultString(data.ID),
 			data.Exchange,
 			data.MarketType,
 			data.EventType,
@@ -81,14 +83,15 @@ DO UPDATE SET
 	taker_quote_volume = EXCLUDED.taker_quote_volume,
 	trade_count = EXCLUDED.trade_count,
 	is_closed = EXCLUDED.is_closed,
-	updated_at = EXCLUDED.updated_at`)
+	updated_at = EXCLUDED.updated_at
+RETURNING id`)
 
 	query, args, err := queryBuilder.ToSql()
 	if err != nil {
 		return err
 	}
 
-	_, err = r.db.ExecContext(ctx, query, args...)
+	err = r.db.QueryRowContext(ctx, query, args...).Scan(&data.ID)
 	return err
 }
 
@@ -137,6 +140,69 @@ func (r *MarketKlineRepository) FindByOpenTime(ctx context.Context, openTime str
 	return &item, nil
 }
 
+func (r *MarketKlineRepository) ListExchanges(ctx context.Context) ([]string, error) {
+	items := []string{}
+	err := r.db.SelectContext(ctx, &items, "SELECT DISTINCT exchange FROM market_klines WHERE exchange <> '' ORDER BY exchange")
+	return items, err
+}
+
+func (r *MarketKlineRepository) FindByID(ctx context.Context, id string) (*entity.MarketKline, error) {
+	var item entity.MarketKline
+	err := r.db.GetContext(ctx, &item, "SELECT * FROM market_klines WHERE id = $1 LIMIT 1", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *MarketKlineRepository) Update(ctx context.Context, data *entity.MarketKline) error {
+	query := `UPDATE market_klines
+SET exchange = :exchange,
+    market_type = :market_type,
+    event_type = :event_type,
+    event_time = :event_time,
+    symbol = :symbol,
+    interval = :interval,
+    open_time = :open_time,
+    close_time = :close_time,
+    open_price = :open_price,
+    high_price = :high_price,
+    low_price = :low_price,
+    close_price = :close_price,
+    base_volume = :base_volume,
+    quote_volume = :quote_volume,
+    taker_base_volume = :taker_base_volume,
+    taker_quote_volume = :taker_quote_volume,
+    trade_count = :trade_count,
+    is_closed = :is_closed,
+    updated_at = :updated_at
+WHERE id = :id`
+	result, err := r.db.NamedExecContext(ctx, query, data)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *MarketKlineRepository) Delete(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, "DELETE FROM market_klines WHERE id = $1", id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (r *MarketKlineRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
 	model := &entity.MarketKline{}
 	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
@@ -171,4 +237,11 @@ func (r *MarketKlineRepository) GetPagination(ctx context.Context, req *apiutil.
 	}
 
 	return apiutil.NewPaginationResp(req.Paginate.Page, req.Paginate.Limit, total, items), nil
+}
+
+func nullDefaultString(value string) any {
+	if value == "" {
+		return sq.Expr("DEFAULT")
+	}
+	return value
 }

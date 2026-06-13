@@ -99,7 +99,7 @@ func (s *APISetting) SearchableFields() []string {
 }
 
 type StrategyConfig struct {
-	ID                       int64           `db:"id" json:"id"`
+	ID                       string          `db:"id" json:"id"`
 	Strategy                 string          `db:"strategy" json:"strategy"`
 	Exchange                 string          `db:"exchange" json:"exchange"`
 	MarketType               string          `db:"market_type" json:"market_type"`

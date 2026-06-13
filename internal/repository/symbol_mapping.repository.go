@@ -117,6 +117,12 @@ func (r *SymbolMappingRepository) GetLatestUpdatedAtByExchangeAndMarketType(ctx 
 	return updatedAt.Time, nil
 }
 
+func (r *SymbolMappingRepository) ListExchanges(ctx context.Context) ([]string, error) {
+	items := []string{}
+	err := r.db.SelectContext(ctx, &items, "SELECT DISTINCT exchange FROM symbol_mappings WHERE exchange <> '' ORDER BY exchange")
+	return items, err
+}
+
 func (r *SymbolMappingRepository) FindByID(ctx context.Context, id string) (*entity.SymbolMapping, error) {
 	var item entity.SymbolMapping
 	err := r.db.GetContext(ctx, &item, "SELECT * FROM symbol_mappings WHERE id = $1 LIMIT 1", id)

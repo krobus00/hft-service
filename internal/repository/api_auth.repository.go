@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
@@ -97,6 +98,18 @@ ORDER BY p.name`, userID)
 	return permissions, err
 }
 
+func (r *APIAuthRepository) ListRoleNames(ctx context.Context) ([]string, error) {
+	items := []string{}
+	err := r.db.SelectContext(ctx, &items, "SELECT name FROM roles ORDER BY name")
+	return items, err
+}
+
+func (r *APIAuthRepository) ListPermissionNames(ctx context.Context) ([]string, error) {
+	items := []string{}
+	err := r.db.SelectContext(ctx, &items, "SELECT name FROM permissions ORDER BY name")
+	return items, err
+}
+
 func (r *APIAuthRepository) UpdateLastLogin(ctx context.Context, userID string) error {
 	_, err := r.db.ExecContext(ctx, "UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1", userID)
 	return err
@@ -118,6 +131,140 @@ func (r *APIAuthRepository) FindRoleByID(ctx context.Context, id string) (*entit
 		return nil, err
 	}
 	return &role, nil
+}
+
+func (r *APIAuthRepository) UpdateUser(ctx context.Context, user *entity.APIUser, roleNames []string) error {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	builder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Update("users").
+		Set("email", user.Email).
+		Set("name", user.Name).
+		Set("active", user.Active).
+		Set("updated_at", sq.Expr("NOW()")).
+		Where(sq.Eq{"id": user.ID})
+	if user.PasswordHash != "" {
+		builder = builder.Set("password_hash", user.PasswordHash)
+	}
+	query, args, err := builder.ToSql()
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+
+	if roleNames != nil {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM user_roles WHERE user_id = $1", user.ID); err != nil {
+			return err
+		}
+		for _, roleName := range roleNames {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_roles (user_id, role_id)
+SELECT $1, id FROM roles WHERE name = $2
+ON CONFLICT DO NOTHING`, user.ID, roleName); err != nil {
+				return err
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (r *APIAuthRepository) DeleteUser(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, "DELETE FROM users WHERE id = $1", id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *APIAuthRepository) CreateRole(ctx context.Context, role *entity.APIRole, permissionNames []string) error {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	query, args, err := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Insert("roles").
+		Columns("name", "description").
+		Values(role.Name, role.Description).
+		Suffix("RETURNING id, created_at, updated_at").
+		ToSql()
+	if err != nil {
+		return err
+	}
+	if err := tx.QueryRowxContext(ctx, query, args...).Scan(&role.ID, &role.CreatedAt, &role.UpdatedAt); err != nil {
+		return err
+	}
+	if err := replaceRolePermissions(ctx, tx, role.ID, permissionNames); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *APIAuthRepository) UpdateRole(ctx context.Context, role *entity.APIRole, permissionNames []string) error {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, "UPDATE roles SET name = $1, description = $2, updated_at = NOW() WHERE id = $3", role.Name, role.Description, role.ID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	if permissionNames != nil {
+		if err := replaceRolePermissions(ctx, tx, role.ID, permissionNames); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (r *APIAuthRepository) DeleteRole(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, "DELETE FROM roles WHERE id = $1", id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func replaceRolePermissions(ctx context.Context, tx *sqlx.Tx, roleID string, permissionNames []string) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM role_permissions WHERE role_id = $1", roleID); err != nil {
+		return err
+	}
+	for _, permissionName := range permissionNames {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT $1, id FROM permissions WHERE name = $2
+ON CONFLICT DO NOTHING`, roleID, permissionName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *APIAuthRepository) GetUsersPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
