@@ -339,7 +339,7 @@ services:
       PGHOST: postgresql
       PGPORT: 5432
       PGUSER: ${POSTGRES_USER:-root}
-      PGDATABASE: ${POSTGRES_DB:-hft}
+      PGDATABASE: postgres # as maintenance db
       POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-market_data,order_engine,api,analytics}
     entrypoint: ["sh", "-ec"]
     command: >
