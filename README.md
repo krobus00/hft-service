@@ -570,6 +570,7 @@ Backups are written to `backups/`, which is ignored by git.
 Back up one database:
 
 ```bash
+make up-service
 make backup-db DB=api
 ```
 
@@ -577,6 +578,36 @@ Back up all configured databases:
 
 ```bash
 make backup-databases
+```
+
+If the database is running from the dev Compose file instead, point the backup target at it:
+
+```bash
+docker compose -f compose-dev.yaml up -d postgresql
+make backup-databases BACKUP_COMPOSE_FILE=compose-dev.yaml
+```
+
+For remote PostgreSQL, set `POSTGRES_HOST`; `pg_dump` runs from a temporary PostgreSQL Docker image:
+
+```bash
+make backup-db \
+  POSTGRES_HOST=db.example.com \
+  POSTGRES_PORT=5432 \
+  POSTGRES_USER=root \
+  POSTGRES_PASSWORD='REPLACE_WITH_PASSWORD' \
+  POSTGRES_SSLMODE=require \
+  DB=api
+```
+
+Back up multiple remote databases:
+
+```bash
+make backup-databases \
+  POSTGRES_HOST=db.example.com \
+  POSTGRES_USER=root \
+  POSTGRES_PASSWORD='REPLACE_WITH_PASSWORD' \
+  POSTGRES_SSLMODE=require \
+  DATABASES="market_data order_engine api"
 ```
 
 Default database list:

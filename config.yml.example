@@ -24,8 +24,6 @@ port:
   api_http: 9804
 exchanges:
   binance:
-    api_key: "api key"
-    api_secret: "api secret"
     accounts:
       user-a:
         api_key: "user-a api key"
@@ -34,8 +32,6 @@ exchanges:
         api_key: "user-b api key"
         api_secret: "user-b api secret"
   tokocrypto:
-    api_key: "api key"
-    api_secret: "api secret"
     accounts:
       user-a:
         api_key: "user-a api key"

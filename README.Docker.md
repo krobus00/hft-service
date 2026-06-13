@@ -115,9 +115,42 @@ global:
 
 ## Backups
 
+Start the target Compose stack before backing it up:
+
 ```bash
+make up-service
 make backup-db DB=api
 make backup-databases
+```
+
+For dev infrastructure started from `compose-dev.yaml`, pass the backup compose file:
+
+```bash
+docker compose -f compose-dev.yaml up -d postgresql
+make backup-databases BACKUP_COMPOSE_FILE=compose-dev.yaml
+```
+
+For remote PostgreSQL, set `POSTGRES_HOST`; the Makefile runs `pg_dump` from a temporary PostgreSQL Docker image:
+
+```bash
+make backup-db \
+  POSTGRES_HOST=db.example.com \
+  POSTGRES_PORT=5432 \
+  POSTGRES_USER=root \
+  POSTGRES_PASSWORD='REPLACE_WITH_PASSWORD' \
+  POSTGRES_SSLMODE=require \
+  DB=api
+```
+
+Back up multiple remote databases:
+
+```bash
+make backup-databases \
+  POSTGRES_HOST=db.example.com \
+  POSTGRES_USER=root \
+  POSTGRES_PASSWORD='REPLACE_WITH_PASSWORD' \
+  POSTGRES_SSLMODE=require \
+  DATABASES="market_data order_engine api"
 ```
 
 Backup files are written under `backups/` and ignored by git.

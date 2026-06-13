@@ -19,9 +19,16 @@ STRATEGY_LOCAL_IMAGE ?= python-strategy:local
 
 PROFILES ?= infra app web
 COMPOSE_PROFILE_FLAGS := $(foreach profile,$(PROFILES),--profile=$(profile))
+BACKUP_COMPOSE_FILE ?=
+BACKUP_COMPOSE_FILE_FLAGS := $(if $(BACKUP_COMPOSE_FILE),-f $(BACKUP_COMPOSE_FILE),)
+BACKUP_COMPOSE := docker compose $(BACKUP_COMPOSE_FILE_FLAGS) $(COMPOSE_PROFILE_FLAGS)
+BACKUP_POSTGRES_IMAGE ?= postgres:16-alpine
 
 POSTGRES_USER ?= root
 POSTGRES_PASSWORD ?= root
+POSTGRES_HOST ?=
+POSTGRES_PORT ?= 5432
+POSTGRES_SSLMODE ?= prefer
 REDIS_PASSWORD ?=
 NATS_USER ?= hft
 NATS_PASSWORD ?=
@@ -34,7 +41,7 @@ TIMESTAMP ?= $(shell date +%Y%m%d%H%M%S)
 STRATEGY_FILE ?= krobot01
 STRATEGY_FILES ?= $(filter-out standard_strategy_template,$(basename $(notdir $(wildcard strategy/*.py))))
 
-.PHONY: build-service build-web build-strategy build-images build-local-images push-service push-web push-strategy push-images compose-pull up-service up-local-service down-service down-local-service compose-logs compose-local-logs compose-config compose-local-config run-strategy rerun-all-strategy backup-db backup-databases backup-all
+.PHONY: build-service build-web build-strategy build-images build-local-images push-service push-web push-strategy push-images compose-pull up-service up-local-service down-service down-local-service compose-logs compose-local-logs compose-config compose-local-config run-strategy rerun-all-strategy backup-preflight backup-db backup-databases backup-all
 
 build-service:
 	@docker build \
@@ -125,25 +132,77 @@ rerun-all-strategy:
 	    bash -c "python $$strategy.py"; \
 	done
 
-backup-db:
+backup-preflight:
+	@if [ -n "$(POSTGRES_HOST)" ]; then \
+	  if ! docker run --rm \
+	    -e PGSSLMODE="$(POSTGRES_SSLMODE)" \
+	    $(BACKUP_POSTGRES_IMAGE) \
+	    pg_isready -h "$(POSTGRES_HOST)" -p "$(POSTGRES_PORT)" -U "$(POSTGRES_USER)" >/dev/null; then \
+	    echo 'Remote PostgreSQL is not reachable.' >&2; \
+	    echo 'Check POSTGRES_HOST, POSTGRES_PORT, and POSTGRES_SSLMODE.' >&2; \
+	    exit 1; \
+	  fi; \
+	elif ! $(BACKUP_COMPOSE) ps --status running --services | grep -qx '$(POSTGRES_SERVICE)'; then \
+	  echo 'PostgreSQL compose service "$(POSTGRES_SERVICE)" is not running.' >&2; \
+	  echo 'Start production services with "make up-service", or dev services with "docker compose -f compose-dev.yaml up -d postgresql".' >&2; \
+	  echo 'For dev backups, run "make backup-databases BACKUP_COMPOSE_FILE=compose-dev.yaml".' >&2; \
+	  exit 1; \
+	fi
+
+backup-db: backup-preflight
 	@mkdir -p $(BACKUP_DIR)
 	@echo "Backing up database $(DB)"
-	@docker compose exec -T \
-		-e PGPASSWORD=$(POSTGRES_PASSWORD) \
-		$(POSTGRES_SERVICE) \
-		pg_dump -U $(POSTGRES_USER) -d $(DB) -Fc \
-		> $(BACKUP_DIR)/$(DB)-$(TIMESTAMP).dump
+	@out="$(BACKUP_DIR)/$(DB)-$(TIMESTAMP).dump"; \
+	tmp="$$out.tmp"; \
+	if [ -n "$(POSTGRES_HOST)" ]; then \
+	  docker run --rm \
+	    -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	    -e PGSSLMODE="$(POSTGRES_SSLMODE)" \
+	    $(BACKUP_POSTGRES_IMAGE) \
+	    pg_dump -h "$(POSTGRES_HOST)" -p "$(POSTGRES_PORT)" -U "$(POSTGRES_USER)" -d "$(DB)" -Fc \
+	    > "$$tmp"; \
+	else \
+	  $(BACKUP_COMPOSE) exec -T \
+	    -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	    $(POSTGRES_SERVICE) \
+	    pg_dump -U $(POSTGRES_USER) -d $(DB) -Fc \
+	    > "$$tmp"; \
+	fi; \
+	if [ $$? -eq 0 ]; then \
+	  mv "$$tmp" "$$out"; \
+	else \
+	  rm -f "$$tmp"; \
+	  exit 1; \
+	fi
 	@echo "$(BACKUP_DIR)/$(DB)-$(TIMESTAMP).dump"
 
-backup-databases:
+backup-databases: backup-preflight
 	@mkdir -p $(BACKUP_DIR)
 	@for db in $(DATABASES); do \
+	  out="$(BACKUP_DIR)/$$db-$(TIMESTAMP).dump"; \
+	  tmp="$$out.tmp"; \
 	  echo "Backing up database $$db"; \
-	  docker compose exec -T \
-	    -e PGPASSWORD=$(POSTGRES_PASSWORD) \
-	    $(POSTGRES_SERVICE) \
-	    pg_dump -U $(POSTGRES_USER) -d $$db -Fc \
-	    > $(BACKUP_DIR)/$$db-$(TIMESTAMP).dump; \
+	  if [ -n "$(POSTGRES_HOST)" ]; then \
+	    docker run --rm \
+	      -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	      -e PGSSLMODE="$(POSTGRES_SSLMODE)" \
+	      $(BACKUP_POSTGRES_IMAGE) \
+	      pg_dump -h "$(POSTGRES_HOST)" -p "$(POSTGRES_PORT)" -U "$(POSTGRES_USER)" -d $$db -Fc \
+	      > "$$tmp"; \
+	  else \
+	    $(BACKUP_COMPOSE) exec -T \
+	      -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	      $(POSTGRES_SERVICE) \
+	      pg_dump -U $(POSTGRES_USER) -d $$db -Fc \
+	      > "$$tmp"; \
+	  fi; \
+	  if [ $$? -eq 0 ]; then \
+	    mv "$$tmp" "$$out"; \
+	    echo "$$out"; \
+	  else \
+	    rm -f "$$tmp"; \
+	    exit 1; \
+	  fi; \
 	done
 
 backup-all: backup-databases
