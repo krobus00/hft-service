@@ -472,6 +472,21 @@ make compose-logs
 make down-service
 ```
 
+For local images that already exist on your machine, use [compose-local.yaml](compose-local.yaml):
+
+```bash
+make build-local-images
+make up-local-service
+```
+
+Local image names can be overridden in `.env`:
+
+```env
+HFT_LOCAL_IMAGE=hft-service:local
+WEB_LOCAL_IMAGE=krobot-web:local
+STRATEGY_LOCAL_IMAGE=python-strategy:local
+```
+
 ## Database Backups
 
 Backups are written to `backups/`, which is ignored by git.

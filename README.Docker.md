@@ -46,6 +46,42 @@ Default profiles are `infra app web`. Add strategies with:
 
 Set `PROFILES=infra app web strategy` in `.env`, then run `make up-service`.
 
+## Run Local Images
+
+Use [compose-local.yaml](compose-local.yaml) when you want Compose to use images that already exist on your machine instead of Docker Hub release tags.
+
+Default local image names:
+
+- `hft-service:local`
+- `krobot-web:local`
+- `python-strategy:local`
+
+Build local images:
+
+```bash
+make build-local-images
+```
+
+Run local images:
+
+```bash
+make up-local-service
+```
+
+Inspect local Compose config:
+
+```bash
+make compose-local-config
+```
+
+Override local image names in `.env`:
+
+```env
+HFT_LOCAL_IMAGE=hft-service:local
+WEB_LOCAL_IMAGE=krobot-web:local
+STRATEGY_LOCAL_IMAGE=python-strategy:local
+```
+
 ## Redis And NATS Passwords
 
 Redis and NATS passwords are optional.

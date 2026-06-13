@@ -1,0 +1,365 @@
+x-hft-service: &hft-service
+  image: ${HFT_LOCAL_IMAGE:-hft-service:local}
+  working_dir: /bin
+  volumes:
+    - ./config.yml:/bin/config.yml:ro
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - hft-network
+
+x-strategy-service: &strategy-service
+  image: ${STRATEGY_LOCAL_IMAGE:-python-strategy:local}
+  working_dir: /app
+  volumes:
+    - ./strategy/config.yml:/app/config.yml:ro
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - hft-network
+
+services:
+  market-data-gateway:
+    <<: *hft-service
+    command: ["market-data-gateway"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+    ports:
+      - "${MARKET_DATA_GATEWAY_PORT:-9802}:9802"
+    profiles:
+      - app
+
+  market-data-worker:
+    <<: *hft-service
+    command: ["market-data-worker"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+    profiles:
+      - app
+
+  order-engine-gateway:
+    <<: *hft-service
+    command: ["order-engine-gateway"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${ORDER_ENGINE_HTTP_PORT:-9800}:9800"
+      - "${ORDER_ENGINE_GRPC_PORT:-9801}:9801"
+    profiles:
+      - app
+
+  order-engine-worker:
+    <<: *hft-service
+    command: ["order-engine-worker"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-order-engine:
+        condition: service_completed_successfully
+    profiles:
+      - app
+
+  notification-service:
+    <<: *hft-service
+    command: ["notification-service"]
+    depends_on:
+      nats:
+        condition: service_healthy
+    profiles:
+      - app
+
+  api:
+    <<: *hft-service
+    command: ["api"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-api:
+        condition: service_completed_successfully
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${API_PORT:-9804}:9804"
+    profiles:
+      - app
+
+  web:
+    image: ${WEB_LOCAL_IMAGE:-krobot-web:local}
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    restart: unless-stopped
+    profiles:
+      - web
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - hft-network
+
+  strategy-krobot01:
+    <<: *strategy-service
+    command: ["bash", "-c", "python krobot01.py"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${STRATEGY_KROBOT01_PORT:-19011}:19011"
+    profiles:
+      - strategy
+
+  strategy-krobot02:
+    <<: *strategy-service
+    command: ["bash", "-c", "python krobot02.py"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${STRATEGY_KROBOT02_PORT:-19012}:19012"
+    profiles:
+      - strategy
+
+  strategy-krobot03:
+    <<: *strategy-service
+    command: ["bash", "-c", "python krobot03.py"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${STRATEGY_KROBOT03_PORT:-19014}:19014"
+    profiles:
+      - strategy
+
+  strategy-ai:
+    <<: *strategy-service
+    command: ["bash", "-c", "python ai.py"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${STRATEGY_AI_PORT:-19013}:19013"
+    profiles:
+      - strategy
+
+  strategy-supertrend:
+    <<: *strategy-service
+    command: ["bash", "-c", "python supertrend.py"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    profiles:
+      - strategy
+
+  redis:
+    image: redis:7-alpine
+    container_name: hft-redis
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+        fi
+        exec redis-server --appendonly yes
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - if [ -n "$$REDIS_PASSWORD" ]; then redis-cli -a "$$REDIS_PASSWORD" ping; else redis-cli ping; fi
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    profiles:
+      - infra
+    networks:
+      - hft-network
+
+  nats:
+    image: nats:2.12.4-alpine
+    container_name: hft-nats
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -n "$$NATS_PASSWORD" ]; then
+          exec nats-server -c /etc/nats/nats.conf --user "$$NATS_USER" --pass "$$NATS_PASSWORD"
+        fi
+        exec nats-server -c /etc/nats/nats.conf
+    environment:
+      NATS_USER: ${NATS_USER:-hft}
+      NATS_PASSWORD: ${NATS_PASSWORD:-}
+    ports:
+      - "${NATS_CLIENT_PORT:-4222}:4222"
+      - "${NATS_MONITOR_PORT:-8222}:8222"
+    volumes:
+      - nats_data:/data
+      - ./tools/nats/nats.conf:/etc/nats/nats.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz | grep -q ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    profiles:
+      - infra
+    networks:
+      - hft-network
+
+  postgresql:
+    image: postgres:16-alpine
+    container_name: hft-postgresql
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-root}
+      POSTGRES_DB: ${POSTGRES_DB:-hft}
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-market_data,order_engine,api,analytics}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./tools/postgre/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    profiles:
+      - infra
+    networks:
+      - hft-network
+
+  database-init:
+    image: postgres:16-alpine
+    container_name: hft-database-init
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-root}
+      PGHOST: postgresql
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-root}
+      PGDATABASE: ${POSTGRES_DB:-hft}
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-market_data,order_engine,api,analytics}
+    entrypoint: ["sh", "-ec"]
+    command: >
+      for db in $$(echo "$$POSTGRES_MULTIPLE_DATABASES" | tr ',' ' '); do
+      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1
+      || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE $$db;";
+      done
+    restart: "no"
+    profiles:
+      - infra
+    networks:
+      - hft-network
+
+  migrate-market-data:
+    <<: *hft-service
+    command: ["migrate", "--databaseName=market_data"]
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+    restart: "no"
+    profiles:
+      - infra
+
+  migrate-order-engine:
+    <<: *hft-service
+    command: ["migrate", "--databaseName=order_engine"]
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+    restart: "no"
+    profiles:
+      - infra
+
+  migrate-api:
+    <<: *hft-service
+    command: ["migrate", "--databaseName=api"]
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+    restart: "no"
+    profiles:
+      - infra
+
+volumes:
+  redis_data:
+  nats_data:
+  postgres_data:
+
+networks:
+  hft-network:
+    driver: bridge
