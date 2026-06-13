@@ -37,11 +37,15 @@ DATABASES ?= hft market_data order_engine api analytics
 DB ?= hft
 BACKUP_DIR ?= backups
 TIMESTAMP ?= $(shell date +%Y%m%d%H%M%S)
+RESTORE_DATABASES ?= api market_data order_engine
+RESTORE_FILE ?=
+RESTORE_CLEAN_FLAGS ?= --clean --if-exists
+RESTORE_FLAGS ?= $(RESTORE_CLEAN_FLAGS) --no-owner --no-privileges
 
 STRATEGY_FILE ?= krobot01
 STRATEGY_FILES ?= $(filter-out standard_strategy_template,$(basename $(notdir $(wildcard strategy/*.py))))
 
-.PHONY: build-service build-web build-strategy build-images build-local-images push-service push-web push-strategy push-images compose-pull up-service up-local-service down-service down-local-service compose-logs compose-local-logs compose-config compose-local-config run-strategy rerun-all-strategy backup-preflight backup-db backup-databases backup-all
+.PHONY: build-service build-web build-strategy build-images build-local-images push-service push-web push-strategy push-images compose-pull up-service up-local-service down-service down-local-service compose-logs compose-local-logs compose-config compose-local-config run-strategy rerun-all-strategy backup-preflight backup-db backup-databases backup-all restore-db restore-databases restore-all
 
 build-service:
 	@docker build \
@@ -145,7 +149,7 @@ backup-preflight:
 	elif ! $(BACKUP_COMPOSE) ps --status running --services | grep -qx '$(POSTGRES_SERVICE)'; then \
 	  echo 'PostgreSQL compose service "$(POSTGRES_SERVICE)" is not running.' >&2; \
 	  echo 'Start production services with "make up-service", or dev services with "docker compose -f compose-dev.yaml up -d postgresql".' >&2; \
-	  echo 'For dev backups, run "make backup-databases BACKUP_COMPOSE_FILE=compose-dev.yaml".' >&2; \
+	  echo 'For dev backup/restore, pass BACKUP_COMPOSE_FILE=compose-dev.yaml.' >&2; \
 	  exit 1; \
 	fi
 
@@ -206,3 +210,56 @@ backup-databases: backup-preflight
 	done
 
 backup-all: backup-databases
+
+restore-db: backup-preflight
+	@dump="$(RESTORE_FILE)"; \
+	if [ -z "$$dump" ]; then \
+	  dump="$$(ls -t "$(BACKUP_DIR)/$(DB)-"*.dump 2>/dev/null | head -n 1)"; \
+	fi; \
+	if [ -z "$$dump" ] || [ ! -f "$$dump" ]; then \
+	  echo 'Backup file not found.' >&2; \
+	  echo 'Set RESTORE_FILE=path/to/file.dump or ensure a matching $(BACKUP_DIR)/$(DB)-*.dump exists.' >&2; \
+	  exit 1; \
+	fi; \
+	echo "Restoring database $(DB) from $$dump"; \
+	if [ -n "$(POSTGRES_HOST)" ]; then \
+	  docker run --rm -i \
+	    -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	    -e PGSSLMODE="$(POSTGRES_SSLMODE)" \
+	    $(BACKUP_POSTGRES_IMAGE) \
+	    pg_restore -h "$(POSTGRES_HOST)" -p "$(POSTGRES_PORT)" -U "$(POSTGRES_USER)" -d "$(DB)" $(RESTORE_FLAGS) \
+	    < "$$dump"; \
+	else \
+	  $(BACKUP_COMPOSE) exec -T \
+	    -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	    $(POSTGRES_SERVICE) \
+	    pg_restore -U $(POSTGRES_USER) -d $(DB) $(RESTORE_FLAGS) \
+	    < "$$dump"; \
+	fi
+
+restore-databases: backup-preflight
+	@for db in $(RESTORE_DATABASES); do \
+	  dump="$$(ls -t "$(BACKUP_DIR)/$$db-"*.dump 2>/dev/null | head -n 1)"; \
+	  if [ -z "$$dump" ] || [ ! -f "$$dump" ]; then \
+	    echo "Backup file not found for database $$db." >&2; \
+	    echo "Expected a matching $(BACKUP_DIR)/$$db-*.dump file." >&2; \
+	    exit 1; \
+	  fi; \
+	  echo "Restoring database $$db from $$dump"; \
+	  if [ -n "$(POSTGRES_HOST)" ]; then \
+	    docker run --rm -i \
+	      -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	      -e PGSSLMODE="$(POSTGRES_SSLMODE)" \
+	      $(BACKUP_POSTGRES_IMAGE) \
+	      pg_restore -h "$(POSTGRES_HOST)" -p "$(POSTGRES_PORT)" -U "$(POSTGRES_USER)" -d "$$db" $(RESTORE_FLAGS) \
+	      < "$$dump"; \
+	  else \
+	    $(BACKUP_COMPOSE) exec -T \
+	      -e PGPASSWORD="$(POSTGRES_PASSWORD)" \
+	      $(POSTGRES_SERVICE) \
+	      pg_restore -U $(POSTGRES_USER) -d "$$db" $(RESTORE_FLAGS) \
+	      < "$$dump"; \
+	  fi; \
+	done
+
+restore-all: restore-databases

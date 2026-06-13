@@ -622,6 +622,46 @@ Override the list:
 make backup-databases DATABASES="market_data order_engine api"
 ```
 
+Restore one database from the newest matching dump:
+
+```bash
+make restore-db DB=api
+```
+
+Restore one database from a specific dump:
+
+```bash
+make restore-db DB=api RESTORE_FILE=backups/api-20260613220606.dump
+```
+
+Restore the default application databases:
+
+```bash
+make restore-databases
+```
+
+Default restore database list:
+
+```text
+api market_data order_engine
+```
+
+Override the restore list:
+
+```bash
+make restore-databases RESTORE_DATABASES="market_data order_engine api"
+```
+
+Restore to a remote PostgreSQL host:
+
+```bash
+make restore-databases \
+  POSTGRES_HOST=db.example.com \
+  POSTGRES_USER=root \
+  POSTGRES_PASSWORD='REPLACE_WITH_PASSWORD' \
+  POSTGRES_SSLMODE=require
+```
+
 ## How to Run Strategy
 
 There are two common ways to run strategy in this repository.

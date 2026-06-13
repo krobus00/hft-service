@@ -155,6 +155,34 @@ make backup-databases \
 
 Backup files are written under `backups/` and ignored by git.
 
+Restore one database from the newest matching dump:
+
+```bash
+make restore-db DB=api
+```
+
+Restore one database from a specific dump:
+
+```bash
+make restore-db DB=api RESTORE_FILE=backups/api-20260613220606.dump
+```
+
+Restore the default application databases (`api`, `market_data`, and `order_engine`):
+
+```bash
+make restore-databases
+```
+
+Restore to a remote PostgreSQL host:
+
+```bash
+make restore-databases \
+  POSTGRES_HOST=db.example.com \
+  POSTGRES_USER=root \
+  POSTGRES_PASSWORD='REPLACE_WITH_PASSWORD' \
+  POSTGRES_SSLMODE=require
+```
+
 ## Dev Tools
 
 Generate Go protobuf files with the dev tools profile:
