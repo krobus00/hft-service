@@ -18,6 +18,7 @@ Most of the code in this repository was written with AI assistance.
 - [How HFT Works in This Repository](#how-hft-works-in-this-repository)
 - [System Architecture](#system-architecture)
 - [Services and Use Cases](#services-and-use-cases)
+- [API Service Documentation](docs/API_SERVICE.md)
 - [Supported Exchanges](#supported-exchanges)
 - [Market Type Support](#market-type-support)
 - [Quick Start (Local)](#quick-start-local)
@@ -132,9 +133,17 @@ flowchart TB
 - Sends Discord alert messages for orders with `need_notification = true`.
 - Alert payload is general (no quantity), containing strategy name, symbol, internal symbol, interval, side, and price.
 
+### `api`
+
+- Provides the centralized dashboard HTTP API.
+- Handles dashboard authentication, refresh tokens, and RBAC.
+- Exposes read APIs for orders and market data.
+- Exposes CRUD APIs for symbol mappings, kline subscriptions, strategy configs, and dashboard settings.
+- Full endpoint documentation: [docs/API_SERVICE.md](docs/API_SERVICE.md).
+
 ### `migrate`
 
-- Runs DB migration for `market_data` and `order_engine`.
+- Runs DB migration for `api`, `market_data`, and `order_engine`.
 
 ## Supported Exchanges
 

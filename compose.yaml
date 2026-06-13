@@ -123,6 +123,35 @@ services:
     networks:
       - hft-network
 
+  api:
+    build:
+      context: .
+      target: final
+    command: ["api"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-api:
+        condition: service_completed_successfully
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "9804:9804"
+    restart: unless-stopped
+    profiles:
+      - app
+    cpus: "0.75"
+    mem_limit: 512m
+    networks:
+      - hft-network
+
   strategy-krobot01:
     build:
       context: .
@@ -341,7 +370,7 @@ services:
       POSTGRES_USER: root
       POSTGRES_PASSWORD: root
       POSTGRES_DB: hft
-      POSTGRES_MULTIPLE_DATABASES: market_data,order_engine,analytics
+      POSTGRES_MULTIPLE_DATABASES: market_data,order_engine,api,analytics
     ports:
       - "5432:5432"
     volumes:
@@ -377,6 +406,7 @@ services:
     command: |
       psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='market_data'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE market_data;"
       psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='order_engine'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE order_engine;"
+      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='api'" | grep -q 1 || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE api;"
     cpus: "0.50"
     mem_limit: 256m
     restart: "no"
@@ -409,6 +439,25 @@ services:
       context: .
       target: final
     command: ["migrate", "--databaseName=order_engine"]
+    working_dir: /bin
+    volumes:
+      - ./config.yml:/bin/config.yml:ro
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+    cpus: "0.50"
+    mem_limit: 256m
+    restart: "no"
+    profiles:
+      - infra
+    networks:
+      - hft-network
+
+  migrate-api:
+    build:
+      context: .
+      target: final
+    command: ["migrate", "--databaseName=api"]
     working_dir: /bin
     volumes:
       - ./config.yml:/bin/config.yml:ro

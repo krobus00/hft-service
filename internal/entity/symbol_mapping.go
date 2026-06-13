@@ -1,6 +1,10 @@
 package entity
 
-import "time"
+import (
+	"time"
+
+	apiutil "github.com/krobus00/hft-service/internal/api"
+)
 
 type SymbolMapping struct {
 	ID          string    `db:"id" json:"id"`
@@ -11,6 +15,27 @@ type SymbolMapping struct {
 	OrderSymbol string    `db:"order_symbol" json:"order_symbol"`
 	CreatedAt   time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
+}
+
+func (s *SymbolMapping) GetColumn() map[string]string {
+	return map[string]string{
+		"id":           "id",
+		"exchange":     "exchange",
+		"market_type":  "market_type",
+		"symbol":       "symbol",
+		"kline_symbol": "kline_symbol",
+		"order_symbol": "order_symbol",
+		"created_at":   "created_at",
+		"updated_at":   "updated_at",
+	}
+}
+
+func (s *SymbolMapping) DefaultSort() apiutil.SortReq {
+	return apiutil.SortReq{Field: "created_at", Direction: "DESC"}
+}
+
+func (s *SymbolMapping) SearchableFields() []string {
+	return []string{"exchange", "market_type", "symbol", "kline_symbol", "order_symbol"}
 }
 
 type ExchangeSymbols struct {

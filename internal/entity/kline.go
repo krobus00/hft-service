@@ -3,6 +3,7 @@ package entity
 import (
 	"time"
 
+	apiutil "github.com/krobus00/hft-service/internal/api"
 	"github.com/shopspring/decimal"
 )
 
@@ -24,28 +25,51 @@ type MarketKlineEvent struct {
 }
 
 type MarketKline struct {
-	Exchange         string
-	MarketType       string
-	EventType        string
-	EventTime        time.Time
-	Symbol           string
-	Interval         string
-	OpenTime         time.Time
-	CloseTime        time.Time
-	OpenPrice        decimal.Decimal
-	HighPrice        decimal.Decimal
-	LowPrice         decimal.Decimal
-	ClosePrice       decimal.Decimal
-	BaseVolume       decimal.Decimal
-	QuoteVolume      decimal.Decimal
-	TakerBaseVolume  decimal.Decimal
-	TakerQuoteVolume decimal.Decimal
-	TradeCount       int32
-	IsClosed         bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	Exchange         string          `db:"exchange" json:"exchange"`
+	MarketType       string          `db:"market_type" json:"market_type"`
+	EventType        string          `db:"event_type" json:"event_type"`
+	EventTime        time.Time       `db:"event_time" json:"event_time"`
+	Symbol           string          `db:"symbol" json:"symbol"`
+	Interval         string          `db:"interval" json:"interval"`
+	OpenTime         time.Time       `db:"open_time" json:"open_time"`
+	CloseTime        time.Time       `db:"close_time" json:"close_time"`
+	OpenPrice        decimal.Decimal `db:"open_price" json:"open_price"`
+	HighPrice        decimal.Decimal `db:"high_price" json:"high_price"`
+	LowPrice         decimal.Decimal `db:"low_price" json:"low_price"`
+	ClosePrice       decimal.Decimal `db:"close_price" json:"close_price"`
+	BaseVolume       decimal.Decimal `db:"base_volume" json:"base_volume"`
+	QuoteVolume      decimal.Decimal `db:"quote_volume" json:"quote_volume"`
+	TakerBaseVolume  decimal.Decimal `db:"taker_base_volume" json:"taker_base_volume"`
+	TakerQuoteVolume decimal.Decimal `db:"taker_quote_volume" json:"taker_quote_volume"`
+	TradeCount       int32           `db:"trade_count" json:"trade_count"`
+	IsClosed         bool            `db:"is_closed" json:"is_closed"`
+	CreatedAt        time.Time       `db:"created_at" json:"created_at"`
+	UpdatedAt        time.Time       `db:"updated_at" json:"updated_at"`
 }
 
 func (m MarketKline) TableName() string {
 	return "market_klines"
+}
+
+func (m *MarketKline) GetColumn() map[string]string {
+	return map[string]string{
+		"exchange":    "exchange",
+		"market_type": "market_type",
+		"event_type":  "event_type",
+		"symbol":      "symbol",
+		"interval":    "interval",
+		"open_time":   "open_time",
+		"close_time":  "close_time",
+		"is_closed":   "is_closed",
+		"created_at":  "created_at",
+		"updated_at":  "updated_at",
+	}
+}
+
+func (m *MarketKline) DefaultSort() apiutil.SortReq {
+	return apiutil.SortReq{Field: "open_time", Direction: "DESC"}
+}
+
+func (m *MarketKline) SearchableFields() []string {
+	return []string{"exchange", "symbol", "interval", "market_type"}
 }

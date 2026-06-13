@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
+	apiutil "github.com/krobus00/hft-service/internal/api"
 	"github.com/krobus00/hft-service/internal/entity"
 )
 
@@ -121,4 +123,52 @@ WHERE exchange = $1
   )`
 	_, err := r.db.ExecContext(ctx, query, exchange, marketType, symbol, interval, maxCount)
 	return err
+}
+
+func (r *MarketKlineRepository) FindByOpenTime(ctx context.Context, openTime string) (*entity.MarketKline, error) {
+	var item entity.MarketKline
+	err := r.db.GetContext(ctx, &item, "SELECT * FROM market_klines WHERE open_time::text = $1 LIMIT 1", openTime)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *MarketKlineRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	model := &entity.MarketKline{}
+	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("*").
+		From("market_klines")
+	baseSelect = req.ApplyFilter(baseSelect, model)
+
+	countBuilder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("COUNT(*)").
+		FromSelect(baseSelect, "count_query")
+	countQuery, countArgs, err := countBuilder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	var total int64
+	if err := r.db.GetContext(ctx, &total, countQuery, countArgs...); err != nil {
+		return nil, err
+	}
+
+	selectBuilder := baseSelect.OrderBy(req.Sort.Field + " " + req.Sort.Direction).
+		Limit(uint64(req.Paginate.Limit)).
+		Offset(uint64(req.Paginate.Offset))
+	selectQuery, selectArgs, err := selectBuilder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	items := []entity.MarketKline{}
+	if err := r.db.SelectContext(ctx, &items, selectQuery, selectArgs...); err != nil {
+		return nil, err
+	}
+
+	return apiutil.NewPaginationResp(req.Paginate.Page, req.Paginate.Limit, total, items), nil
 }
