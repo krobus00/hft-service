@@ -316,10 +316,11 @@ services:
       PGDATABASE: postgres # as maintenance db
       POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-market_data,order_engine,api,analytics}
     entrypoint: ["sh", "-ec"]
-    command: >
-      for db in $$(echo "$$POSTGRES_MULTIPLE_DATABASES" | tr ',' ' '); do
-      psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1
-      || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE $$db;";
+    command: |-
+      for db in $(echo "$POSTGRES_MULTIPLE_DATABASES" | tr ',' ' '); do
+        echo "Creating database if not exists: $db"
+        psql -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$db'" | grep -q 1 \
+          || psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$db\";"
       done
     restart: "no"
     profiles:
