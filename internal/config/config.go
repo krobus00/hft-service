@@ -24,6 +24,7 @@ type EnvConfig struct {
 	Log                     LogConfig                 `mapstructure:"log"`
 	GracefulShutdownTimeout time.Duration             `mapstructure:"graceful_shutdown_timeout"`
 	APIKeys                 []APIKeyConfig            `mapstructure:"api_keys"`
+	DashboardAuth           DashboardAuthConfig       `mapstructure:"dashboard_auth"`
 	Port                    map[string]string         `mapstructure:"port"`
 	Exchanges               map[string]ExchangeConfig `mapstructure:"exchanges"`
 	Database                map[string]DatabaseConfig `mapstructure:"database"`
@@ -37,6 +38,13 @@ type APIKeyConfig struct {
 	Key       string `mapstructure:"key"`
 	Active    bool   `mapstructure:"active"`
 	ExpiredAt any    `mapstructure:"expired_at"`
+}
+
+type DashboardAuthConfig struct {
+	Issuer          string        `mapstructure:"issuer"`
+	TokenSecret     string        `mapstructure:"token_secret"`
+	AccessTokenTTL  time.Duration `mapstructure:"access_token_ttl"`
+	RefreshTokenTTL time.Duration `mapstructure:"refresh_token_ttl"`
 }
 
 type NatsJetstreamConfig struct {
@@ -66,14 +74,14 @@ type LogConfig struct {
 }
 
 type ExchangeConfig struct {
-	Name          string          `mapstructure:"name"`
-	APIKey        string          `mapstructure:"api_key"`
-	APISecret     string          `mapstructure:"api_secret"`
+	Name          string                           `mapstructure:"name"`
+	APIKey        string                           `mapstructure:"api_key"`
+	APISecret     string                           `mapstructure:"api_secret"`
 	Accounts      map[string]ExchangeAccountConfig `mapstructure:"accounts"`
-	LimitBuyFee   decimal.Decimal `mapstructure:"limit_buy_fee"`   // in percentage, e.g. 0.1 for 0.1%
-	LimitSellFee  decimal.Decimal `mapstructure:"limit_sell_fee"`  // in percentage, e.g. 0.1 for 0.1%
-	MarketBuyFee  decimal.Decimal `mapstructure:"market_buy_fee"`  // in percentage, e.g. 0.1 for 0.1%
-	MarketSellFee decimal.Decimal `mapstructure:"market_sell_fee"` // in percentage, e.g. 0.1 for 0.1%
+	LimitBuyFee   decimal.Decimal                  `mapstructure:"limit_buy_fee"`   // in percentage, e.g. 0.1 for 0.1%
+	LimitSellFee  decimal.Decimal                  `mapstructure:"limit_sell_fee"`  // in percentage, e.g. 0.1 for 0.1%
+	MarketBuyFee  decimal.Decimal                  `mapstructure:"market_buy_fee"`  // in percentage, e.g. 0.1 for 0.1%
+	MarketSellFee decimal.Decimal                  `mapstructure:"market_sell_fee"` // in percentage, e.g. 0.1 for 0.1%
 }
 
 type ExchangeAccountConfig struct {
@@ -82,7 +90,12 @@ type ExchangeAccountConfig struct {
 }
 
 type RedisConfig struct {
-	CacheDSN string `mapstructure:"cache_dsn"`
+	CacheDSN             string        `mapstructure:"cache_dsn"`
+	DefaultCacheDuration time.Duration `mapstructure:"default_cache_duration"`
+	MaxRetry             int           `mapstructure:"max_retry"`
+	MaxIdleConns         int           `mapstructure:"max_idle_conns"`
+	MaxActiveConns       int           `mapstructure:"max_active_conns"`
+	MaxConnLifetime      time.Duration `mapstructure:"max_conn_lifetime"`
 }
 
 type NotificationConfig struct {

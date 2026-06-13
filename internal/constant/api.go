@@ -1,0 +1,25 @@
+package constant
+
+const (
+	MessageSuccess = "success"
+
+	SuccessStatusCode      = "SUCCESS"
+	BadRequestStatusCode   = "BAD_REQUEST"
+	UnauthorizedStatusCode = "UNAUTHORIZED"
+	ForbiddenStatusCode    = "FORBIDDEN"
+	NotFoundStatusCode     = "NOT_FOUND"
+	ConflictStatusCode     = "CONFLICT"
+	InternalStatusCode     = "INTERNAL_ERROR"
+)
+
+const (
+	PermissionOrderRead           = "order:read"
+	PermissionMarketRead          = "market:read"
+	PermissionMarketConfigWrite   = "market_config:write"
+	PermissionStrategyConfigRead  = "strategy_config:read"
+	PermissionStrategyConfigWrite = "strategy_config:write"
+	PermissionSettingsRead        = "settings:read"
+	PermissionSettingsWrite       = "settings:write"
+	PermissionUserRead            = "user:read"
+	PermissionUserWrite           = "user:write"
+)

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	apiutil "github.com/krobus00/hft-service/internal/api"
 	"github.com/shopspring/decimal"
 )
 
@@ -216,4 +217,34 @@ type OrderHistory struct {
 
 func (o OrderHistory) TableName() string {
 	return "order_histories"
+}
+
+func (o *OrderHistory) GetColumn() map[string]string {
+	return map[string]string{
+		"id":               "id",
+		"request_id":       "request_id",
+		"user_id":          "user_id",
+		"exchange":         "exchange",
+		"market_type":      "market_type",
+		"position_side":    "position_side",
+		"symbol":           "symbol",
+		"order_id":         "order_id",
+		"entry_order_id":   "entry_order_id",
+		"side":             "side",
+		"type":             "type",
+		"status":           "status",
+		"strategy_id":      "strategy_id",
+		"trade_condition":  "trade_condition",
+		"is_paper_trading": "is_paper_trading",
+		"created_at":       "created_at",
+		"updated_at":       "updated_at",
+	}
+}
+
+func (o *OrderHistory) DefaultSort() apiutil.SortReq {
+	return apiutil.SortReq{Field: "created_at", Direction: "DESC"}
+}
+
+func (o *OrderHistory) SearchableFields() []string {
+	return []string{"request_id", "user_id", "exchange", "symbol", "status", "strategy_id"}
 }

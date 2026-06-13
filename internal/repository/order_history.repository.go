@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
+	apiutil "github.com/krobus00/hft-service/internal/api"
 	"github.com/krobus00/hft-service/internal/entity"
 )
 
@@ -111,6 +113,54 @@ func (r *OrderHistoryRepository) GetByRequestID(ctx context.Context, requestID s
 		return nil, err
 	}
 	return &orderHistory, nil
+}
+
+func (r *OrderHistoryRepository) FindByID(ctx context.Context, id string) (*entity.OrderHistory, error) {
+	var orderHistory entity.OrderHistory
+	err := r.db.GetContext(ctx, &orderHistory, "SELECT * FROM order_histories WHERE id = $1 LIMIT 1", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &orderHistory, nil
+}
+
+func (r *OrderHistoryRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	model := &entity.OrderHistory{}
+	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("*").
+		From("order_histories")
+	baseSelect = req.ApplyFilter(baseSelect, model)
+
+	countBuilder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("COUNT(*)").
+		FromSelect(baseSelect, "count_query")
+	countQuery, countArgs, err := countBuilder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	var total int64
+	if err := r.db.GetContext(ctx, &total, countQuery, countArgs...); err != nil {
+		return nil, err
+	}
+
+	selectBuilder := baseSelect.OrderBy(req.Sort.Field + " " + req.Sort.Direction).
+		Limit(uint64(req.Paginate.Limit)).
+		Offset(uint64(req.Paginate.Offset))
+	selectQuery, selectArgs, err := selectBuilder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	items := []entity.OrderHistory{}
+	if err := r.db.SelectContext(ctx, &items, selectQuery, selectArgs...); err != nil {
+		return nil, err
+	}
+
+	return apiutil.NewPaginationResp(req.Paginate.Page, req.Paginate.Limit, total, items), nil
 }
 
 func (r *OrderHistoryRepository) GetByStatus(ctx context.Context, statuses []string) ([]entity.OrderHistory, error) {
