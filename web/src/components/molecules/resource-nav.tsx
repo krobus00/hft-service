@@ -4,6 +4,7 @@ import {
   BellRing,
   CandlestickChart,
   Database,
+  History,
   KeyRound,
   LayoutList,
   Lock,
@@ -93,6 +94,7 @@ export function ResourceNav({
 const resourceIcon: Partial<Record<ResourceKey, typeof Database>> = {
   orders: Activity,
   marketKlines: CandlestickChart,
+  marketBackfills: History,
   symbolMappings: SlidersHorizontal,
   klineSubscriptions: BellRing,
   strategyConfigs: BarChart3,

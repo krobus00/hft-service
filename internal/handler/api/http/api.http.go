@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	apiutil "github.com/krobus00/hft-service/internal/api"
 	"github.com/krobus00/hft-service/internal/config"
@@ -20,13 +22,14 @@ type contextKey string
 const claimsContextKey contextKey = "claims"
 
 type Handler struct {
-	authService *apiservice.AuthService
-	dataService *apiservice.DataService
-	authConfig  config.DashboardAuthConfig
+	authService     *apiservice.AuthService
+	dataService     *apiservice.DataService
+	backfillService *apiservice.BackfillService
+	authConfig      config.DashboardAuthConfig
 }
 
-func NewAPIHTTPHandler(authService *apiservice.AuthService, dataService *apiservice.DataService, authConfig config.DashboardAuthConfig) *Handler {
-	return &Handler{authService: authService, dataService: dataService, authConfig: authConfig}
+func NewAPIHTTPHandler(authService *apiservice.AuthService, dataService *apiservice.DataService, backfillService *apiservice.BackfillService, authConfig config.DashboardAuthConfig) *Handler {
+	return &Handler{authService: authService, dataService: dataService, backfillService: backfillService, authConfig: authConfig}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -42,6 +45,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("/api/v1/orders", h.withPermission(constant.PermissionOrderRead, h.Orders))
 	mux.HandleFunc("/api/v1/orders/", h.withPermission(constant.PermissionOrderRead, h.OrderByID))
+	mux.HandleFunc("/api/v1/market/backfills", h.withPermission(constant.PermissionMarketRead, h.MarketBackfills))
+	mux.HandleFunc("/api/v1/market/backfills/", h.withPermission(constant.PermissionMarketRead, h.MarketBackfillByID))
 	mux.HandleFunc("/api/v1/market/klines", h.withPermission(constant.PermissionMarketRead, h.MarketKlines))
 	mux.HandleFunc("/api/v1/market/klines/", h.withPermission(constant.PermissionMarketRead, h.MarketKlineByID))
 	mux.HandleFunc("/api/v1/market/symbol-mappings", h.withPermission(constant.PermissionMarketRead, h.SymbolMappings))
@@ -80,6 +85,15 @@ type refreshRequest struct {
 type profileRequest struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
+}
+
+type marketBackfillRequest struct {
+	Exchange   string `json:"exchange"`
+	MarketType string `json:"market_type"`
+	Symbol     string `json:"symbol"`
+	Interval   string `json:"interval"`
+	StartTime  string `json:"start_time"`
+	EndTime    string `json:"end_time"`
 }
 
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +309,53 @@ func (h *Handler) MarketKlineByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
+}
+
+func (h *Handler) MarketBackfills(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !requirePermission(w, r, constant.PermissionMarketConfigWrite) {
+		return
+	}
+	var body marketBackfillRequest
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	req, ok := parseMarketBackfillRequest(w, body)
+	if !ok {
+		return
+	}
+	job, err := h.backfillService.Start(req)
+	if err != nil {
+		apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, err.Error())
+		return
+	}
+	apiutil.WriteSuccess(w, job)
+}
+
+func (h *Handler) MarketBackfillByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/market/backfills/")
+	if !ok {
+		return
+	}
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	wait := parseWaitDuration(r)
+	var job *apiservice.BackfillJob
+	var found bool
+	if wait > 0 {
+		job, found = h.backfillService.Wait(r.Context(), id, wait)
+	} else {
+		job, found = h.backfillService.Get(id)
+	}
+	if !found {
+		apiutil.WriteError(w, http.StatusNotFound, constant.NotFoundStatusCode, "backfill job not found")
+		return
+	}
+	apiutil.WriteSuccess(w, job)
 }
 
 func (h *Handler) SymbolMappings(w http.ResponseWriter, r *http.Request) {
@@ -812,6 +873,42 @@ func parsePagination(w http.ResponseWriter, r *http.Request, model apiutil.Pagin
 		return nil, false
 	}
 	return &req, true
+}
+
+func parseMarketBackfillRequest(w http.ResponseWriter, body marketBackfillRequest) (apiservice.BackfillRequest, bool) {
+	startTime, err := time.Parse(time.RFC3339, strings.TrimSpace(body.StartTime))
+	if err != nil {
+		apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, "start_time must be RFC3339")
+		return apiservice.BackfillRequest{}, false
+	}
+	endTime, err := time.Parse(time.RFC3339, strings.TrimSpace(body.EndTime))
+	if err != nil {
+		apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, "end_time must be RFC3339")
+		return apiservice.BackfillRequest{}, false
+	}
+	return apiservice.BackfillRequest{
+		Exchange:   body.Exchange,
+		MarketType: body.MarketType,
+		Symbol:     body.Symbol,
+		Interval:   body.Interval,
+		StartTime:  startTime,
+		EndTime:    endTime,
+	}, true
+}
+
+func parseWaitDuration(r *http.Request) time.Duration {
+	raw := strings.TrimSpace(r.URL.Query().Get("wait"))
+	if raw == "" {
+		return 0
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	if seconds > 30 {
+		seconds = 30
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func pathID(w http.ResponseWriter, r *http.Request, prefix string) (string, bool) {

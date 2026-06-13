@@ -8,6 +8,27 @@ import type {
 } from "@/types/api";
 import type { AuthResult, AuthUser, Session } from "@/types/auth";
 
+export type BackfillRequest = {
+  exchange: string;
+  market_type: string;
+  symbol: string;
+  interval: string;
+  start_time: string;
+  end_time: string;
+};
+
+export type BackfillJob = {
+  id: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  request: BackfillRequest;
+  inserted_count: number;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  updated_at: string;
+};
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9804/api/v1";
 
@@ -282,6 +303,27 @@ export async function deleteResource(resource: ResourceConfig, id: string) {
 export async function getDashboardPagesMenu() {
   return withSession((session) =>
     apiRequest<DashboardPageConfig[]>("/dashboard/pages/menu", {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function startMarketBackfill(body: BackfillRequest) {
+  return withSession((session) =>
+    apiRequest<BackfillJob>("/market/backfills", {
+      method: "POST",
+      body: JSON.stringify(body),
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function getMarketBackfill(id: string, waitSeconds = 0) {
+  const wait = Math.max(0, Math.min(30, waitSeconds));
+  const path = wait > 0 ? `/market/backfills/${encodeURIComponent(id)}?wait=${wait}` : `/market/backfills/${encodeURIComponent(id)}`;
+  return withSession((session) =>
+    apiRequest<BackfillJob>(path, {
       method: "GET",
       accessToken: session.tokens.access_token,
     }),

@@ -75,7 +75,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"exchange":         exchanges,
 		"role":             roles,
 		"permission":       permissions,
-		"dashboard_page":   {"orders", "marketKlines", "symbolMappings", "klineSubscriptions", "strategyConfigs", "settings", "users", "roles", "permissions", "dashboardPages"},
+		"dashboard_page":   {"orders", "marketKlines", "marketBackfills", "symbolMappings", "klineSubscriptions", "strategyConfigs", "settings", "users", "roles", "permissions", "dashboardPages"},
 		"market_type":      {"spot", "futures"},
 		"position_side":    {"BOTH", "LONG", "SHORT"},
 		"order_side":       {"BUY", "SELL", "LONG", "SHORT"},

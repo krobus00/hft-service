@@ -5,6 +5,7 @@ import { Loader2, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { ResourceNav } from "@/components/molecules/resource-nav";
+import { BackfillPanel } from "@/components/organisms/backfill-panel";
 import { ResourcePanel } from "@/components/organisms/resource-panel";
 import { DashboardTemplate } from "@/components/templates/dashboard-template";
 import { Button } from "@/components/ui/button";
@@ -156,7 +157,11 @@ export function DashboardApp({ initialResourceKey = "orders" }: DashboardAppProp
     >
       <div className="grid gap-6">
         {activeResource ? (
-          <ResourcePanel key={activeResource.key} resource={activeResource} user={session.user} />
+          activeResource.key === "marketBackfills" ? (
+            <BackfillPanel key={activeResource.key} resource={activeResource} user={session.user} />
+          ) : (
+            <ResourcePanel key={activeResource.key} resource={activeResource} user={session.user} />
+          )
         ) : (
           <section className="flex min-h-80 flex-col items-center justify-center gap-3 rounded-md border bg-card p-8 text-center">
             <ShieldAlert className="h-8 w-8 text-muted-foreground" />

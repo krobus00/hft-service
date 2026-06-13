@@ -98,6 +98,8 @@ services:
   api:
     <<: *hft-service
     command: ["api"]
+    environment:
+      MARKET_DATA_GATEWAY_GRPC_ADDR: market-data-gateway:9802
     depends_on:
       redis:
         condition: service_healthy

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/krobus00/hft-service/internal/config"
 	apiHandler "github.com/krobus00/hft-service/internal/handler/api/http"
@@ -12,8 +14,11 @@ import (
 	"github.com/krobus00/hft-service/internal/repository"
 	apiservice "github.com/krobus00/hft-service/internal/service/api"
 	"github.com/krobus00/hft-service/internal/util"
+	pb "github.com/krobus00/hft-service/pb/market_data"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func StartAPI(cmd *cobra.Command, args []string) {
@@ -43,7 +48,12 @@ func StartAPI(cmd *cobra.Command, args []string) {
 	authService := apiservice.NewAuthService(authRepo, config.Env.DashboardAuth, authCache)
 	dataService := apiservice.NewDataService(apiDB, marketDataDB, orderEngineDB)
 
-	apiHTTPHandler := apiHandler.NewAPIHTTPHandler(authService, dataService, config.Env.DashboardAuth)
+	marketDataGRPCAddr := marketDataGatewayGRPCAddress()
+	marketDataGRPCConn, err := grpc.NewClient(marketDataGRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	util.ContinueOrFatal(err)
+	backfillService := apiservice.NewBackfillService(pb.NewMarketDataServiceClient(marketDataGRPCConn))
+
+	apiHTTPHandler := apiHandler.NewAPIHTTPHandler(authService, dataService, backfillService, config.Env.DashboardAuth)
 	httpMux := http.NewServeMux()
 	apiHTTPHandler.Register(httpMux)
 
@@ -80,10 +90,27 @@ func StartAPI(cmd *cobra.Command, args []string) {
 			}
 			return redisClient.Close()
 		},
+		"market data grpc": func(ctx context.Context) error {
+			return marketDataGRPCConn.Close()
+		},
 		"http": func(ctx context.Context) error {
 			return httpServer.Shutdown(ctx)
 		},
 	})
 
 	<-wait
+}
+
+func marketDataGatewayGRPCAddress() string {
+	if raw := strings.TrimSpace(os.Getenv("MARKET_DATA_GATEWAY_GRPC_ADDR")); raw != "" {
+		return raw
+	}
+	if raw := strings.TrimSpace(config.Env.Port["market_data_gateway_grpc_address"]); raw != "" {
+		return raw
+	}
+	port := strings.TrimSpace(config.Env.Port["market_data_gateway_grpc"])
+	if port == "" {
+		port = "9802"
+	}
+	return "localhost:" + port
 }

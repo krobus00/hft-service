@@ -19,6 +19,8 @@ dashboard_auth:
   refresh_token_ttl: 168h
 port:
   market_data_gateway_grpc: 9802
+  # Optional. Use market-data-gateway:9802 in Docker Compose or localhost:9802 for local processes.
+  market_data_gateway_grpc_address: localhost:9802
   order_engine_gateway_grpc: 9800
   order_engine_gateway_http: 9801
   api_http: 9804

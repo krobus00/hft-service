@@ -30,6 +30,7 @@ export type SortDirection = "asc" | "desc";
 export type ResourceKey =
   | "orders"
   | "marketKlines"
+  | "marketBackfills"
   | "symbolMappings"
   | "klineSubscriptions"
   | "strategyConfigs"
