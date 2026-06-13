@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { getFormEnums } from "@/lib/api-client";
 import type { ResourceConfig } from "@/types/api";
 
-type FieldValue = string | number | boolean | Record<string, string>;
+type FieldValue = string | number | boolean | string[] | Record<string, string>;
 
 type ResourceFormModalProps = {
   title: string;
@@ -68,7 +68,7 @@ export function ResourceFormModal({
     setError("");
     setIsSubmitting(true);
     try {
-      await onSubmit(values);
+      await onSubmit(normalizeSubmitValues(resource, values));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Request failed.");
     } finally {
@@ -95,6 +95,7 @@ export function ResourceFormModal({
                   sampleValue,
                   value,
                   options: enumOptions(resource, enums, field),
+                  multiple: Boolean(resource.multiEnumFields?.includes(field)),
                   disabled: disabled || isSubmitting,
                   onChange: (nextValue) => updateField(field, nextValue),
                 })}
@@ -126,11 +127,23 @@ function renderField(props: {
   sampleValue: unknown;
   value: FieldValue | undefined;
   options: string[];
+  multiple: boolean;
   disabled?: boolean;
   onChange: (value: FieldValue) => void;
 }) {
-  const { field, sampleValue, value, options, disabled, onChange } = props;
+  const { field, sampleValue, value, options, multiple, disabled, onChange } = props;
   if (options.length > 0) {
+    if (multiple) {
+      return (
+        <MultiEnumField
+          value={normalizeStringArray(value)}
+          options={options}
+          disabled={disabled}
+          onChange={onChange}
+        />
+      );
+    }
+
     return (
       <select
         id={field}
@@ -285,7 +298,7 @@ function ObjectField({
   return (
     <div className="grid gap-2 rounded-md border p-2 md:col-span-2">
       {entries.map(([key, nestedValue], index) => (
-        <div key={`${key}-${index}`} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+        <div key={index} className="grid grid-cols-[1fr_1fr_auto] gap-2">
           <Input
             value={key}
             disabled={disabled}
@@ -317,6 +330,47 @@ function ObjectField({
   );
 }
 
+function MultiEnumField({
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  value: string[];
+  options: string[];
+  disabled?: boolean;
+  onChange: (value: FieldValue) => void;
+}) {
+  function toggle(option: string, checked: boolean) {
+    if (checked) {
+      onChange(Array.from(new Set([...value, option])));
+      return;
+    }
+    onChange(value.filter((item) => item !== option));
+  }
+
+  return (
+    <div className="max-h-52 overflow-auto rounded-md border bg-background p-2">
+      <div className="grid gap-1">
+        {options.map((option) => (
+          <label
+            key={option}
+            className="flex min-h-9 items-center gap-2 rounded-md px-2 text-sm hover:bg-muted"
+          >
+            <input
+              type="checkbox"
+              checked={value.includes(option)}
+              disabled={disabled}
+              onChange={(event) => toggle(option, event.target.checked)}
+            />
+            <span className="break-all">{option}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function buildInitialValues(
   fields: string[],
   sample: Record<string, unknown>,
@@ -329,6 +383,10 @@ function buildInitialValues(
       result[field] = normalizeObjectField(rawValue);
       return result;
     }
+    if (Array.isArray(rawValue)) {
+      result[field] = normalizeStringArray(rawValue);
+      return result;
+    }
     if (typeof sampleValue === "boolean") {
       result[field] = Boolean(rawValue);
       return result;
@@ -337,9 +395,71 @@ function buildInitialValues(
       result[field] = Number(rawValue);
       return result;
     }
-    result[field] = String(rawValue ?? "");
+    result[field] = stripOuterQuotes(String(rawValue ?? ""));
     return result;
   }, {});
+}
+
+function normalizeStringArray(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function normalizeSubmitValues(
+  resource: ResourceConfig,
+  values: Record<string, FieldValue>,
+) {
+  return Object.entries(values).reduce<Record<string, unknown>>((result, [field, value]) => {
+    const sampleValue = resource.sampleBody?.[field];
+    if (field === "key" && typeof value === "string") {
+      result[field] = stripOuterQuotes(value);
+      return result;
+    }
+    if (resource.key === "settings" && field === "value" && typeof value === "string") {
+      result[field] = parseSettingValue(value);
+      return result;
+    }
+    if (isPlainObject(sampleValue)) {
+      result[field] = isPlainObject(value) ? value : normalizeObjectField(value);
+      return result;
+    }
+    result[field] = value;
+    return result;
+  }, {});
+}
+
+function parseSettingValue(value: string) {
+  const raw = stripOuterQuotes(value).trim();
+  if (raw === "true") {
+    return true;
+  }
+  if (raw === "false") {
+    return false;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(raw)) {
+    return Number(raw);
+  }
+  return raw;
+}
+
+function stripOuterQuotes(value: string) {
+  const raw = value.trim();
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith("'") && raw.endsWith("'")) ||
+    (raw.startsWith("`") && raw.endsWith("`"))
+  ) {
+    return raw.slice(1, -1);
+  }
+  return raw;
 }
 
 function normalizeObjectField(value: unknown) {

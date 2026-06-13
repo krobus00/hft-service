@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -89,32 +88,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 }
 
 func (s *DataService) listExchangeEnums(ctx context.Context) ([]string, error) {
-	sets := map[string]struct{}{}
-	readers := []func(context.Context) ([]string, error){
-		s.orderHistoryRepo.ListExchanges,
-		s.marketKlineRepo.ListExchanges,
-		s.symbolMappingRepo.ListExchanges,
-		s.strategyConfigRepo.ListExchanges,
-	}
-	for _, read := range readers {
-		items, err := read(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				sets[item] = struct{}{}
-			}
-		}
-	}
-
-	result := make([]string, 0, len(sets))
-	for item := range sets {
-		result = append(result, item)
-	}
-	sort.Strings(result)
-	return result, nil
+	return []string{"tokocrypto", "binance"}, nil
 }
 
 func (s *DataService) ListOrders(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {

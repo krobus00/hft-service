@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -48,8 +49,45 @@ func normalizeConfigValue(value any) any {
 		b, _ := json.Marshal(v)
 		return string(b)
 	case string:
-		return strings.TrimSpace(v)
+		raw := strings.TrimSpace(v)
+		var parsed any
+		if json.Unmarshal([]byte(raw), &parsed) == nil {
+			return raw
+		}
+		b, _ := json.Marshal(raw)
+		return string(b)
 	default:
 		return value
+	}
+}
+
+func normalizeSettingKey(value any) string {
+	return stripOuterQuotes(valueString(value))
+}
+
+func valueString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		return strings.TrimSpace(strings.ReplaceAll(strings.Trim(fmt.Sprint(v), `"`), `\"`, `"`))
+	}
+}
+
+func stripOuterQuotes(value string) string {
+	raw := strings.TrimSpace(value)
+	for {
+		if len(raw) < 2 {
+			return raw
+		}
+		first := raw[0]
+		last := raw[len(raw)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '`' && last == '`') {
+			raw = strings.TrimSpace(raw[1 : len(raw)-1])
+			continue
+		}
+		return raw
 	}
 }

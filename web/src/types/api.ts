@@ -54,6 +54,7 @@ export type ResourceConfig = {
   key: ResourceKey;
   label: string;
   description: string;
+  shortDescription?: string;
   path: string;
   idField: string;
   mode: ResourceMode;
@@ -62,6 +63,7 @@ export type ResourceConfig = {
   columns: string[];
   searchableFields: string[];
   enumFields?: Record<string, string>;
+  multiEnumFields?: string[];
   defaultSort: {
     field: string;
     direction: SortDirection;

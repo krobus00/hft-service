@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { PermissionChip } from "@/components/atoms/permission-chip";
 import { ResourceDetailModal } from "@/components/molecules/resource-detail-modal";
 import { ResourceFormModal } from "@/components/molecules/resource-form-modal";
 import { ResourceTable } from "@/components/molecules/resource-table";
@@ -14,7 +13,7 @@ import {
   listResource,
   updateResource,
 } from "@/lib/api-client";
-import { canWriteResource, hasPermission } from "@/lib/rbac";
+import { canWriteResource } from "@/lib/rbac";
 import type { ListQuery, PaginationMeta, ResourceConfig } from "@/types/api";
 import type { AuthUser } from "@/types/auth";
 
@@ -146,25 +145,6 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
 
   return (
     <section className="grid gap-5">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold tracking-normal">{resource.label}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{resource.description}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <PermissionChip
-            permission={resource.readPermission}
-            allowed={hasPermission(user, resource.readPermission)}
-          />
-          {resource.writePermission ? (
-            <PermissionChip
-              permission={resource.writePermission}
-              allowed={hasPermission(user, resource.writePermission)}
-            />
-          ) : null}
-        </div>
-      </div>
-
       <ResourceToolbar
         keyword={query.keyword}
         canWrite={canWrite}
