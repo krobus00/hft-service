@@ -2,6 +2,7 @@ import { Plus, RefreshCw, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 
 type ResourceToolbarProps = {
   keyword: string;
@@ -48,10 +49,9 @@ export function ResourceToolbar({
             const options = enumKey ? enums[enumKey] ?? [] : [];
             if (options.length > 0) {
               return (
-                <select
+                <Select
                   key={field}
                   value={filters[field] ?? ""}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   onChange={(event) => onFilterChange(field, event.target.value)}
                   aria-label={humanize(field)}
                 >
@@ -61,7 +61,7 @@ export function ResourceToolbar({
                       {option}
                     </option>
                   ))}
-                </select>
+                </Select>
               );
             }
             return (

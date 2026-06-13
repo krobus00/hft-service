@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import {
   getFormEnums,
   getMarketBackfill,
@@ -245,8 +246,7 @@ function SelectField({
   return (
     <div className="grid gap-2">
       <Label>{label}</Label>
-      <select
-        className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+      <Select
         value={value}
         onChange={(event) => onChange(event.target.value)}
       >
@@ -255,7 +255,7 @@ function SelectField({
             {option}
           </option>
         ))}
-      </select>
+      </Select>
     </div>
   );
 }
