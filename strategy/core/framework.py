@@ -510,23 +510,26 @@ class StrategyRunner:
         token = token.strip("_")
         return (token or fallback).upper()
 
-    def _short_token(self, value: str, max_len: int, fallback: str = "NA") -> str:
-        token = self._safe_token(value, fallback)
-        if len(token) <= max_len:
-            return token
-        checksum = f"{zlib.crc32(token.encode('utf-8')) & 0xFFFFFFFF:08X}"
-        prefix_len = max(1, max_len - len(checksum) - 1)
-        return f"{token[:prefix_len]}_{checksum}"
-
     def _resolve_queue_name(self, exchange: str, market_type: str, symbol: str, interval: str) -> str:
         strategy_key = str(self.runtime.strategy_id or self.strategy.config.name or "STRATEGY").strip()
+        full_key = "|".join(
+            (
+                self._safe_token(exchange),
+                self._safe_token(market_type),
+                self._safe_token(strategy_key),
+                self._safe_token(symbol),
+                self._safe_token(interval),
+            )
+        )
+        checksum = f"{zlib.crc32(full_key.encode('utf-8')) & 0xFFFFFFFF:08X}"[:4]
+        market_token = self._safe_token(market_type)[:1] or "M"
         return (
             f"KS_"
-            f"{self._short_token(exchange, 12)}_"
-            f"{self._short_token(market_type, 8)}_"
-            f"{self._short_token(strategy_key, 24)}_"
-            f"{self._short_token(symbol, 18)}_"
-            f"{self._short_token(interval, 8)}"
+            f"{self._safe_token(exchange)[:3]}_"
+            f"{market_token}_"
+            f"{self._safe_token(symbol)[:8]}_"
+            f"{self._safe_token(interval)[:4]}_"
+            f"{checksum}"
         )
 
     def _resolve_subject_for_exchange(self, exchange: str) -> str:
