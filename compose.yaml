@@ -192,7 +192,7 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "${STRATEGY_KROBOT03_PORT:-19014}:19014"
+      - "${STRATEGY_KROBOT03_PORT:-19013}:19013"
     profiles:
       - strategy
 
@@ -209,7 +209,7 @@ services:
       migrate-order-engine:
         condition: service_completed_successfully
     ports:
-      - "${STRATEGY_AI_PORT:-19013}:19013"
+      - "${STRATEGY_AI_PORT:-19015}:19015"
     profiles:
       - strategy
 
@@ -225,6 +225,8 @@ services:
         condition: service_completed_successfully
       migrate-order-engine:
         condition: service_completed_successfully
+    ports:
+      - "${STRATEGY_SUPERTREND_PORT:-19016}:19016"
     profiles:
       - strategy
 

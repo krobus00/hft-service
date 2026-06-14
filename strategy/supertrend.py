@@ -1,11 +1,11 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from core.common import load_full_config, runtime_options
 from core.framework import StrategyBase, StrategyRunner
 from core.indicators import ATR
-from core.models import Candle, RuntimeConfig, StrategyConfig
+from core.models import Candle, RuntimeConfig, Signal, StrategyConfig
 
 try:
     import uvloop
@@ -114,15 +114,34 @@ class SupertrendStrategy(StrategyBase):
         state["trend"] = trend
         return trend
 
+    def _exit_short(self, state: dict, candle: Candle, metadata: dict) -> Signal:
+        exit_metadata = dict(metadata)
+        exit_metadata["trade_condition"] = "EXIT"
+        exit_metadata["order_reason"] = "EXIT_SHORT_SUPERTREND"
+        exit_metadata["exit_type"] = "SIGNAL"
+        exit_metadata["position_side"] = "SHORT"
+        if state.get("entry_price") is not None:
+            exit_metadata["entry_price"] = float(state["entry_price"])
+        exit_metadata["exit_price"] = float(candle.close)
+        return self.buy(candle.close, "EXIT_SHORT_SUPERTREND", exit_metadata)
+
+    def _exit_long(self, state: dict, candle: Candle, metadata: dict) -> Signal:
+        exit_metadata = dict(metadata)
+        exit_metadata["trade_condition"] = "EXIT"
+        exit_metadata["order_reason"] = "EXIT_LONG_SUPERTREND"
+        exit_metadata["exit_type"] = "SIGNAL"
+        exit_metadata["position_side"] = "LONG"
+        if state.get("entry_price") is not None:
+            exit_metadata["entry_price"] = float(state["entry_price"])
+        exit_metadata["exit_price"] = float(candle.close)
+        return self.sell(candle.close, "EXIT_LONG_SUPERTREND", exit_metadata)
+
     def _enter_long(self, state: dict, candle: Candle, metadata: dict):
         previous_side = str(state.get("position_side") or "").strip().upper()
         state["position_side"] = "LONG"
         state["entry_price"] = candle.close
 
-        if previous_side == "SHORT":
-            reason = "REVERSE_TO_LONG_SUPERTREND"
-        else:
-            reason = "ENTER_LONG_SUPERTREND"
+        reason = "ENTER_LONG_SUPERTREND"
 
         metadata["trade_condition"] = "ENTRY"
         metadata["order_reason"] = reason
@@ -135,10 +154,7 @@ class SupertrendStrategy(StrategyBase):
         state["position_side"] = "SHORT"
         state["entry_price"] = candle.close
 
-        if previous_side == "LONG":
-            reason = "REVERSE_TO_SHORT_SUPERTREND"
-        else:
-            reason = "ENTER_SHORT_SUPERTREND"
+        reason = "ENTER_SHORT_SUPERTREND"
 
         metadata["trade_condition"] = "ENTRY"
         metadata["order_reason"] = reason
@@ -186,6 +202,10 @@ class SupertrendStrategy(StrategyBase):
                 current_side,
                 candle.close,
             )
+            if current_side == "SHORT" and has_tracked_entry:
+                exit_signal = self._exit_short(state, candle, metadata)
+                entry_signal = self._enter_long(state, candle, dict(metadata))
+                return [exit_signal, entry_signal]
             return self._enter_long(state, candle, metadata)
 
         if trend < 0 and (state["position_side"] != "SHORT" or not has_tracked_entry):
@@ -196,6 +216,10 @@ class SupertrendStrategy(StrategyBase):
                 current_side,
                 candle.close,
             )
+            if current_side == "LONG" and has_tracked_entry:
+                exit_signal = self._exit_long(state, candle, metadata)
+                entry_signal = self._enter_short(state, candle, dict(metadata))
+                return [exit_signal, entry_signal]
             return self._enter_short(state, candle, metadata)
 
         LOGGER.debug(

@@ -8,7 +8,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 import asyncpg
 import orjson
@@ -261,8 +261,18 @@ class StrategyBase(ABC):
         return None
 
     @abstractmethod
-    def on_closed_candle(self, candle: Candle, is_warmup: bool = False) -> Optional[Signal]:
+    def on_closed_candle(self, candle: Candle, is_warmup: bool = False) -> Optional[Signal] | Sequence[Signal]:
         raise NotImplementedError
+
+    @staticmethod
+    def normalize_signals(result: Optional[Signal] | Sequence[Signal]) -> List[Signal]:
+        if result is None:
+            return []
+        if isinstance(result, Signal):
+            return [result]
+        if isinstance(result, (list, tuple)):
+            return [signal for signal in result if isinstance(signal, Signal)]
+        return []
 
 
 class StrategyRunner:
@@ -964,6 +974,21 @@ class StrategyRunner:
                             metrics.messages_acked += 1
                             return
 
+                        LOGGER.info(
+                            "[%s] nats_market_kline_received subject=%s pair=%s exchange=%s market_type=%s "
+                            "symbol=%s interval=%s close_time=%s is_closed=%s close=%s",
+                            self.strategy.config.name,
+                            getattr(msg, "subject", ""),
+                            pair_key,
+                            expected_exchange,
+                            effective_market_type,
+                            incoming_symbol,
+                            incoming_interval,
+                            data.get("CloseTime", ""),
+                            is_closed,
+                            data.get("ClosePrice", ""),
+                        )
+
                         candle = Candle(
                             close_time_ms=parse_iso_to_ms(data["CloseTime"]),
                             close=float(data["ClosePrice"]),
@@ -995,88 +1020,98 @@ class StrategyRunner:
                             )
                         )
                         if is_closed:
-                            signal = pair_strategy.on_closed_candle(candle, is_warmup=False)
+                            signal_result = pair_strategy.on_closed_candle(candle, is_warmup=False)
                         elif intrabar_risk_exit_enabled:
-                            signal = pair_strategy.on_price_update(candle)
+                            signal_result = pair_strategy.on_price_update(candle)
                         else:
-                            signal = None
+                            signal_result = None
 
-                        if signal is not None:
-                            metrics.signals_emitted += 1
+                        signals = StrategyBase.normalize_signals(signal_result)
+                        if signals:
+                            metrics.signals_emitted += len(signals)
                             try:
-                                trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
-                                signal_metadata = dict(signal.metadata or {})
+                                published_summaries = []
+                                for signal in signals:
+                                    trade_condition = self.infer_trade_condition(signal.reason, signal.metadata)
+                                    signal_metadata = dict(signal.metadata or {})
 
-                                if trade_condition == "ENTRY":
-                                    if self._metadata_float(signal_metadata, "entry_price") is None:
-                                        signal_metadata["entry_price"] = float(signal.price)
+                                    if trade_condition == "ENTRY":
+                                        if self._metadata_float(signal_metadata, "entry_price") is None:
+                                            signal_metadata["entry_price"] = float(signal.price)
 
-                                    entry_order_id = str(signal_metadata.get("entry_order_id", "")).strip()
-                                    if not entry_order_id:
-                                        entry_order_id = gen_id()
-                                        signal_metadata["entry_order_id"] = entry_order_id
-                                    entry_order_id_store[state_key] = entry_order_id
-                                elif self._is_exit_trade_condition(trade_condition):
-                                    if self._metadata_float(signal_metadata, "entry_price") is None:
-                                        remembered_entry = entry_price_store.get(state_key)
-                                        if remembered_entry is not None:
-                                            signal_metadata["entry_price"] = float(remembered_entry)
+                                        entry_order_id = str(signal_metadata.get("entry_order_id", "")).strip()
+                                        if not entry_order_id:
+                                            entry_order_id = gen_id()
+                                            signal_metadata["entry_order_id"] = entry_order_id
+                                        entry_order_id_store[state_key] = entry_order_id
+                                    elif self._is_exit_trade_condition(trade_condition):
+                                        if self._metadata_float(signal_metadata, "entry_price") is None:
+                                            remembered_entry = entry_price_store.get(state_key)
+                                            if remembered_entry is not None:
+                                                signal_metadata["entry_price"] = float(remembered_entry)
 
-                                    exit_entry_order_id = str(signal_metadata.get("entry_order_id", "")).strip()
-                                    if not exit_entry_order_id:
-                                        remembered_entry_order_id = entry_order_id_store.get(state_key)
-                                        if remembered_entry_order_id:
-                                            exit_entry_order_id = remembered_entry_order_id
-                                            signal_metadata["entry_order_id"] = remembered_entry_order_id
+                                        exit_entry_order_id = str(signal_metadata.get("entry_order_id", "")).strip()
+                                        if not exit_entry_order_id:
+                                            remembered_entry_order_id = entry_order_id_store.get(state_key)
+                                            if remembered_entry_order_id:
+                                                exit_entry_order_id = remembered_entry_order_id
+                                                signal_metadata["entry_order_id"] = remembered_entry_order_id
 
-                                    if self._metadata_float(signal_metadata, "exit_price") is None:
-                                        signal_metadata["exit_price"] = float(signal.price)
+                                        if self._metadata_float(signal_metadata, "exit_price") is None:
+                                            signal_metadata["exit_price"] = float(signal.price)
 
-                                signal_metadata["pair_key"] = pair_key
+                                    signal_metadata["pair_key"] = pair_key
 
-                                out = self.build_order_payload(
-                                    signal.side,
-                                    signal.price,
-                                    signal.reason,
-                                    exchange=expected_exchange,
-                                    market_type=effective_market_type,
-                                    symbol=candle.symbol,
-                                    interval=candle.interval,
-                                    metadata=signal_metadata,
-                                    order_config=target.get("order_config"),
-                                )
-                                out_bytes = orjson.dumps(out)
-                                LOGGER.info(
-                                    "[%s] publish_order subject=%s pair=%s side=%s reason=%s",
-                                    self.strategy.config.name,
-                                    DEFAULT_ORDER_SUBJECT,
-                                    pair_key,
-                                    signal.side,
-                                    signal.reason,
-                                )
-                                await js.publish(DEFAULT_ORDER_SUBJECT, out_bytes)
-                                metrics.orders_published += 1
+                                    out = self.build_order_payload(
+                                        signal.side,
+                                        signal.price,
+                                        signal.reason,
+                                        exchange=expected_exchange,
+                                        market_type=effective_market_type,
+                                        symbol=candle.symbol,
+                                        interval=candle.interval,
+                                        metadata=signal_metadata,
+                                        order_config=target.get("order_config"),
+                                    )
+                                    out_bytes = orjson.dumps(out)
+                                    LOGGER.info(
+                                        "[%s] publish_order subject=%s pair=%s side=%s reason=%s entry_order_id=%s",
+                                        self.strategy.config.name,
+                                        DEFAULT_ORDER_SUBJECT,
+                                        pair_key,
+                                        signal.side,
+                                        signal.reason,
+                                        out["data"].get("entry_order_id", ""),
+                                    )
+                                    await js.publish(DEFAULT_ORDER_SUBJECT, out_bytes)
+                                    metrics.orders_published += 1
 
-                                if trade_condition == "ENTRY":
-                                    persisted_entry = self._metadata_float(signal_metadata, "entry_price")
-                                    if persisted_entry is not None:
-                                        entry_price_store[state_key] = float(persisted_entry)
-                                elif self._is_exit_trade_condition(trade_condition):
-                                    entry_price_store.pop(state_key, None)
-                                    entry_order_id_store.pop(state_key, None)
+                                    if trade_condition == "ENTRY":
+                                        persisted_entry = self._metadata_float(signal_metadata, "entry_price")
+                                        if persisted_entry is not None:
+                                            entry_price_store[state_key] = float(persisted_entry)
+                                    elif self._is_exit_trade_condition(trade_condition):
+                                        entry_price_store.pop(state_key, None)
+                                        entry_order_id_store.pop(state_key, None)
+
+                                    published_summaries.append(
+                                        (signal.reason, trade_condition, signal.side, signal.price)
+                                    )
                             except Exception:
                                 pair_strategy.restore_state(snapshot)
                                 raise
-                            LOGGER.info(
-                                "[%s] signal pair=%s reason=%s trade_condition=%s side=%s symbol=%s close=%.6f",
-                                self.strategy.config.name,
-                                pair_key,
-                                signal.reason,
-                                trade_condition,
-                                signal.side,
-                                candle.symbol,
-                                signal.price,
-                            )
+
+                            for reason, trade_condition, side, price in published_summaries:
+                                LOGGER.info(
+                                    "[%s] signal pair=%s reason=%s trade_condition=%s side=%s symbol=%s close=%.6f",
+                                    self.strategy.config.name,
+                                    pair_key,
+                                    reason,
+                                    trade_condition,
+                                    side,
+                                    candle.symbol,
+                                    price,
+                                )
 
                         latest_state = pair_strategy.snapshot_state()
                         state_store[state_key] = latest_state

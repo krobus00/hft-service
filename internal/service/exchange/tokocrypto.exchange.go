@@ -212,7 +212,20 @@ func (e *TokocryptoExchange) HandleKlineData(ctx context.Context, message []byte
 		UpdatedAt:        now,
 	}
 
-	err = util.PublishEvent(e.js, constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), data.Symbol, data.Interval), entity.MarketKlineEvent{
+	subject := constant.GetKlineStreamSubject(string(entity.ExchangeTokoCrypto), data.Symbol, data.Interval)
+	logrus.WithFields(logrus.Fields{
+		"subject":     subject,
+		"exchange":    data.Exchange,
+		"market_type": data.MarketType,
+		"symbol":      data.Symbol,
+		"interval":    data.Interval,
+		"open_time":   data.OpenTime.UTC().Format(time.RFC3339),
+		"close_time":  data.CloseTime.UTC().Format(time.RFC3339),
+		"is_closed":   data.IsClosed,
+		"close_price": data.ClosePrice.String(),
+	}).Info("publishing incoming market kline data to nats")
+
+	err = util.PublishEvent(e.js, subject, entity.MarketKlineEvent{
 		Data: data,
 	})
 	if err != nil {
