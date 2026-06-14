@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 import asyncpg
 import orjson
 from nats.aio.client import Client as NATS
+from nats.js.api import DeliverPolicy
 
 from .common import fmt_num, gen_id, now_ms, parse_iso_to_ms, pct_to_frac
 from .models import Candle, RuntimeConfig, Signal, StrategyConfig
@@ -25,6 +26,7 @@ except Exception:  # pragma: no cover - redis is optional at runtime.
 
 
 LOGGER = logging.getLogger("strategy.framework")
+KLINE_STREAM_NAME = "KLINE"
 DEFAULT_ORDER_SUBJECT = "order_engine.place_order"
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -38,6 +40,7 @@ class StrategyMetrics:
     started_at_ms: int = field(default_factory=now_ms)
     last_reconcile_ms: int = 0
     messages_seen: int = 0
+    messages_enqueued: int = 0
     messages_acked: int = 0
     messages_failed: int = 0
     signals_emitted: int = 0
@@ -535,6 +538,12 @@ class StrategyRunner:
     def _resolve_subject_for_exchange(self, exchange: str) -> str:
         normalized_exchange = str(exchange or "").strip().upper()
         return f"KLINE.{normalized_exchange}.>"
+
+    def _resolve_subject_for_pair(self, exchange: str, symbol: str, interval: str) -> str:
+        normalized_exchange = str(exchange or "").strip().upper()
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_interval = str(interval or "").strip().upper()
+        return f"KLINE.{normalized_exchange}.{normalized_symbol}.{normalized_interval}"
 
     @staticmethod
     def _order_config_key(exchange: str, symbol: str, market_type: str, interval: str) -> str:
@@ -1231,6 +1240,14 @@ class StrategyRunner:
                     return
                 try:
                     pair_ctx["message_queue"].put_nowait(msg)
+                    metrics.messages_enqueued += 1
+                    LOGGER.debug(
+                        "[%s] nats_market_kline_enqueued subject=%s pair=%s pending=%s",
+                        self.strategy.config.name,
+                        getattr(msg, "subject", ""),
+                        pair_key,
+                        pair_ctx["message_queue"].qsize(),
+                    )
                 except asyncio.QueueFull:
                     metrics.messages_failed += 1
                     metrics.last_error = f"message queue full pair={pair_key}"
@@ -1283,6 +1300,10 @@ class StrategyRunner:
                         await sub.unsubscribe()
                     except Exception as exc:
                         LOGGER.warning("unsubscribe error pair=%s error=%s", key, exc)
+                queue_name = str(pair_ctx.get("queue", "")).strip()
+                if queue_name:
+                    with contextlib.suppress(Exception):
+                        await js.delete_consumer(KLINE_STREAM_NAME, queue_name)
                 worker = pair_ctx.get("worker")
                 if worker is not None:
                     worker.cancel()
@@ -1356,7 +1377,7 @@ class StrategyRunner:
                     metrics.last_error = f"warmup skipped for pair={key}: {exc}"
                     LOGGER.warning("warmup skipped pair=%s error=%s", key, exc)
 
-                subject = self._resolve_subject_for_exchange(target["exchange"])
+                subject = self._resolve_subject_for_pair(target["exchange"], target["symbol"], target["interval"])
                 queue_name = self._resolve_queue_name(
                     target["exchange"],
                     target["market_type"],
@@ -1376,18 +1397,44 @@ class StrategyRunner:
                     "worker": None,
                 }
                 try:
-                    sub = await js.subscribe(
-                        subject,
-                        manual_ack=True,
-                        queue=queue_name,
-                        cb=build_handler(key),
-                    )
+                    try:
+                        sub = await js.subscribe(
+                            subject,
+                            manual_ack=True,
+                            queue=queue_name,
+                            durable=queue_name,
+                            stream=KLINE_STREAM_NAME,
+                            deliver_policy=DeliverPolicy.NEW,
+                            cb=build_handler(key),
+                        )
+                    except Exception as subscribe_exc:
+                        LOGGER.info(
+                            "recreating kline consumer pair=%s stream=%s durable=%s after subscribe error=%s:%s",
+                            key,
+                            KLINE_STREAM_NAME,
+                            queue_name,
+                            type(subscribe_exc).__name__,
+                            subscribe_exc,
+                        )
+                        with contextlib.suppress(Exception):
+                            await js.delete_consumer(KLINE_STREAM_NAME, queue_name)
+                        sub = await js.subscribe(
+                            subject,
+                            manual_ack=True,
+                            queue=queue_name,
+                            durable=queue_name,
+                            stream=KLINE_STREAM_NAME,
+                            deliver_policy=DeliverPolicy.NEW,
+                            cb=build_handler(key),
+                        )
                 except Exception as exc:
                     metrics.last_error = f"subscribe error pair={key}: {exc}"
                     LOGGER.warning(
-                        "subscribe error pair=%s subject=%s queue=%s error=%s:%s; retrying on next reconcile",
+                        "subscribe error pair=%s subject=%s stream=%s queue=%s durable=%s error=%s:%s; retrying on next reconcile",
                         key,
                         subject,
+                        KLINE_STREAM_NAME,
+                        queue_name,
                         queue_name,
                         type(exc).__name__,
                         exc,
@@ -1396,7 +1443,14 @@ class StrategyRunner:
                     continue
                 active_pairs[key]["subscription"] = sub
                 active_pairs[key]["worker"] = asyncio.create_task(pair_worker(key))
-                LOGGER.info("subscribed strategy pair=%s subject=%s queue=%s", key, subject, queue_name)
+                LOGGER.info(
+                    "subscribed strategy pair=%s stream=%s subject=%s queue=%s durable=%s",
+                    key,
+                    KLINE_STREAM_NAME,
+                    subject,
+                    queue_name,
+                    queue_name,
+                )
 
             if active_pairs:
                 no_pairs_logged = False
@@ -1493,6 +1547,7 @@ class StrategyRunner:
                 },
                 "metrics": {
                     "messages_seen": metrics.messages_seen,
+                    "messages_enqueued": metrics.messages_enqueued,
                     "messages_acked": metrics.messages_acked,
                     "messages_failed": metrics.messages_failed,
                     "signals_emitted": metrics.signals_emitted,
