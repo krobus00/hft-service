@@ -5,6 +5,7 @@ import json
 import logging
 import pickle
 import re
+import zlib
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
@@ -509,15 +510,23 @@ class StrategyRunner:
         token = token.strip("_")
         return (token or fallback).upper()
 
-    def _resolve_queue_name(self, exchange: str, market_type: str, scope: str) -> str:
-        queue_base = "KLINE_STRATEGY"
+    def _short_token(self, value: str, max_len: int, fallback: str = "NA") -> str:
+        token = self._safe_token(value, fallback)
+        if len(token) <= max_len:
+            return token
+        checksum = f"{zlib.crc32(token.encode('utf-8')) & 0xFFFFFFFF:08X}"
+        prefix_len = max(1, max_len - len(checksum) - 1)
+        return f"{token[:prefix_len]}_{checksum}"
+
+    def _resolve_queue_name(self, exchange: str, market_type: str, symbol: str, interval: str) -> str:
         strategy_key = str(self.runtime.strategy_id or self.strategy.config.name or "STRATEGY").strip()
         return (
-            f"{self._safe_token(queue_base)}_"
-            f"{self._safe_token(exchange)}_"
-            f"{self._safe_token(market_type)}_"
-            f"{self._safe_token(strategy_key)}_"
-            f"{self._safe_token(scope)}"
+            f"KS_"
+            f"{self._short_token(exchange, 12)}_"
+            f"{self._short_token(market_type, 8)}_"
+            f"{self._short_token(strategy_key, 24)}_"
+            f"{self._short_token(symbol, 18)}_"
+            f"{self._short_token(interval, 8)}"
         )
 
     def _resolve_subject_for_exchange(self, exchange: str) -> str:
@@ -532,6 +541,13 @@ class StrategyRunner:
             f"{str(market_type or '').strip().lower()}|"
             f"{str(interval or '').strip()}"
         )
+
+    @staticmethod
+    def _kline_field(data: Dict[str, Any], *keys: str, default: Any = "") -> Any:
+        for key in keys:
+            if key in data:
+                return data[key]
+        return default
 
     def _strategy_lookup_keys(self) -> List[str]:
         keys: List[str] = []
@@ -952,27 +968,85 @@ class StrategyRunner:
 
                         payload = orjson.loads(msg.data)
                         data = payload.get("data", {})
+                        if not isinstance(data, dict):
+                            LOGGER.debug(
+                                "[%s] nats_market_kline_ignored subject=%s pair=%s reason=invalid_data payload=%r",
+                                self.strategy.config.name,
+                                getattr(msg, "subject", ""),
+                                pair_key,
+                                msg.data[:1000],
+                            )
+                            await msg.ack()
+                            metrics.messages_acked += 1
+                            return
 
-                        incoming_symbol = str(data.get("Symbol", "")).strip().upper()
-                        incoming_interval = str(data.get("Interval", "")).strip()
-                        incoming_market_type = str(data.get("MarketType", "")).strip().lower()
-                        is_closed = bool(data.get("IsClosed"))
+                        LOGGER.debug(
+                            "[%s] nats_market_kline_raw subject=%s pair=%s keys=%s",
+                            self.strategy.config.name,
+                            getattr(msg, "subject", ""),
+                            pair_key,
+                            sorted(str(key) for key in data.keys()),
+                        )
+
+                        incoming_symbol = str(self._kline_field(data, "Symbol", "symbol")).strip().upper()
+                        incoming_interval = str(self._kline_field(data, "Interval", "interval")).strip()
+                        incoming_market_type = str(
+                            self._kline_field(data, "MarketType", "market_type")
+                        ).strip().lower()
+                        is_closed = bool(self._kline_field(data, "IsClosed", "is_closed", default=False))
 
                         if incoming_symbol != expected_symbol:
+                            LOGGER.debug(
+                                "[%s] nats_market_kline_ignored subject=%s pair=%s reason=symbol_mismatch incoming=%s expected=%s",
+                                self.strategy.config.name,
+                                getattr(msg, "subject", ""),
+                                pair_key,
+                                incoming_symbol,
+                                expected_symbol,
+                            )
                             await msg.ack()
                             metrics.messages_acked += 1
                             return
 
                         if incoming_interval != expected_interval:
+                            LOGGER.debug(
+                                "[%s] nats_market_kline_ignored subject=%s pair=%s reason=interval_mismatch incoming=%s expected=%s",
+                                self.strategy.config.name,
+                                getattr(msg, "subject", ""),
+                                pair_key,
+                                incoming_interval,
+                                expected_interval,
+                            )
                             await msg.ack()
                             metrics.messages_acked += 1
                             return
 
                         effective_market_type = incoming_market_type or expected_market_type
                         if effective_market_type != expected_market_type:
+                            LOGGER.debug(
+                                "[%s] nats_market_kline_ignored subject=%s pair=%s reason=market_type_mismatch incoming=%s expected=%s",
+                                self.strategy.config.name,
+                                getattr(msg, "subject", ""),
+                                pair_key,
+                                effective_market_type,
+                                expected_market_type,
+                            )
                             await msg.ack()
                             metrics.messages_acked += 1
                             return
+
+                        close_time = self._kline_field(data, "CloseTime", "close_time")
+                        close_price = self._kline_field(data, "ClosePrice", "close_price")
+                        quote_volume = self._kline_field(data, "QuoteVolume", "quote_volume", default="0")
+                        high_price = self._kline_field(data, "HighPrice", "high_price", default=close_price)
+                        low_price = self._kline_field(data, "LowPrice", "low_price", default=close_price)
+                        taker_quote_volume = self._kline_field(
+                            data,
+                            "TakerQuoteVolume",
+                            "taker_quote_volume",
+                            default="0",
+                        )
+                        trade_count = self._kline_field(data, "TradeCount", "trade_count", default=0)
 
                         LOGGER.info(
                             "[%s] nats_market_kline_received subject=%s pair=%s exchange=%s market_type=%s "
@@ -984,21 +1058,21 @@ class StrategyRunner:
                             effective_market_type,
                             incoming_symbol,
                             incoming_interval,
-                            data.get("CloseTime", ""),
+                            close_time,
                             is_closed,
-                            data.get("ClosePrice", ""),
+                            close_price,
                         )
 
                         candle = Candle(
-                            close_time_ms=parse_iso_to_ms(data["CloseTime"]),
-                            close=float(data["ClosePrice"]),
-                            quote_volume=float(data.get("QuoteVolume", "0") or "0"),
+                            close_time_ms=parse_iso_to_ms(close_time),
+                            close=float(close_price),
+                            quote_volume=float(quote_volume or "0"),
                             symbol=incoming_symbol,
                             interval=incoming_interval,
-                            high=float(data.get("HighPrice", data.get("ClosePrice", "0")) or "0"),
-                            low=float(data.get("LowPrice", data.get("ClosePrice", "0")) or "0"),
-                            taker_quote_volume=float(data.get("TakerQuoteVolume", "0") or "0"),
-                            trade_count=int(data.get("TradeCount", 0) or 0),
+                            high=float(high_price or "0"),
+                            low=float(low_price or "0"),
+                            taker_quote_volume=float(taker_quote_volume or "0"),
+                            trade_count=int(trade_count or 0),
                         )
 
                         state_key = self._state_key(
@@ -1280,8 +1354,12 @@ class StrategyRunner:
                     LOGGER.warning("warmup skipped pair=%s error=%s", key, exc)
 
                 subject = self._resolve_subject_for_exchange(target["exchange"])
-                queue_scope = f"{target['strategy']}_{target['symbol']}_{target['market_type']}_{target['interval']}"
-                queue_name = self._resolve_queue_name(target["exchange"], target["market_type"], queue_scope)
+                queue_name = self._resolve_queue_name(
+                    target["exchange"],
+                    target["market_type"],
+                    target["symbol"],
+                    target["interval"],
+                )
                 queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(self.runtime.message_queue_size or 1000)))
                 pair_strategy, pair_lock = clone_strategy_for_pair(key)
                 active_pairs[key] = {
