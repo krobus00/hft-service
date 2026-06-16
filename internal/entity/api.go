@@ -169,6 +169,7 @@ type StrategyConfig struct {
 	UserID                   sql.NullString  `db:"user_id" json:"user_id,omitempty"`
 	PositionSide             string          `db:"position_side" json:"position_side"`
 	Source                   string          `db:"source" json:"source"`
+	Enabled                  bool            `db:"enabled" json:"enabled"`
 	NeedNotification         bool            `db:"need_notification" json:"need_notification"`
 	IsPaperTrading           bool            `db:"is_paper_trading" json:"is_paper_trading"`
 	OrderType                string          `db:"order_type" json:"order_type"`
@@ -200,6 +201,7 @@ func (s *StrategyConfig) GetColumn() map[string]string {
 		"user_id":                     "user_id",
 		"position_side":               "position_side",
 		"source":                      "source",
+		"enabled":                     "enabled",
 		"need_notification":           "need_notification",
 		"is_paper_trading":            "is_paper_trading",
 		"order_type":                  "order_type",

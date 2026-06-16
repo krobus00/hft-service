@@ -35,13 +35,13 @@ func (r *StrategyConfigRepository) FindByID(ctx context.Context, id string) (*en
 func (r *StrategyConfigRepository) Create(ctx context.Context, item *entity.StrategyConfig) error {
 	query := `INSERT INTO strategy_configs (
 		strategy, exchange, market_type, symbol, interval, user_id, position_side, source,
-		need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
+		enabled, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
 		cooldown_bars, sl_cooldown_bars, max_consecutive_stop_losses, sl_pause_bars,
 		take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_stop_trigger_pct,
 		max_hold_bars, max_positions, enable_intrabar_risk_exit, created_at, updated_at
 	) VALUES (
 		:strategy, :exchange, :market_type, :symbol, :interval, :user_id, :position_side, :source,
-		:need_notification, :is_paper_trading, :order_type, :order_qty, :limit_slippage_pct,
+		:enabled, :need_notification, :is_paper_trading, :order_type, :order_qty, :limit_slippage_pct,
 		:cooldown_bars, :sl_cooldown_bars, :max_consecutive_stop_losses, :sl_pause_bars,
 		:take_profit_pct, :stop_loss_pct, :trailing_stop_pct, :trailing_stop_trigger_pct,
 		:max_hold_bars, :max_positions, :enable_intrabar_risk_exit, :created_at, :updated_at
@@ -68,6 +68,7 @@ func (r *StrategyConfigRepository) Update(ctx context.Context, item *entity.Stra
 			user_id = :user_id,
 			position_side = :position_side,
 			source = :source,
+			enabled = :enabled,
 			need_notification = :need_notification,
 			is_paper_trading = :is_paper_trading,
 			order_type = :order_type,

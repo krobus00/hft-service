@@ -43,10 +43,13 @@ func StartAPI(cmd *cobra.Command, args []string) {
 		util.ContinueOrFatal(errors.New("redis api cache_dsn is required"))
 	}
 
+	nc, js, err := infrastructure.NewJetstream()
+	util.ContinueOrFatal(err)
+
 	authRepo := repository.NewAPIAuthRepository(apiDB)
 	authCache := apiservice.NewAuthCache(redisClient, config.Env.Redis["api"].DefaultCacheDuration)
 	authService := apiservice.NewAuthService(authRepo, config.Env.DashboardAuth, authCache)
-	dataService := apiservice.NewDataService(apiDB, marketDataDB, orderEngineDB)
+	dataService := apiservice.NewDataService(apiDB, marketDataDB, orderEngineDB, js)
 
 	marketDataGRPCAddr := marketDataGatewayGRPCAddress()
 	marketDataGRPCConn, err := grpc.NewClient(marketDataGRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -89,6 +92,9 @@ func StartAPI(cmd *cobra.Command, args []string) {
 				return nil
 			}
 			return redisClient.Close()
+		},
+		"nats connection": func(ctx context.Context) error {
+			return infrastructure.CloseJetstream(nc)
 		},
 		"market data grpc": func(ctx context.Context) error {
 			return marketDataGRPCConn.Close()

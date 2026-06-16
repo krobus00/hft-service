@@ -65,7 +65,7 @@ export function ResourceTable({
                 return (
                   <tr key={`${resource.key}-${id}-${index}`} className="border-t">
                     {resource.columns.map((column) => (
-                      <td key={column} className="max-w-64 truncate px-3 py-3">
+                      <td key={column} className={cellClass(column, item[column])}>
                         {formatCell(item[column], column)}
                       </td>
                     ))}
@@ -148,6 +148,9 @@ function humanize(value: string) {
 
 function formatCell(value: unknown, column: string) {
   if (value == null) {
+    if (column === "exit_price" || column === "pnl") {
+      return "-";
+    }
     return "";
   }
   if (column === "id" && typeof value === "string") {
@@ -160,10 +163,28 @@ function formatCell(value: unknown, column: string) {
   if (isTimestampColumn(column) && (typeof value === "string" || typeof value === "number")) {
     return formatLocalTime(value);
   }
+  if (isNumericColumn(column) && (typeof value === "string" || typeof value === "number")) {
+    return formatNumber(value);
+  }
   if (typeof value === "object") {
     return JSON.stringify(value);
   }
   return String(value);
+}
+
+function cellClass(column: string, value: unknown) {
+  const baseClass = "max-w-64 truncate px-3 py-3";
+  if (column === "pnl") {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return `${baseClass} tabular-nums`;
+    }
+    return `${baseClass} tabular-nums ${number < 0 ? "text-destructive" : "text-primary"}`;
+  }
+  if (isNumericColumn(column)) {
+    return `${baseClass} tabular-nums`;
+  }
+  return baseClass;
 }
 
 function compactID(value: string) {
@@ -175,6 +196,24 @@ function compactID(value: string) {
 
 function isTimestampColumn(column: string) {
   return column.endsWith("_at") || column.endsWith("_time");
+}
+
+function isNumericColumn(column: string) {
+  return numericColumns.has(column);
+}
+
+const numericColumns = new Set(["entry_price", "exit_price", "pnl", "price", "quantity", "filled_quantity", "avg_fill_price", "realized_pnl"]);
+
+function formatNumber(value: string | number) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return String(value);
+  }
+  const formatted = new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(number);
+  if (value === "" || number === 0) {
+    return formatted;
+  }
+  return formatted;
 }
 
 function formatLocalTime(value: string | number) {

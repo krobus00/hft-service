@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
@@ -143,6 +145,39 @@ func (r *MarketKlineRepository) FindByOpenTime(ctx context.Context, openTime str
 func (r *MarketKlineRepository) ListExchanges(ctx context.Context) ([]string, error) {
 	items := []string{}
 	err := r.db.SelectContext(ctx, &items, "SELECT DISTINCT exchange FROM market_klines WHERE exchange <> '' ORDER BY exchange")
+	return items, err
+}
+
+func (r *MarketKlineRepository) ListLatestClosePrices(ctx context.Context, keys []entity.MarketPriceKey) ([]entity.MarketClosePrice, error) {
+	if len(keys) == 0 {
+		return []entity.MarketClosePrice{}, nil
+	}
+
+	valuePlaceholders := make([]string, 0, len(keys))
+	args := make([]any, 0, len(keys)*3)
+	for _, key := range keys {
+		args = append(args, key.Exchange, key.MarketType, key.Symbol)
+		valuePlaceholders = append(valuePlaceholders, fmt.Sprintf("($%d, $%d, $%d)", len(args)-2, len(args)-1, len(args)))
+	}
+
+	query := fmt.Sprintf(`
+WITH requested(exchange, market_type, symbol) AS (
+	VALUES %s
+)
+SELECT r.exchange, r.market_type, r.symbol, latest.close_price
+FROM requested r
+INNER JOIN LATERAL (
+	SELECT m.close_price
+	FROM market_klines m
+	WHERE m.exchange = r.exchange
+		AND m.market_type = r.market_type
+		AND m.symbol = r.symbol
+	ORDER BY m.open_time DESC, m.updated_at DESC
+	LIMIT 1
+) latest ON true`, strings.Join(valuePlaceholders, ", "))
+
+	items := []entity.MarketClosePrice{}
+	err := r.db.SelectContext(ctx, &items, query, args...)
 	return items, err
 }
 

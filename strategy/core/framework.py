@@ -623,6 +623,7 @@ class StrategyRunner:
                         enable_intrabar_risk_exit
                     FROM strategy_configs
                     WHERE strategy = ANY($1::text[])
+                        AND enabled IS TRUE
                     """,
                     strategy_keys,
                 )
@@ -658,6 +659,7 @@ class StrategyRunner:
                         enable_intrabar_risk_exit
                     FROM strategy_configs
                     WHERE strategy = ANY($1::text[])
+                        AND enabled IS TRUE
                     """,
                     strategy_keys,
                 )

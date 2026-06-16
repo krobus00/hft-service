@@ -33,16 +33,15 @@ type OrderHistory = {
   avg_fill_price?: string | number | null;
   price?: string | number | null;
   realized_pnl?: string | number | null;
+  state?: string | null;
+  entry_price?: string | number | null;
+  exit_price?: string | number | null;
+  pnl?: string | number | null;
   status?: string;
   strategy_id?: string | null;
   trade_condition?: string;
   created_at?: string;
   filled_at?: string | null;
-};
-
-type MarketKline = {
-  close_price?: string | number;
-  open_time?: string;
 };
 
 type DashboardTrade = {
@@ -84,9 +83,7 @@ export function DashboardOverviewPanel() {
 
     try {
       const orders = await listLast24hOrders(start, end);
-      const runningEntries = findRunningEntries(orders);
-      const markPrices = await loadMarkPrices(runningEntries);
-      const trades = buildTradeRows(orders, markPrices);
+      const trades = buildTradeRows(orders);
 
       setData({
         orders,
@@ -161,15 +158,15 @@ export function DashboardOverviewPanel() {
         />
       </div>
 
-      <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <Card className="min-w-0 overflow-hidden rounded-md">
+      <div className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <Card className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md">
           <CardHeader className="flex-row items-center justify-between gap-3 border-b p-4">
             <CardTitle className="text-base">Recent order history with PnL</CardTitle>
             <span className="shrink-0 text-xs text-muted-foreground">
               {formatInteger(data.trades.length)} rows
             </span>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="min-h-0 flex-1 p-0">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[860px] text-left text-sm">
                 <thead className="bg-muted text-xs uppercase text-muted-foreground">
@@ -263,14 +260,14 @@ export function DashboardOverviewPanel() {
           </CardContent>
         </Card>
 
-        <Card className="min-w-0 self-start rounded-md">
+        <Card className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md">
           <CardHeader className="flex-row items-center justify-between gap-3 border-b p-4">
             <CardTitle className="text-base">Running trades</CardTitle>
             <span className="shrink-0 text-xs text-muted-foreground">
               {formatInteger(data.runningTrades.length)}
             </span>
           </CardHeader>
-          <CardContent className="max-h-[420px] min-w-0 overflow-y-auto p-3">
+          <CardContent className="min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto p-3">
             {isLoading ? (
               <p className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -356,8 +353,6 @@ function MetricCard({
 }
 
 const orderResource = resources.find((resource) => resource.key === "orders") ?? resources[0];
-const marketKlineResource =
-  resources.find((resource) => resource.key === "marketKlines") ?? resources[0];
 const tradePageSize = 10;
 
 async function listLast24hOrders(start: Date, end: Date) {
@@ -384,147 +379,40 @@ async function listLast24hOrders(start: Date, end: Date) {
   return items;
 }
 
-function buildTradeRows(orders: OrderHistory[], markPrices: Map<string, number>) {
-  const groups = groupOrders(orders);
+function buildTradeRows(orders: OrderHistory[]) {
   const rows: DashboardTrade[] = [];
 
-  for (const group of groups.values()) {
-    const entry = newest(group.entries) ?? inferEntryOrder(group.orders);
-    if (!entry) {
+  for (const order of orders) {
+    const entryPrice = toNumber(order.entry_price) ?? orderPrice(order);
+    const qty = orderQuantity(order);
+    if (entryPrice == null || !qty) {
       continue;
     }
 
-    const exit = newest(group.orders.filter((order) => order !== entry && isExitOrder(order)));
-    const entryPrice = orderPrice(entry);
-    const qty = orderQuantity(entry);
-    if (!entryPrice || !qty) {
-      continue;
-    }
-
-    if (exit) {
-      const exitPrice = orderPrice(exit);
-      const pnl = orderRealizedPnl(exit) ?? calculatePnl(entry.side, entryPrice, exitPrice, qty);
-      rows.push({
-        id: `closed:${entry.id ?? group.key}`,
-        strategyID: entry.strategy_id ?? exit.strategy_id ?? "",
-        symbol: entry.symbol ?? "-",
-        side: entry.side ?? "-",
-        qty,
-        entryPrice,
-        exitPrice,
-        pnl,
-        status: "closed",
-        time: exit.filled_at ?? exit.created_at ?? entry.created_at ?? "",
-      });
-      continue;
-    }
-
-    const markPrice = markPrices.get(marketKey(entry));
+    const status = isRunningOrder(order) ? "running" : "closed";
+    const exitPrice = toNumber(order.exit_price);
+    const pnl = toNumber(order.pnl) ?? orderRealizedPnl(order);
+    const markPrice = status === "running" ? inferMarkPrice(order.side, entryPrice, pnl, qty) : undefined;
     rows.push({
-      id: `running:${entry.id ?? group.key}`,
-      strategyID: entry.strategy_id ?? "",
-      symbol: entry.symbol ?? "-",
-      side: entry.side ?? "-",
+      id: `${status}:${order.id ?? order.entry_order_id ?? order.order_id ?? rows.length}`,
+      strategyID: order.strategy_id ?? "",
+      symbol: order.symbol ?? "-",
+      side: order.side ?? "-",
       qty,
       entryPrice,
+      exitPrice,
       markPrice,
-      pnl: calculatePnl(entry.side, entryPrice, markPrice, qty),
-      status: "running",
-      time: entry.filled_at ?? entry.created_at ?? "",
+      pnl,
+      status,
+      time: order.filled_at ?? order.created_at ?? "",
     });
   }
 
   return rows.sort((left, right) => dateValue(right.time) - dateValue(left.time));
 }
 
-function findRunningEntries(orders: OrderHistory[]) {
-  return Array.from(groupOrders(orders).values())
-    .filter((group) => group.orders.length > 0 && !group.orders.some(isExitOrder))
-    .map((group) => newest(group.entries) ?? inferEntryOrder(group.orders))
-    .filter((order): order is OrderHistory => Boolean(order));
-}
-
-function groupOrders(orders: OrderHistory[]) {
-  const groups = new Map<string, { key: string; orders: OrderHistory[]; entries: OrderHistory[] }>();
-  for (const order of orders) {
-    const key = groupKey(order);
-    if (!key) {
-      continue;
-    }
-    const group = groups.get(key) ?? { key, orders: [], entries: [] };
-    group.orders.push(order);
-    if (isEntryOrder(order)) {
-      group.entries.push(order);
-    }
-    groups.set(key, group);
-  }
-  return groups;
-}
-
-async function loadMarkPrices(entries: OrderHistory[]) {
-  const prices = new Map<string, number>();
-  await Promise.all(
-    Array.from(new Set(entries.map(marketKey))).map(async (key) => {
-      const [exchange, marketType, symbol] = key.split("|");
-      if (!exchange || !marketType || !symbol) {
-        return;
-      }
-      try {
-        const result = await listResource(marketKlineResource, {
-          page: 1,
-          limit: 1,
-          keyword: "",
-          filters: { exchange, market_type: marketType, symbol },
-          sortField: "open_time",
-          sortDirection: "desc",
-        });
-        const kline = result.items[0] as MarketKline | undefined;
-        const closePrice = toNumber(kline?.close_price);
-        if (closePrice != null) {
-          prices.set(key, closePrice);
-        }
-      } catch {
-        // Running PnL can be blank when market data is unavailable or not permitted.
-      }
-    }),
-  );
-  return prices;
-}
-
-function groupKey(order: OrderHistory) {
-  if (order.entry_order_id) {
-    return order.entry_order_id;
-  }
-  if (isEntryOrder(order) && order.order_id) {
-    return order.order_id;
-  }
-  return order.id ?? "";
-}
-
-function isEntryOrder(order: OrderHistory) {
-  return (order.trade_condition ?? "").toUpperCase() === "ENTRY";
-}
-
-function isExitOrder(order: OrderHistory) {
-  return new Set(["EXIT", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"]).has(
-    (order.trade_condition ?? "").toUpperCase(),
-  );
-}
-
-function inferEntryOrder(orders: OrderHistory[]) {
-  const nonExitOrders = orders.filter((order) => !isExitOrder(order));
-  if (nonExitOrders.length === 0) {
-    return undefined;
-  }
-  return newest(nonExitOrders);
-}
-
-function newest(orders: OrderHistory[]) {
-  return [...orders].sort((left, right) => dateValue(right.created_at) - dateValue(left.created_at))[0];
-}
-
-function marketKey(order: OrderHistory) {
-  return `${order.exchange ?? ""}|${order.market_type ?? ""}|${order.symbol ?? ""}`;
+function isRunningOrder(order: OrderHistory) {
+  return new Set(["open", "running"]).has((order.state ?? "").toLowerCase());
 }
 
 function orderPrice(order: OrderHistory | undefined) {
@@ -539,20 +427,20 @@ function orderRealizedPnl(order: OrderHistory) {
   return toNumber(order.realized_pnl);
 }
 
-function calculatePnl(
+function inferMarkPrice(
   side: string | undefined,
   entryPrice: number | undefined,
-  exitPrice: number | undefined,
+  pnl: number | undefined,
   qty: number,
 ) {
-  if (entryPrice == null || exitPrice == null || !qty) {
+  if (entryPrice == null || pnl == null || !qty) {
     return undefined;
   }
   const normalizedSide = (side ?? "").toUpperCase();
   if (normalizedSide === "SELL" || normalizedSide === "SHORT") {
-    return (entryPrice - exitPrice) * qty;
+    return entryPrice - pnl / qty;
   }
-  return (exitPrice - entryPrice) * qty;
+  return entryPrice + pnl / qty;
 }
 
 function dateValue(value: string | null | undefined) {

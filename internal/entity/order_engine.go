@@ -215,6 +215,14 @@ type OrderHistory struct {
 	IsPaperTrading    bool             `db:"is_paper_trading" json:"is_paper_trading"`
 }
 
+type OrderHistoryWithMetrics struct {
+	OrderHistory
+	State      string           `db:"state" json:"state"`
+	EntryPrice *decimal.Decimal `db:"entry_price" json:"entry_price,omitempty"`
+	ExitPrice  *decimal.Decimal `db:"exit_price" json:"exit_price,omitempty"`
+	PnL        *decimal.Decimal `db:"pnl" json:"pnl,omitempty"`
+}
+
 func (o OrderHistory) TableName() string {
 	return "order_histories"
 }
@@ -234,6 +242,10 @@ func (o *OrderHistory) GetColumn() map[string]string {
 		"type":             "type",
 		"status":           "status",
 		"strategy_id":      "strategy_id",
+		"state":            "state",
+		"entry_price":      "entry_price",
+		"exit_price":       "exit_price",
+		"pnl":              "pnl",
 		"trade_condition":  "trade_condition",
 		"is_paper_trading": "is_paper_trading",
 		"created_at":       "created_at",

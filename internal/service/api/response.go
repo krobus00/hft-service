@@ -45,6 +45,10 @@ type OrderHistoryResponse struct {
 	AcknowledgedAt    *time.Time       `json:"acknowledged_at,omitempty"`
 	FilledAt          *time.Time       `json:"filled_at,omitempty"`
 	StrategyID        *string          `json:"strategy_id,omitempty"`
+	State             string           `json:"state"`
+	EntryPrice        *decimal.Decimal `json:"entry_price,omitempty"`
+	ExitPrice         *decimal.Decimal `json:"exit_price,omitempty"`
+	PnL               *decimal.Decimal `json:"pnl,omitempty"`
 	TradeCondition    string           `json:"trade_condition"`
 	OrderReason       string           `json:"order_reason"`
 	ExitType          string           `json:"exit_type"`
@@ -64,6 +68,7 @@ type StrategyConfigResponse struct {
 	UserID                   *string         `json:"user_id,omitempty"`
 	PositionSide             string          `json:"position_side"`
 	Source                   string          `json:"source"`
+	Enabled                  bool            `json:"enabled"`
 	NeedNotification         bool            `json:"need_notification"`
 	IsPaperTrading           bool            `json:"is_paper_trading"`
 	OrderType                string          `json:"order_type"`
@@ -139,6 +144,18 @@ func orderHistoryResponse(order *entity.OrderHistory) *OrderHistoryResponse {
 	}
 }
 
+func orderHistoryWithMetricsResponse(order *entity.OrderHistoryWithMetrics) *OrderHistoryResponse {
+	if order == nil {
+		return nil
+	}
+	result := orderHistoryResponse(&order.OrderHistory)
+	result.State = order.State
+	result.EntryPrice = order.EntryPrice
+	result.ExitPrice = order.ExitPrice
+	result.PnL = order.PnL
+	return result
+}
+
 func strategyConfigResponse(config *entity.StrategyConfig) *StrategyConfigResponse {
 	if config == nil {
 		return nil
@@ -153,6 +170,7 @@ func strategyConfigResponse(config *entity.StrategyConfig) *StrategyConfigRespon
 		UserID:                   nullStringPtr(config.UserID),
 		PositionSide:             config.PositionSide,
 		Source:                   config.Source,
+		Enabled:                  config.Enabled,
 		NeedNotification:         config.NeedNotification,
 		IsPaperTrading:           config.IsPaperTrading,
 		OrderType:                config.OrderType,
@@ -188,6 +206,15 @@ func apiUserPaginationResponse(resp *apiutil.PaginationResp) *apiutil.Pagination
 }
 
 func orderHistoryPaginationResponse(resp *apiutil.PaginationResp) *apiutil.PaginationResp {
+	if items, ok := resp.Items.([]entity.OrderHistoryWithMetrics); ok {
+		result := make([]OrderHistoryResponse, 0, len(items))
+		for i := range items {
+			result = append(result, *orderHistoryWithMetricsResponse(&items[i]))
+		}
+		resp.Items = result
+		return resp
+	}
+
 	items, ok := resp.Items.([]entity.OrderHistory)
 	if !ok {
 		return resp

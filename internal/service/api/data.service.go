@@ -13,8 +13,11 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	apiutil "github.com/krobus00/hft-service/internal/api"
+	"github.com/krobus00/hft-service/internal/constant"
 	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/repository"
+	"github.com/krobus00/hft-service/internal/util"
+	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 )
 
@@ -26,6 +29,7 @@ type DataService struct {
 	symbolMappingRepo     *repository.SymbolMappingRepository
 	klineSubscriptionRepo *repository.KlineSubscriptionRepository
 	strategyConfigRepo    *repository.StrategyConfigRepository
+	js                    nats.JetStreamContext
 }
 
 type AuthConfigResponse struct {
@@ -34,7 +38,7 @@ type AuthConfigResponse struct {
 
 type FormEnumsResponse map[string][]string
 
-func NewDataService(apiDB, marketDB, orderDB *sqlx.DB) *DataService {
+func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext) *DataService {
 	return &DataService{
 		authRepo:              repository.NewAPIAuthRepository(apiDB),
 		settingRepo:           repository.NewAPISettingRepository(apiDB),
@@ -43,6 +47,7 @@ func NewDataService(apiDB, marketDB, orderDB *sqlx.DB) *DataService {
 		symbolMappingRepo:     repository.NewSymbolMappingRepository(marketDB),
 		klineSubscriptionRepo: repository.NewKlineSubscriptionRepository(marketDB),
 		strategyConfigRepo:    repository.NewStrategyConfigRepository(marketDB),
+		js:                    js,
 	}
 }
 
@@ -86,6 +91,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"interval":         {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"},
 		"kline_event_type": {"kline"},
 		"source":           {"dashboard", "api", "strategy"},
+		"boolean":          {"true", "false"},
 	}, nil
 }
 
@@ -118,20 +124,132 @@ func (s *DataService) listExchangeEnums(ctx context.Context) ([]string, error) {
 }
 
 func (s *DataService) ListOrders(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
-	resp, err := s.orderHistoryRepo.GetPagination(ctx, req)
+	resp, err := s.orderHistoryRepo.GetPaginationWithMetrics(ctx, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.populateOpenOrderPnL(ctx, resp); err != nil {
 		return nil, err
 	}
 	return orderHistoryPaginationResponse(resp), nil
 }
 
 func (s *DataService) GetOrder(ctx context.Context, id string) (*OrderHistoryResponse, error) {
-	item, err := s.orderHistoryRepo.FindByID(ctx, id)
+	item, err := s.orderHistoryRepo.FindByIDWithMetrics(ctx, id)
 	result, err := ensureFound(item, err)
 	if err != nil {
 		return nil, err
 	}
-	return orderHistoryResponse(result), nil
+	if err := s.populateOpenOrderMetric(ctx, result); err != nil {
+		return nil, err
+	}
+	return orderHistoryWithMetricsResponse(result), nil
+}
+
+func (s *DataService) populateOpenOrderPnL(ctx context.Context, resp *apiutil.PaginationResp) error {
+	items, ok := resp.Items.([]entity.OrderHistoryWithMetrics)
+	if !ok {
+		return nil
+	}
+	keys := make([]entity.MarketPriceKey, 0, len(items))
+	seen := map[string]struct{}{}
+	for i := range items {
+		if !needsCurrentPricePnL(&items[i]) {
+			continue
+		}
+		key := orderMarketPriceKey(items[i].OrderHistory)
+		keyID := marketPriceKeyID(key)
+		if _, exists := seen[keyID]; exists {
+			continue
+		}
+		seen[keyID] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	prices, err := s.marketKlineRepo.ListLatestClosePrices(ctx, keys)
+	if err != nil {
+		return err
+	}
+	priceByKey := make(map[string]decimal.Decimal, len(prices))
+	for _, price := range prices {
+		priceByKey[marketPriceKeyID(entity.MarketPriceKey{
+			Exchange:   price.Exchange,
+			MarketType: price.MarketType,
+			Symbol:     price.Symbol,
+		})] = price.ClosePrice
+	}
+
+	for i := range items {
+		if !needsCurrentPricePnL(&items[i]) {
+			continue
+		}
+		currentPrice, exists := priceByKey[marketPriceKeyID(orderMarketPriceKey(items[i].OrderHistory))]
+		if !exists {
+			continue
+		}
+		items[i].PnL = calculateOrderPnL(items[i].Side, *items[i].EntryPrice, currentPrice, orderMetricQuantity(items[i].OrderHistory))
+	}
+	resp.Items = items
+	return nil
+}
+
+func (s *DataService) populateOpenOrderMetric(ctx context.Context, item *entity.OrderHistoryWithMetrics) error {
+	if !needsCurrentPricePnL(item) {
+		return nil
+	}
+	prices, err := s.marketKlineRepo.ListLatestClosePrices(ctx, []entity.MarketPriceKey{orderMarketPriceKey(item.OrderHistory)})
+	if err != nil {
+		return err
+	}
+	if len(prices) == 0 {
+		return nil
+	}
+	item.PnL = calculateOrderPnL(item.Side, *item.EntryPrice, prices[0].ClosePrice, orderMetricQuantity(item.OrderHistory))
+	return nil
+}
+
+func needsCurrentPricePnL(item *entity.OrderHistoryWithMetrics) bool {
+	return item != nil && isOpenOrderState(item.State) && item.EntryPrice != nil && item.PnL == nil
+}
+
+func isOpenOrderState(state string) bool {
+	return state == "open" || state == "running"
+}
+
+func orderMarketPriceKey(order entity.OrderHistory) entity.MarketPriceKey {
+	return entity.MarketPriceKey{
+		Exchange:   order.Exchange,
+		MarketType: order.MarketType,
+		Symbol:     order.Symbol,
+	}
+}
+
+func marketPriceKeyID(key entity.MarketPriceKey) string {
+	return key.Exchange + "|" + key.MarketType + "|" + key.Symbol
+}
+
+func orderMetricQuantity(order entity.OrderHistory) decimal.Decimal {
+	if !order.FilledQuantity.IsZero() {
+		return order.FilledQuantity
+	}
+	return order.Quantity
+}
+
+func calculateOrderPnL(side entity.OrderSide, entryPrice, exitPrice, quantity decimal.Decimal) *decimal.Decimal {
+	if quantity.IsZero() {
+		return nil
+	}
+	switch side {
+	case entity.OrderSideShort, entity.OrderSideSell:
+		result := entryPrice.Sub(exitPrice).Mul(quantity)
+		return &result
+	default:
+		result := exitPrice.Sub(entryPrice).Mul(quantity)
+		return &result
+	}
 }
 
 func (s *DataService) CreateOrder(ctx context.Context, values map[string]any) (*OrderHistoryResponse, error) {
@@ -317,16 +435,136 @@ func (s *DataService) UpdateStrategyConfig(ctx context.Context, id string, value
 		_, err := ensureFound(current, err)
 		return nil, err
 	}
+	wasEnabled := current.Enabled
 	item := mapStrategyConfig(values, current)
 	item.ID = current.ID
 	if err := s.strategyConfigRepo.Update(ctx, item); err != nil {
 		return nil, err
+	}
+	if wasEnabled && !item.Enabled {
+		if err := s.closeOpenTradesForDisabledStrategy(ctx, item); err != nil {
+			return nil, err
+		}
 	}
 	return s.GetStrategyConfig(ctx, id)
 }
 
 func (s *DataService) DeleteStrategyConfig(ctx context.Context, id string) error {
 	return s.strategyConfigRepo.Delete(ctx, id)
+}
+
+func (s *DataService) closeOpenTradesForDisabledStrategy(ctx context.Context, config *entity.StrategyConfig) error {
+	if s.js == nil {
+		return errors.New("order close publisher is not configured")
+	}
+
+	openTrades, err := s.orderHistoryRepo.ListOpenEntriesByStrategyConfig(ctx, *config)
+	if err != nil {
+		return err
+	}
+	for _, trade := range openTrades {
+		order, ok := buildDisableStrategyCloseOrder(*config, trade.OrderHistory)
+		if !ok {
+			continue
+		}
+		if err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{Data: order}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func buildDisableStrategyCloseOrder(config entity.StrategyConfig, entry entity.OrderHistory) (entity.OrderRequest, bool) {
+	quantity := entry.FilledQuantity
+	if quantity.IsZero() {
+		quantity = entry.Quantity
+	}
+	if quantity.IsZero() {
+		return entity.OrderRequest{}, false
+	}
+	entryOrderID := strings.TrimSpace(entry.EntryOrderID)
+	if entryOrderID == "" {
+		entryOrderID = strings.TrimSpace(entry.OrderID)
+	}
+	if entryOrderID == "" {
+		entryOrderID = strings.TrimSpace(entry.ID)
+	}
+
+	side, ok := closeOrderSide(entry.Side, entity.NormalizeMarketType(entry.MarketType))
+	if !ok {
+		return entity.OrderRequest{}, false
+	}
+
+	strategyID := config.Strategy
+	requestID := fmt.Sprintf("disable-strategy-%s-%s-%d", config.ID, entry.ID, time.Now().UTC().UnixMilli())
+	clientOrderID := disableStrategyClientOrderID(config.ID, entry.ID)
+	internalPayload, _ := json.Marshal(map[string]string{
+		"source":         "disable_strategy",
+		"entry_order_id": entryOrderID,
+		"entry_id":       entry.ID,
+	})
+
+	return entity.OrderRequest{
+		RequestID:        requestID,
+		UserID:           entry.UserID,
+		OrderID:          &clientOrderID,
+		EntryOrderID:     entryOrderID,
+		Exchange:         entry.Exchange,
+		MarketType:       entry.MarketType,
+		PositionSide:     entry.PositionSide,
+		Symbol:           entry.Symbol,
+		Type:             entity.OrderTypeMarket,
+		Side:             side,
+		Price:            decimal.Zero,
+		Quantity:         quantity,
+		RequestedAt:      time.Now().UTC().UnixMilli(),
+		Source:           "dashboard",
+		StrategyID:       &strategyID,
+		StrategyName:     config.Strategy,
+		Interval:         config.Interval,
+		Internal:         string(internalPayload),
+		TradeCondition:   string(entity.TradeConditionExit),
+		OrderReason:      "strategy_disabled",
+		ExitType:         "",
+		NeedNotification: config.NeedNotification,
+		IsPaperTrading:   entry.IsPaperTrading,
+	}, true
+}
+
+func disableStrategyClientOrderID(configID, entryID string) string {
+	now := strconv.FormatInt(time.Now().UTC().UnixMilli(), 36)
+	return "ds" + compactAlnum(configID, 8) + compactAlnum(entryID, 10) + now
+}
+
+func compactAlnum(value string, limit int) string {
+	cleaned := strings.NewReplacer("-", "", "_", "").Replace(strings.TrimSpace(value))
+	if len(cleaned) <= limit {
+		return cleaned
+	}
+	return cleaned[:limit]
+}
+
+func closeOrderSide(entrySide entity.OrderSide, marketType entity.MarketType) (entity.OrderSide, bool) {
+	switch marketType {
+	case entity.MarketTypeFutures:
+		switch entrySide {
+		case entity.OrderSideLong, entity.OrderSideBuy:
+			return entity.OrderSideShort, true
+		case entity.OrderSideShort, entity.OrderSideSell:
+			return entity.OrderSideLong, true
+		default:
+			return "", false
+		}
+	default:
+		switch entrySide {
+		case entity.OrderSideBuy, entity.OrderSideLong:
+			return entity.OrderSideSell, true
+		case entity.OrderSideSell, entity.OrderSideShort:
+			return entity.OrderSideBuy, true
+		default:
+			return "", false
+		}
+	}
 }
 
 func (s *DataService) ListSettings(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
@@ -678,6 +916,7 @@ func mapStrategyConfig(values map[string]any, current *entity.StrategyConfig) *e
 		UpdatedAt:                now,
 		PositionSide:             "BOTH",
 		Source:                   "api",
+		Enabled:                  true,
 		NeedNotification:         true,
 		IsPaperTrading:           true,
 		OrderType:                "MARKET",
@@ -708,6 +947,7 @@ func mapStrategyConfig(values map[string]any, current *entity.StrategyConfig) *e
 	item.UserID = nullStringValue(values, "user_id", item.UserID)
 	item.PositionSide = stringValue(values, "position_side", item.PositionSide)
 	item.Source = stringValue(values, "source", item.Source)
+	item.Enabled = boolValue(values, "enabled", item.Enabled)
 	item.NeedNotification = boolValue(values, "need_notification", item.NeedNotification)
 	item.IsPaperTrading = boolValue(values, "is_paper_trading", item.IsPaperTrading)
 	item.OrderType = stringValue(values, "order_type", item.OrderType)

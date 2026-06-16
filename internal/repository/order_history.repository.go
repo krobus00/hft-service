@@ -129,6 +129,26 @@ func (r *OrderHistoryRepository) FindByID(ctx context.Context, id string) (*enti
 	return &orderHistory, nil
 }
 
+func (r *OrderHistoryRepository) FindByIDWithMetrics(ctx context.Context, id string) (*entity.OrderHistoryWithMetrics, error) {
+	query, args, err := orderHistoryMetricsSelect().
+		Where(sq.Eq{"oh.id": id}).
+		Limit(1).
+		ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	var orderHistory entity.OrderHistoryWithMetrics
+	err = r.db.GetContext(ctx, &orderHistory, query, args...)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &orderHistory, nil
+}
+
 func (r *OrderHistoryRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
 	model := &entity.OrderHistory{}
 	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
@@ -163,6 +183,131 @@ func (r *OrderHistoryRepository) GetPagination(ctx context.Context, req *apiutil
 	}
 
 	return apiutil.NewPaginationResp(req.Paginate.Page, req.Paginate.Limit, total, items), nil
+}
+
+func (r *OrderHistoryRepository) GetPaginationWithMetrics(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	model := &entity.OrderHistory{}
+	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("oh.*").
+		From("order_histories oh").
+		Where(sq.Eq{"oh.trade_condition": string(entity.TradeConditionEntry)})
+	baseSelect = req.ApplyFilter(baseSelect, model)
+
+	countBuilder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("COUNT(*)").
+		FromSelect(baseSelect, "count_query")
+	countQuery, countArgs, err := countBuilder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	var total int64
+	if err := r.db.GetContext(ctx, &total, countQuery, countArgs...); err != nil {
+		return nil, err
+	}
+
+	baseSortField, baseSortDirection := orderHistoryBaseSort(req)
+	metricSortField, metricSortDirection := orderHistoryMetricSort(req)
+
+	pagedIDs := baseSelect.
+		OrderBy(baseSortField + " " + baseSortDirection).
+		Limit(uint64(req.Paginate.Limit)).
+		Offset(uint64(req.Paginate.Offset))
+
+	selectBuilder := orderHistoryMetricsSelect().
+		Where(sq.Expr("oh.id IN (SELECT id FROM (?) paged_ids)", pagedIDs)).
+		OrderBy(metricSortField + " " + metricSortDirection)
+	selectQuery, selectArgs, err := selectBuilder.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	items := []entity.OrderHistoryWithMetrics{}
+	if err := r.db.SelectContext(ctx, &items, selectQuery, selectArgs...); err != nil {
+		return nil, err
+	}
+
+	return apiutil.NewPaginationResp(req.Paginate.Page, req.Paginate.Limit, total, items), nil
+}
+
+func (r *OrderHistoryRepository) ListOpenEntriesByStrategyConfig(ctx context.Context, config entity.StrategyConfig) ([]entity.OrderHistoryWithMetrics, error) {
+	query := orderHistoryMetricsSelect().
+		Where(sq.Eq{
+			"oh.strategy_id":     config.Strategy,
+			"oh.exchange":        config.Exchange,
+			"oh.market_type":     config.MarketType,
+			"oh.symbol":          config.Symbol,
+			"oh.trade_condition": string(entity.TradeConditionEntry),
+		}).
+		Where("exit_match.exit_price IS NULL").
+		OrderBy("oh.created_at DESC")
+
+	sqlQuery, args, err := query.ToSql()
+	if err != nil {
+		return nil, err
+	}
+
+	items := []entity.OrderHistoryWithMetrics{}
+	err = r.db.SelectContext(ctx, &items, sqlQuery, args...)
+	return items, err
+}
+
+func orderHistoryBaseSort(req *apiutil.PaginationReq) (string, string) {
+	if isOrderHistoryMetricSort(req.Sort.Field) {
+		return "created_at", "DESC"
+	}
+	return req.Sort.Field, req.Sort.Direction
+}
+
+func orderHistoryMetricSort(req *apiutil.PaginationReq) (string, string) {
+	if isOrderHistoryMetricSort(req.Sort.Field) {
+		return req.Sort.Field, req.Sort.Direction + " NULLS LAST"
+	}
+	return req.Sort.Field, req.Sort.Direction
+}
+
+func isOrderHistoryMetricSort(field string) bool {
+	switch field {
+	case "state", "entry_price", "exit_price", "pnl":
+		return true
+	default:
+		return false
+	}
+}
+
+func orderHistoryMetricsSelect() sq.SelectBuilder {
+	return sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select(
+			"oh.*",
+			`CASE
+				WHEN exit_match.exit_price IS NOT NULL THEN 'closed'
+				ELSE 'running'
+			END AS state`,
+			`COALESCE(oh.avg_fill_price, oh.price) AS entry_price`,
+			`exit_match.exit_price AS exit_price`,
+			`CASE
+				WHEN exit_match.exit_price IS NOT NULL
+					AND COALESCE(oh.avg_fill_price, oh.price) IS NOT NULL
+				THEN COALESCE(
+					exit_match.realized_pnl,
+					CASE
+						WHEN oh.side IN ('LONG','BUY') THEN (exit_match.exit_price - COALESCE(oh.avg_fill_price, oh.price)) * COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity)
+						WHEN oh.side IN ('SHORT','SELL') THEN (COALESCE(oh.avg_fill_price, oh.price) - exit_match.exit_price) * COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity)
+					END
+				)
+			END AS pnl`,
+		).
+		From("order_histories oh").
+		LeftJoin(`LATERAL (
+			SELECT COALESCE(x.avg_fill_price, x.price) AS exit_price, x.realized_pnl
+			FROM order_histories x
+			WHERE oh.entry_order_id <> ''
+				AND x.entry_order_id = oh.entry_order_id
+				AND x.trade_condition <> 'ENTRY'
+				AND COALESCE(x.avg_fill_price, x.price) IS NOT NULL
+			ORDER BY x.created_at DESC
+			LIMIT 1
+		) exit_match ON true`)
 }
 
 func (r *OrderHistoryRepository) ListExchanges(ctx context.Context) ([]string, error) {
