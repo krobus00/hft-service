@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
@@ -257,4 +259,250 @@ func (r *OrderHistoryRepository) Delete(ctx context.Context, id string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (r *OrderHistoryRepository) ListTradePnL(ctx context.Context, filter entity.OrderReportFilter) ([]entity.OrderTradePnL, int64, error) {
+	whereSQL, args := orderReportWhere(filter)
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	page := filter.Page
+	if page <= 0 {
+		page = 1
+	}
+	args = append(args, limit, (page-1)*limit)
+	limitArg := len(args) - 1
+	offsetArg := len(args)
+
+	query := fmt.Sprintf(`
+WITH filtered_orders AS (
+	SELECT entry_order_id, strategy_id, symbol, trade_condition, avg_fill_price, filled_quantity, quantity, side, created_at
+	FROM order_histories
+	WHERE %s
+),
+paired AS (
+	SELECT
+		entry_order_id,
+		COALESCE(MAX(strategy_id) FILTER (WHERE trade_condition = 'ENTRY'), MAX(strategy_id), '') AS strategy_id,
+		MAX(symbol) AS symbol,
+		MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') AS entry_price,
+		MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') AS exit_price,
+		MAX(COALESCE(NULLIF(filled_quantity, 0), quantity)) FILTER (WHERE trade_condition = 'ENTRY') AS qty,
+		MAX(side) FILTER (WHERE trade_condition = 'ENTRY') AS side,
+		MIN(created_at) AS entry_time,
+		MAX(created_at) AS exit_time
+	FROM filtered_orders
+	GROUP BY entry_order_id
+	HAVING COUNT(*) = 2
+		AND COUNT(*) FILTER (WHERE trade_condition = 'ENTRY') = 1
+		AND COUNT(*) FILTER (WHERE trade_condition <> 'ENTRY') = 1
+		AND MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') IS NOT NULL
+		AND MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') IS NOT NULL
+),
+calculated AS (
+	SELECT
+		entry_order_id,
+		strategy_id,
+		symbol,
+		side,
+		entry_price,
+		exit_price,
+		COALESCE(qty, 0) AS qty,
+		entry_time,
+		exit_time,
+		COALESCE(
+			CASE
+				WHEN side IN ('LONG','BUY') THEN (exit_price - entry_price) * qty
+				WHEN side IN ('SHORT','SELL') THEN (entry_price - exit_price) * qty
+			END,
+			0
+		) AS profit
+	FROM paired
+)
+SELECT
+	entry_order_id,
+	strategy_id,
+	symbol,
+	side,
+	entry_price,
+	exit_price,
+	qty,
+	profit,
+	SUM(profit) OVER (ORDER BY exit_time ASC, entry_order_id ASC) AS running_profit,
+	entry_time,
+	exit_time,
+	COUNT(*) OVER() AS total_count
+FROM calculated
+ORDER BY exit_time DESC, entry_order_id DESC
+LIMIT $%d OFFSET $%d`, whereSQL, limitArg, offsetArg)
+
+	items := []entity.OrderTradePnL{}
+	if err := r.db.SelectContext(ctx, &items, query, args...); err != nil {
+		return nil, 0, err
+	}
+	total := int64(0)
+	if len(items) > 0 {
+		total = items[0].TotalCount
+	}
+	return items, total, nil
+}
+
+func (r *OrderHistoryRepository) ListDailyReport(ctx context.Context, filter entity.OrderReportFilter) ([]entity.DailyOrderReport, error) {
+	whereSQL, args := orderReportWhere(filter)
+	query := fmt.Sprintf(`
+WITH filtered_orders AS (
+	SELECT entry_order_id, strategy_id, symbol, trade_condition, avg_fill_price, filled_quantity, quantity, side, created_at
+	FROM order_histories
+	WHERE %s
+),
+paired AS (
+	SELECT
+		entry_order_id,
+		COALESCE(MAX(strategy_id) FILTER (WHERE trade_condition = 'ENTRY'), MAX(strategy_id), '') AS strategy_id,
+		MAX(symbol) AS symbol,
+		MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') AS entry_price,
+		MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') AS exit_price,
+		MAX(COALESCE(NULLIF(filled_quantity, 0), quantity)) FILTER (WHERE trade_condition = 'ENTRY') AS qty,
+		MAX(side) FILTER (WHERE trade_condition = 'ENTRY') AS side,
+		MIN(created_at) AS entry_time,
+		MAX(created_at) AS exit_time
+	FROM filtered_orders
+	GROUP BY entry_order_id
+	HAVING COUNT(*) = 2
+		AND COUNT(*) FILTER (WHERE trade_condition = 'ENTRY') = 1
+		AND COUNT(*) FILTER (WHERE trade_condition <> 'ENTRY') = 1
+		AND MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') IS NOT NULL
+		AND MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') IS NOT NULL
+),
+calculated AS (
+	SELECT
+		strategy_id,
+		symbol,
+		entry_time,
+		exit_time,
+		COALESCE(qty, 0) AS qty,
+		COALESCE(
+			CASE
+				WHEN side IN ('LONG','BUY') THEN (exit_price - entry_price) * qty
+				WHEN side IN ('SHORT','SELL') THEN (entry_price - exit_price) * qty
+			END,
+			0
+		) AS profit
+	FROM paired
+)
+SELECT
+	date_trunc('day', exit_time)::date AS trade_date,
+	strategy_id,
+	symbol,
+	MIN(entry_time) AS start_trade_at,
+	MAX(exit_time) AS end_trade_at,
+	COALESCE(SUM(profit), 0) AS total_profit,
+	COALESCE(AVG(CASE WHEN profit > 0 THEN 1 ELSE 0 END), 0) AS win_rate,
+	COALESCE(AVG(qty), 0) AS avg_size,
+	COUNT(*) AS total_trades,
+	COALESCE(SUM(CASE WHEN profit >= 0 THEN 1 ELSE 0 END), 0) AS winning_trades,
+	COALESCE(SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END), 0) AS losing_trades
+FROM calculated
+GROUP BY date_trunc('day', exit_time)::date, strategy_id, symbol
+ORDER BY trade_date DESC, strategy_id ASC, symbol ASC
+LIMIT 1000`, whereSQL)
+
+	items := []entity.DailyOrderReport{}
+	err := r.db.SelectContext(ctx, &items, query, args...)
+	return items, err
+}
+
+func (r *OrderHistoryRepository) ListStrategyPerformance(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {
+	whereSQL, args := orderReportWhere(filter)
+	query := fmt.Sprintf(`
+WITH filtered_orders AS (
+	SELECT entry_order_id, strategy_id, symbol, trade_condition, avg_fill_price, filled_quantity, quantity, side, created_at
+	FROM order_histories
+	WHERE %s
+),
+paired AS (
+	SELECT
+		entry_order_id,
+		COALESCE(MAX(strategy_id) FILTER (WHERE trade_condition = 'ENTRY'), MAX(strategy_id), '') AS strategy_id,
+		MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') AS entry_price,
+		MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') AS exit_price,
+		MAX(COALESCE(NULLIF(filled_quantity, 0), quantity)) FILTER (WHERE trade_condition = 'ENTRY') AS qty,
+		MAX(side) FILTER (WHERE trade_condition = 'ENTRY') AS side,
+		MIN(created_at) AS entry_time,
+		MAX(created_at) AS exit_time
+	FROM filtered_orders
+	GROUP BY entry_order_id
+	HAVING COUNT(*) = 2
+		AND COUNT(*) FILTER (WHERE trade_condition = 'ENTRY') = 1
+		AND COUNT(*) FILTER (WHERE trade_condition <> 'ENTRY') = 1
+		AND MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') IS NOT NULL
+		AND MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') IS NOT NULL
+),
+calculated AS (
+	SELECT
+		COALESCE(NULLIF(strategy_id, ''), 'unknown') AS strategy_id,
+		entry_time,
+		exit_time,
+		COALESCE(qty, 0) AS qty,
+		COALESCE(
+			CASE
+				WHEN side IN ('LONG','BUY') THEN (exit_price - entry_price) * qty
+				WHEN side IN ('SHORT','SELL') THEN (entry_price - exit_price) * qty
+			END,
+			0
+		) AS profit
+	FROM paired
+)
+SELECT
+	strategy_id,
+	COALESCE(SUM(profit), 0) AS total_profit,
+	COALESCE(AVG(CASE WHEN profit > 0 THEN 1 ELSE 0 END), 0) AS win_rate,
+	COALESCE(AVG(profit), 0) AS avg_profit,
+	COALESCE(AVG(qty), 0) AS avg_size,
+	COALESCE(MAX(profit), 0) AS best_trade,
+	COALESCE(MIN(profit), 0) AS worst_trade,
+	COALESCE(
+		SUM(CASE WHEN profit > 0 THEN profit ELSE 0 END) /
+		NULLIF(ABS(SUM(CASE WHEN profit < 0 THEN profit ELSE 0 END)), 0),
+		0
+	) AS profit_factor,
+	COUNT(*) AS total_trades,
+	COALESCE(SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END), 0) AS winning_trades,
+	COALESCE(SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END), 0) AS losing_trades,
+	MIN(entry_time) AS first_trade_at,
+	MAX(exit_time) AS last_trade_at
+FROM calculated
+GROUP BY strategy_id
+ORDER BY total_profit DESC, win_rate DESC, total_trades DESC, strategy_id ASC
+LIMIT 1000`, whereSQL)
+
+	items := []entity.StrategyPerformanceReport{}
+	err := r.db.SelectContext(ctx, &items, query, args...)
+	return items, err
+}
+
+func orderReportWhere(filter entity.OrderReportFilter) (string, []any) {
+	conditions := []string{
+		"entry_order_id <> ''",
+		"avg_fill_price IS NOT NULL",
+	}
+	args := []any{}
+	if filter.StartTime != nil {
+		args = append(args, *filter.StartTime)
+		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", len(args)))
+	}
+	if filter.EndTime != nil {
+		args = append(args, *filter.EndTime)
+		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", len(args)))
+	}
+	if strings.TrimSpace(filter.StrategyID) != "" {
+		args = append(args, strings.TrimSpace(filter.StrategyID))
+		conditions = append(conditions, fmt.Sprintf("strategy_id = $%d", len(args)))
+	}
+	if strings.TrimSpace(filter.Symbol) != "" {
+		args = append(args, strings.TrimSpace(filter.Symbol))
+		conditions = append(conditions, fmt.Sprintf("symbol = $%d", len(args)))
+	}
+	return strings.Join(conditions, " AND "), args
 }

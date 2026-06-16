@@ -28,7 +28,11 @@ export type PaginationResponse<T> = {
 export type SortDirection = "asc" | "desc";
 
 export type ResourceKey =
+  | "overview"
   | "orders"
+  | "orderPnL"
+  | "dailyReports"
+  | "strategyPerformance"
   | "marketKlines"
   | "marketBackfills"
   | "symbolMappings"
@@ -70,9 +74,14 @@ export type ListQuery = {
   page: number;
   limit: number;
   keyword: string;
-  filters: Record<string, string>;
+  filters: Record<string, string | ListFilterValue>;
   sortField: string;
   sortDirection: SortDirection;
+};
+
+export type ListFilterValue = {
+  op: "eq" | "neq" | "in" | "contain" | "between" | "gte" | "lte" | "gt" | "lt";
+  value: string | string[];
 };
 
 export type DashboardPageConfig = {

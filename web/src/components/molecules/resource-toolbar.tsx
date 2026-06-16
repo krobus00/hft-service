@@ -6,7 +6,7 @@ import { Select } from "@/components/ui/select";
 
 type ResourceToolbarProps = {
   keyword: string;
-  filters: Record<string, string>;
+  filters: Record<string, string | { op: string; value: string | string[] }>;
   filterFields: string[];
   enumFields?: Record<string, string>;
   enums: Record<string, string[]>;
@@ -51,7 +51,7 @@ export function ResourceToolbar({
               return (
                 <Select
                   key={field}
-                  value={filters[field] ?? ""}
+                  value={filterValue(filters[field])}
                   onChange={(event) => onFilterChange(field, event.target.value)}
                   aria-label={humanize(field)}
                 >
@@ -67,7 +67,7 @@ export function ResourceToolbar({
             return (
               <Input
                 key={field}
-                value={filters[field] ?? ""}
+                value={filterValue(filters[field])}
                 onChange={(event) => onFilterChange(field, event.target.value)}
                 placeholder={humanize(field)}
               />
@@ -89,6 +89,13 @@ export function ResourceToolbar({
       </div>
     </div>
   );
+}
+
+function filterValue(value: string | { op: string; value: string | string[] } | undefined) {
+  if (typeof value === "string") {
+    return value;
+  }
+  return "";
 }
 
 function humanize(value: string) {

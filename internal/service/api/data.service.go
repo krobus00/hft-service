@@ -75,7 +75,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"exchange":         exchanges,
 		"role":             roles,
 		"permission":       permissions,
-		"dashboard_page":   {"orders", "marketKlines", "marketBackfills", "symbolMappings", "klineSubscriptions", "strategyConfigs", "settings", "users", "roles", "permissions", "dashboardPages"},
+		"dashboard_page":   {"orders", "orderPnL", "dailyReports", "strategyPerformance", "marketKlines", "marketBackfills", "symbolMappings", "klineSubscriptions", "strategyConfigs", "settings", "users", "roles", "permissions", "dashboardPages"},
 		"market_type":      {"spot", "futures"},
 		"position_side":    {"BOTH", "LONG", "SHORT"},
 		"order_side":       {"BUY", "SELL", "LONG", "SHORT"},
@@ -158,6 +158,30 @@ func (s *DataService) UpdateOrder(ctx context.Context, id string, values map[str
 
 func (s *DataService) DeleteOrder(ctx context.Context, id string) error {
 	return s.orderHistoryRepo.Delete(ctx, id)
+}
+
+func (s *DataService) ListOrderTradePnL(ctx context.Context, filter entity.OrderReportFilter) (*apiutil.PaginationResp, error) {
+	items, total, err := s.orderHistoryRepo.ListTradePnL(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	page := filter.Page
+	if page <= 0 {
+		page = 1
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	return apiutil.NewPaginationResp(page, limit, total, items), nil
+}
+
+func (s *DataService) ListDailyOrderReports(ctx context.Context, filter entity.OrderReportFilter) ([]entity.DailyOrderReport, error) {
+	return s.orderHistoryRepo.ListDailyReport(ctx, filter)
+}
+
+func (s *DataService) ListStrategyPerformanceReports(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {
+	return s.orderHistoryRepo.ListStrategyPerformance(ctx, filter)
 }
 
 func (s *DataService) ListMarketKlines(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {

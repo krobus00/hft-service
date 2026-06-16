@@ -43,6 +43,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/form/enums", h.withAuth(h.FormEnums))
 	mux.HandleFunc("/api/v1/dashboard/pages/menu", h.withAuth(h.DashboardPageMenu))
 
+	mux.HandleFunc("/api/v1/order-reports/trades", h.withPermission(constant.PermissionOrderReportRead, h.OrderTradePnL))
+	mux.HandleFunc("/api/v1/order-reports/daily", h.withPermission(constant.PermissionOrderReportRead, h.DailyOrderReports))
+	mux.HandleFunc("/api/v1/order-reports/strategy-performance", h.withPermission(constant.PermissionOrderReportRead, h.StrategyPerformanceReports))
 	mux.HandleFunc("/api/v1/orders", h.withPermission(constant.PermissionOrderRead, h.Orders))
 	mux.HandleFunc("/api/v1/orders/", h.withPermission(constant.PermissionOrderRead, h.OrderByID))
 	mux.HandleFunc("/api/v1/market/backfills", h.withPermission(constant.PermissionMarketRead, h.MarketBackfills))
@@ -227,6 +230,42 @@ func (h *Handler) Orders(w http.ResponseWriter, r *http.Request) {
 	default:
 		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
+}
+
+func (h *Handler) OrderTradePnL(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	filter, ok := parseOrderReportFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.dataService.ListOrderTradePnL(r.Context(), filter)
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) DailyOrderReports(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	filter, ok := parseOrderReportFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.dataService.ListDailyOrderReports(r.Context(), filter)
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) StrategyPerformanceReports(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	filter, ok := parseOrderReportFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.dataService.ListStrategyPerformanceReports(r.Context(), filter)
+	writeDataResult(w, result, err)
 }
 
 func (h *Handler) OrderByID(w http.ResponseWriter, r *http.Request) {
@@ -873,6 +912,65 @@ func parsePagination(w http.ResponseWriter, r *http.Request, model apiutil.Pagin
 		return nil, false
 	}
 	return &req, true
+}
+
+func parseOrderReportFilter(w http.ResponseWriter, r *http.Request) (entity.OrderReportFilter, bool) {
+	values := r.URL.Query()
+	filter := entity.OrderReportFilter{
+		StrategyID: strings.TrimSpace(values.Get("strategy_id")),
+		Symbol:     strings.TrimSpace(values.Get("symbol")),
+		Page:       parsePositiveInt64(values.Get("page"), 1),
+		Limit:      parsePositiveInt64(values.Get("limit"), 50),
+	}
+	if filter.Limit > 100 {
+		filter.Limit = 100
+	}
+
+	if raw := strings.TrimSpace(values.Get("start_time")); raw != "" {
+		parsed, err := parseReportTime(raw)
+		if err != nil {
+			apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, "invalid start_time")
+			return filter, false
+		}
+		filter.StartTime = &parsed
+	}
+	if raw := strings.TrimSpace(values.Get("end_time")); raw != "" {
+		parsed, err := parseReportTime(raw)
+		if err != nil {
+			apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, "invalid end_time")
+			return filter, false
+		}
+		filter.EndTime = &parsed
+	}
+	return filter, true
+}
+
+func parseReportTime(raw string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05.999 -0700",
+		"2006-01-02 15:04:05 -0700",
+		"2006-01-02",
+	}
+	var lastErr error
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
+}
+
+func parsePositiveInt64(raw string, fallback int64) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func parseMarketBackfillRequest(w http.ResponseWriter, body marketBackfillRequest) (apiservice.BackfillRequest, bool) {

@@ -29,6 +29,59 @@ export type BackfillJob = {
   updated_at: string;
 };
 
+export type OrderReportQuery = {
+  start_time?: string;
+  end_time?: string;
+  strategy_id?: string;
+  symbol?: string;
+  page?: number;
+  limit?: number;
+};
+
+export type OrderTradePnL = {
+  entry_order_id: string;
+  strategy_id: string;
+  symbol: string;
+  side: string;
+  entry_price: string;
+  exit_price: string;
+  qty: string;
+  profit: string;
+  running_profit: string;
+  entry_time: string;
+  exit_time: string;
+};
+
+export type DailyOrderReport = {
+  trade_date: string;
+  strategy_id: string;
+  symbol: string;
+  start_trade_at: string;
+  end_trade_at: string;
+  total_profit: string;
+  win_rate: string;
+  avg_size: string;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+};
+
+export type StrategyPerformanceReport = {
+  strategy_id: string;
+  total_profit: string;
+  win_rate: string;
+  avg_profit: string;
+  avg_size: string;
+  best_trade: string;
+  worst_trade: string;
+  profit_factor: string;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  first_trade_at: string;
+  last_trade_at: string;
+};
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9804/api/v1";
 
@@ -242,12 +295,27 @@ export function buildListPath(resource: ResourceConfig, query: ListQuery) {
     params.set("keyword", query.keyword.trim());
   }
   const filters = Object.entries(query.filters)
-    .filter(([, value]) => value.trim() !== "")
-    .map(([field, value]) => ({ field, op: "eq", value: [value.trim()] }));
+    .map(([field, value]) => normalizeListFilter(field, value))
+    .filter((filter) => filter.value.length > 0);
   if (filters.length > 0) {
     params.set("filter", JSON.stringify(filters));
   }
   return `${resource.path}?${params.toString()}`;
+}
+
+function normalizeListFilter(
+  field: string,
+  value: string | { op: string; value: string | string[] },
+) {
+  if (typeof value === "string") {
+    return { field, op: "eq", value: value.trim() ? [value.trim()] : [] };
+  }
+  const values = Array.isArray(value.value) ? value.value : [value.value];
+  return {
+    field,
+    op: value.op,
+    value: values.map((item) => item.trim()).filter(Boolean),
+  };
 }
 
 export async function listResource(
@@ -307,6 +375,44 @@ export async function getDashboardPagesMenu() {
       accessToken: session.tokens.access_token,
     }),
   );
+}
+
+export async function listOrderTradePnL(query: OrderReportQuery) {
+  return withSession((session) =>
+    apiRequest<PaginationResponse<OrderTradePnL>>(`/order-reports/trades?${buildReportParams(query)}`, {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function listDailyOrderReports(query: OrderReportQuery) {
+  return withSession((session) =>
+    apiRequest<DailyOrderReport[]>(`/order-reports/daily?${buildReportParams(query)}`, {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function listStrategyPerformanceReports(query: OrderReportQuery) {
+  return withSession((session) =>
+    apiRequest<StrategyPerformanceReport[]>(`/order-reports/strategy-performance?${buildReportParams(query)}`, {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+function buildReportParams(query: OrderReportQuery) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value == null || value === "") {
+      continue;
+    }
+    params.set(key, String(value));
+  }
+  return params.toString();
 }
 
 export async function startMarketBackfill(body: BackfillRequest) {

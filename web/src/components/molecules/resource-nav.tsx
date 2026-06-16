@@ -6,6 +6,7 @@ import {
   Database,
   History,
   KeyRound,
+  LayoutDashboard,
   LayoutList,
   Lock,
   Settings,
@@ -92,7 +93,11 @@ export function ResourceNav({
 }
 
 const resourceIcon: Partial<Record<ResourceKey, typeof Database>> = {
+  overview: LayoutDashboard,
   orders: Activity,
+  orderPnL: BarChart3,
+  dailyReports: BarChart3,
+  strategyPerformance: BarChart3,
   marketKlines: CandlestickChart,
   marketBackfills: History,
   symbolMappings: SlidersHorizontal,

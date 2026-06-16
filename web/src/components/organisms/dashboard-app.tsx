@@ -6,7 +6,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ResourceNav } from "@/components/molecules/resource-nav";
 import { BackfillPanel } from "@/components/organisms/backfill-panel";
+import { DailyReportPanel } from "@/components/organisms/daily-report-panel";
+import { DashboardOverviewPanel } from "@/components/organisms/dashboard-overview-panel";
+import { OrderPnLPanel } from "@/components/organisms/order-pnl-panel";
 import { ResourcePanel } from "@/components/organisms/resource-panel";
+import { StrategyPerformancePanel } from "@/components/organisms/strategy-performance-panel";
 import { DashboardTemplate } from "@/components/templates/dashboard-template";
 import { Button } from "@/components/ui/button";
 import { getDashboardPagesMenu } from "@/lib/api-client";
@@ -157,8 +161,16 @@ export function DashboardApp({ initialResourceKey = "orders" }: DashboardAppProp
     >
       <div className="grid gap-6">
         {activeResource ? (
-          activeResource.key === "marketBackfills" ? (
+          activeResource.key === "overview" ? (
+            <DashboardOverviewPanel />
+          ) : activeResource.key === "marketBackfills" ? (
             <BackfillPanel key={activeResource.key} resource={activeResource} user={session.user} />
+          ) : activeResource.key === "orderPnL" ? (
+            <OrderPnLPanel key={activeResource.key} resource={activeResource} />
+          ) : activeResource.key === "dailyReports" ? (
+            <DailyReportPanel key={activeResource.key} resource={activeResource} />
+          ) : activeResource.key === "strategyPerformance" ? (
+            <StrategyPerformancePanel key={activeResource.key} resource={activeResource} />
           ) : (
             <ResourcePanel key={activeResource.key} resource={activeResource} user={session.user} />
           )
@@ -188,7 +200,9 @@ function mergeManagedPages(
     return baseResources;
   }
   const byKey = new Map(baseResources.map((resource) => [resource.key, resource]));
-  const result: ResourceConfig[] = [];
+  const result: ResourceConfig[] = baseResources
+    .filter((resource) => resource.key === "overview")
+    .map((resource) => ({ ...resource }));
   for (const page of pages) {
     const base = byKey.get(page.resource_key);
     if (!base || !page.visible) {
