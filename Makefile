@@ -17,7 +17,7 @@ HFT_LOCAL_IMAGE ?= hft-service:local
 WEB_LOCAL_IMAGE ?= krobot-web:local
 STRATEGY_LOCAL_IMAGE ?= python-strategy:local
 
-PROFILES ?= infra app web
+PROFILES ?= infra app web strategy
 COMPOSE_PROFILE_FLAGS := $(foreach profile,$(PROFILES),--profile=$(profile))
 BACKUP_COMPOSE_FILE ?=
 BACKUP_COMPOSE_FILE_FLAGS := $(if $(BACKUP_COMPOSE_FILE),-f $(BACKUP_COMPOSE_FILE),)
