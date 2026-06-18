@@ -136,7 +136,6 @@ class AIHybridStrategy(StrategyBase):
         "base_url",
         "use_ai",
         "model_name",
-        "max_tokens",
         "ai_interval_bars",
         "entry_confidence",
         "override_confidence",
@@ -210,7 +209,6 @@ class AIHybridStrategy(StrategyBase):
 
         self.use_ai = bool(section.get("use_ai", True))
         self.model_name = section.get("ai_model", "gpt-4o-mini")
-        self.max_tokens = int(GLOBAL_CONFIG.get("max_tokens", 1200))
         self.ai_interval_bars = max(1, int(section.get("ai_interval_bars", 3)))
         self.entry_confidence = float(section.get("entry_confidence", 0.62))
         self.override_confidence = float(section.get("override_confidence", 0.75))
@@ -714,7 +712,6 @@ class AIHybridStrategy(StrategyBase):
         try:
             response = self.ai_client.chat.completions.create(
                 model=self.model_name,
-                max_tokens=max(1, self.max_tokens),
                 messages=[
                     {
                         "role": "system",
@@ -982,10 +979,8 @@ class AIHybridStrategy(StrategyBase):
         )
 
         try:
-            init_max_tokens = max(64, min(max(1, self.max_tokens), 256))
             response = self.ai_client.chat.completions.create(
                 model=self.model_name,
-                max_tokens=init_max_tokens,
                 messages=[
                     {
                         "role": "system",

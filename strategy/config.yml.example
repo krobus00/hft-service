@@ -21,7 +21,6 @@ global:
   redis_delete_removed_state: false
   proxy_host: https://llm.proxy
   api_key: YOUR_API_KEY
-  max_tokens: 1200
 
 krobot01:
   monitor_enabled: true
