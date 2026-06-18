@@ -121,3 +121,29 @@ supertrend:
   atr_period: 10
   multiplier: 3.0
   historical_limit: 600
+
+capital_guard:
+  name: CAPITAL_GUARD
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19017
+
+  historical_limit: 1000
+
+  ema_fast: 21
+  ema_slow: 55
+  ema_trend: 200
+  vwap_window: 120
+  volume_window: 30
+  volume_mult: 1.10
+
+  atr_n: 14
+  atr_min_pct: 0.05
+  atr_max_pct: 1.25
+  max_bar_range_pct: 1.50
+
+  rsi_period: 14
+  rsi_long_min: 52
+  rsi_long_max: 72
+  rsi_short_min: 28
+  rsi_short_max: 48

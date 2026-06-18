@@ -94,7 +94,12 @@ class RedisStateStore:
         if not raw:
             return StoredPairState()
 
-        payload = pickle.loads(raw)
+        try:
+            payload = pickle.loads(raw)
+        except Exception as exc:
+            LOGGER.warning("redis state decode failed key=%s error=%s", state_key, exc)
+            return StoredPairState()
+
         if not isinstance(payload, dict):
             return StoredPairState()
 
@@ -949,6 +954,38 @@ class StrategyRunner:
         last_reconcile_ms = 0
         monitor_server: Optional[StrategyMonitorServer] = None
 
+        async def save_pair_state(state_key: str, strategy_state: Dict[str, Any]) -> None:
+            state_store[state_key] = strategy_state
+            if redis_store is None:
+                return
+            try:
+                await redis_store.save(
+                    state_key,
+                    StoredPairState(
+                        strategy_state=strategy_state,
+                        entry_price=entry_price_store.get(state_key),
+                        entry_order_id=entry_order_id_store.get(state_key, ""),
+                    ),
+                )
+            except Exception as exc:
+                metrics.last_error = f"redis state save failed: {exc}"
+                LOGGER.warning("redis state save failed key=%s error=%s", state_key, exc)
+
+        async def load_pair_state(state_key: str) -> StoredPairState:
+            if redis_store is None:
+                return StoredPairState(strategy_state=state_store.get(state_key))
+            try:
+                restored = await redis_store.load(state_key)
+                if restored.strategy_state is None and state_key in state_store:
+                    restored.strategy_state = state_store.get(state_key)
+                    restored.entry_price = entry_price_store.get(state_key)
+                    restored.entry_order_id = entry_order_id_store.get(state_key, "")
+                return restored
+            except Exception as exc:
+                metrics.last_error = f"redis state load failed: {exc}"
+                LOGGER.warning("redis state load failed key=%s error=%s", state_key, exc)
+                return StoredPairState(strategy_state=state_store.get(state_key))
+
         def clone_strategy_for_pair(pair_key: str) -> tuple[StrategyBase, asyncio.Lock]:
             try:
                 pair_strategy = copy.deepcopy(self.strategy)
@@ -1202,16 +1239,7 @@ class StrategyRunner:
                                 )
 
                         latest_state = pair_strategy.snapshot_state()
-                        state_store[state_key] = latest_state
-                        if redis_store is not None:
-                            await redis_store.save(
-                                state_key,
-                                StoredPairState(
-                                    strategy_state=latest_state,
-                                    entry_price=entry_price_store.get(state_key),
-                                    entry_order_id=entry_order_id_store.get(state_key, ""),
-                                ),
-                            )
+                        await save_pair_state(state_key, latest_state)
 
                 await msg.ack()
                 metrics.messages_acked += 1
@@ -1326,11 +1354,20 @@ class StrategyRunner:
                     target["market_type"],
                     target["interval"],
                 )
-                state_store.pop(state_key, None)
-                entry_price_store.pop(state_key, None)
-                entry_order_id_store.pop(state_key, None)
-                if redis_store is not None and self.runtime.redis_delete_removed_state:
-                    await redis_store.delete(state_key)
+                pair_strategy = pair_ctx.get("strategy")
+                if isinstance(pair_strategy, StrategyBase):
+                    await save_pair_state(state_key, pair_strategy.snapshot_state())
+
+                if self.runtime.redis_delete_removed_state:
+                    state_store.pop(state_key, None)
+                    entry_price_store.pop(state_key, None)
+                    entry_order_id_store.pop(state_key, None)
+                    if redis_store is not None:
+                        try:
+                            await redis_store.delete(state_key)
+                        except Exception as exc:
+                            metrics.last_error = f"redis state delete failed: {exc}"
+                            LOGGER.warning("redis state delete failed key=%s error=%s", state_key, exc)
                 LOGGER.info("removed strategy pair=%s", key)
 
             for key in add_keys:
@@ -1344,9 +1381,7 @@ class StrategyRunner:
                 )
 
                 try:
-                    restored = StoredPairState()
-                    if redis_store is not None:
-                        restored = await redis_store.load(state_key)
+                    restored = await load_pair_state(state_key)
 
                     if restored.strategy_state is not None:
                         state_store[state_key] = restored.strategy_state
@@ -1372,9 +1407,7 @@ class StrategyRunner:
                         finally:
                             self.strategy = original_strategy
                         latest_state = temp_strategy.snapshot_state()
-                        state_store[state_key] = latest_state
-                        if redis_store is not None:
-                            await redis_store.save(state_key, StoredPairState(strategy_state=latest_state))
+                        await save_pair_state(state_key, latest_state)
                 except Exception as exc:
                     metrics.last_error = f"warmup skipped for pair={key}: {exc}"
                     LOGGER.warning("warmup skipped pair=%s error=%s", key, exc)

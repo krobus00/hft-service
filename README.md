@@ -397,6 +397,9 @@ VALUES
  NOW(), NOW()),
 ('96c50cef-07ea-42e2-b4f7-bf9f12c11a82', 'python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02,
  2, 3, 2, 10, 0.25, 0.15, 0.12, 0.20, 24, 1, true,
+ NOW(), NOW()),
+('a0320598-131f-4b44-8400-7ab1810bfc50', 'python-capital-guard', 'binance', 'futures', 'BTC_USDT', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02,
+ 2, 5, 2, 30, 0.35, 0.18, 0.12, 0.18, 18, 1, true,
  NOW(), NOW());
 ```
 
@@ -411,25 +414,25 @@ Important rules:
 Copy and update strategy config:
 
 ```bash
-copy strategy\config.yml.example strategy\config.yml
+cp strategy/config.yml.example strategy/config.yml
 ```
 
 Minimum required settings in `strategy/config.yml`:
 
 - `global.nats_url`
-- `global.strategy_api_base_url`
-- `global.strategy_api_key`
-- `<strategy>.source`
-- `<strategy>.strategy_id`
-- `<strategy>.order_subject`
-- `<strategy>.order_type`
-- `<strategy>.order_qty`
+- `global.db_dsn`
+- `global.redis_url`
+- `<strategy>.monitor_enabled`
+- `<strategy>.monitor_host`
+- `<strategy>.monitor_port`
+- `<strategy>.historical_limit`
 
 Notes:
 
 - Do not set `user_id` in strategy config anymore.
 - Strategy user routing is now pair-based from `strategy_configs.user_id`.
 - Pair-level risk controls are now sourced from `strategy_configs` columns.
+- For Docker Compose, set strategy monitor hosts to `0.0.0.0` so mapped ports are reachable from the host.
 
 ### 9) Run services (separate terminals)
 
@@ -509,6 +512,8 @@ Then run:
 ```bash
 make up-service
 ```
+
+The strategy profile includes `strategy-krobot01`, `strategy-krobot02`, `strategy-krobot03`, `strategy-ai`, `strategy-supertrend`, and `strategy-capital-guard`. The `capital_guard.py` service publishes its monitor on `${STRATEGY_CAPITAL_GUARD_PORT:-19017}` and uses the `python-capital-guard` strategy key in `strategy_configs`.
 
 Redis and NATS passwords are optional. If you set them in Compose, also update `config.yml` and `strategy/config.yml` URLs to match.
 

@@ -216,6 +216,23 @@ services:
     profiles:
       - strategy
 
+  strategy-capital-guard:
+    <<: *strategy-service
+    command: ["bash", "-c", "python capital_guard.py"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${STRATEGY_CAPITAL_GUARD_PORT:-19017}:19017"
+    profiles:
+      - strategy
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis

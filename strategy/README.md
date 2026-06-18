@@ -63,6 +63,15 @@ Main strategy design goals:
 - Risk behavior: No local TP/SL/trailing-stop logic. Strategy fully trusts Supertrend direction changes.
 - Runtime standard: Pair routing, user mapping, and risk-config resolution are handled by `strategy_configs` + shared `core/framework.py` (no per-strategy `kline_subject`/`queue_name` settings).
 
+#### `capital_guard.py` (Guarded Trend Scalper)
+
+- Signal style: Conservative trend/momentum entry for liquid, short-interval markets.
+- Long entry: EMA 21 > EMA 55 > EMA 200, close above rolling VWAP, MACD bullish cross, RSI in a bounded bullish range, volume confirmation, and ATR/range filters passing.
+- Short entry: EMA 21 < EMA 55 < EMA 200, close below rolling VWAP, MACD bearish cross, RSI in a bounded bearish range, volume confirmation, and ATR/range filters passing.
+- Exit logic: Take profit, stop loss, trailing stop, protective VWAP/EMA/MACD exits, and max-hold timeout.
+- Risk behavior: Cooldown after trades, stronger cooldown after stop loss, pause after stop-loss streak, and same-side re-entry lock until the opposite MACD cross appears.
+- Primary use case: Prefer fewer, higher-confirmation trades over constant exposure. It is not a profitability guarantee.
+
 ## Quick Start
 
 ### 1) Build image
@@ -88,6 +97,12 @@ Override strategy file:
 
 ```bash
 make run-strategy STRATEGY_FILE=krobot01
+```
+
+Example running the guarded strategy:
+
+```bash
+make run-strategy STRATEGY_FILE=capital_guard
 ```
 
 The Make target uses:
@@ -159,6 +174,7 @@ VALUES
 Rules:
 
 - `strategy` must match the strategy key used by the Python runner, for example `python-krobot01-ema200-vwap-macd`.
+- For `capital_guard.py`, use `python-capital-guard`.
 - `symbol/interval/exchange/market_type` must match active market-data rows.
 - `user_id` must match a configured exchange account key.
 - `position_side` and `source` are stored in DB rows so one strategy process can route different pairs correctly.
