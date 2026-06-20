@@ -122,8 +122,8 @@ function OrderRow({ order }: { order: DashboardOrder }) {
     <tr className="border-t">
       <td className="px-3 py-3 font-medium">{order.symbol}</td>
       <td className="max-w-48 truncate px-3 py-3 text-muted-foreground">{order.strategy_id || "-"}</td>
-      <td className="px-3 py-3"><Badge variant="outline">{order.side}</Badge></td>
-      <td className="px-3 py-3"><Badge variant={order.state === "running" ? "secondary" : "outline"}>{order.state}</Badge></td>
+      <td className="px-3 py-3"><Badge variant={order.side.toLowerCase() === "buy" ? "success" : "warning"}>{order.side}</Badge></td>
+      <td className="px-3 py-3"><Badge variant={order.state === "running" ? "success" : "outline"}>{order.state}</Badge></td>
       <td className="px-3 py-3 tabular-nums">{decimal(number(order.filled_quantity) || order.quantity)}</td>
       <td className="px-3 py-3 tabular-nums">{decimal(order.entry_price)}</td>
       <td className="px-3 py-3 tabular-nums">{decimal(order.exit_price)}</td>
@@ -134,11 +134,11 @@ function OrderRow({ order }: { order: DashboardOrder }) {
 }
 
 function MetricCard({ label, value, icon: Icon, tone }: { label: string; value: string; icon: typeof Activity; tone?: "gain" | "loss" }) {
-  return <Card className="rounded-md"><CardContent className="p-4"><div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground"><span>{label}</span><Icon className="h-4 w-4" /></div><p className={cn("mt-3 text-xl font-semibold tabular-nums", tone === "loss" ? "text-destructive" : tone === "gain" ? "text-primary" : "")}>{value}</p></CardContent></Card>;
+  return <Card className="overflow-hidden rounded-lg transition-transform hover:-translate-y-0.5 hover:shadow-md"><div className={cn("h-1 bg-gradient-to-r from-primary to-emerald-400", tone === "loss" && "from-destructive to-orange-400")} /><CardContent className="p-4"><div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground"><span>{label}</span><span className="rounded-md bg-primary/10 p-1.5 text-primary"><Icon className="h-4 w-4" /></span></div><p className={cn("mt-3 text-xl font-semibold tabular-nums", tone === "loss" ? "text-destructive" : tone === "gain" ? "text-primary" : "")}>{value}</p></CardContent></Card>;
 }
 
 function StatusRow({ label, value, detail, healthy }: { label: string; value: string; detail: string; healthy: boolean }) {
-  return <div className="rounded-md border p-3"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{label}</span><Badge variant={healthy ? "secondary" : "outline"} className={healthy ? "" : "border-destructive/40 text-destructive"}>{healthy ? <Radio className="mr-1 h-3 w-3" /> : <AlertTriangle className="mr-1 h-3 w-3" />}{value}</Badge></div><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>;
+  return <div className="rounded-md border bg-muted/30 p-3"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{label}</span><Badge variant={healthy ? "success" : "destructive"}>{healthy ? <Radio className="mr-1 h-3 w-3" /> : <AlertTriangle className="mr-1 h-3 w-3" />}{value}</Badge></div><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>;
 }
 
 function buildInsight(data: DashboardOverview | null) {

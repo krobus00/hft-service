@@ -3,6 +3,7 @@
 import { ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { listOrderTradePnL, type OrderTradePnL } from "@/lib/api-client";
@@ -95,7 +96,7 @@ export function OrderPnLPanel({ resource }: OrderPnLPanelProps) {
                     <td className="max-w-48 truncate px-3 py-3 font-mono text-xs" title={item.entry_order_id}>{item.entry_order_id}</td>
                     <td className="max-w-48 truncate px-3 py-3">{item.strategy_id}</td>
                     <td className="px-3 py-3">{item.symbol}</td>
-                    <td className="px-3 py-3">{item.side}</td>
+                    <td className="px-3 py-3"><Badge variant={["BUY", "LONG"].includes(item.side.toUpperCase()) ? "success" : "warning"}>{item.side}</Badge></td>
                     <td className="px-3 py-3 tabular-nums">{formatNumber(item.entry_price)}</td>
                     <td className="px-3 py-3 tabular-nums">{formatNumber(item.exit_price)}</td>
                     <td className="px-3 py-3 tabular-nums">{formatNumber(item.qty)}</td>

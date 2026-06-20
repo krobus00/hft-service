@@ -4,6 +4,7 @@ import { LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings, User, X } from "
 import { ReactNode, useState } from "react";
 
 import { BrandWordmark } from "@/components/atoms/brand-wordmark";
+import { ThemeToggle } from "@/components/atoms/theme-toggle";
 import { ProfileSettingsModal } from "@/components/molecules/profile-settings-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,10 +36,10 @@ export function DashboardTemplate({
   const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   return (
-    <main className="min-h-screen bg-background">
+    <main className="min-h-screen bg-transparent">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 hidden border-r bg-card transition-[width] duration-200 lg:flex lg:flex-col",
+          "fixed inset-y-0 left-0 z-40 hidden border-r bg-card/95 shadow-xl shadow-foreground/5 backdrop-blur transition-[width] duration-200 lg:flex lg:flex-col",
           isCollapsed ? "w-20" : "w-64",
         )}
       >
@@ -134,6 +135,11 @@ export function DashboardTemplate({
               <div className="min-w-0 text-right sm:hidden">
                 <h1 className="truncate text-sm font-semibold">{pageTitle}</h1>
               </div>
+              <Badge variant="success" className="hidden gap-1 sm:inline-flex">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                Console online
+              </Badge>
+              <ThemeToggle />
               <div className="relative">
                 <Button
                   type="button"

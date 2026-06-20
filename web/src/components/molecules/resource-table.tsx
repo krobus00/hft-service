@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp, ChevronsUpDown, ChevronLeft, ChevronRight, Eye, Trash2 } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { PaginationMeta, ResourceConfig, SortDirection } from "@/types/api";
 
@@ -160,6 +161,18 @@ function formatCell(value: unknown, column: string) {
       </span>
     );
   }
+  if (badgeColumns.has(column)) {
+    const label = String(value);
+    const normalized = label.toUpperCase();
+    const variant = ["RUNNING", "FILLED", "BUY", "LONG"].includes(normalized)
+      ? "success"
+      : ["NEW", "PARTIAL", "SELL", "SHORT"].includes(normalized)
+        ? "warning"
+        : ["REJECTED", "CANCELED", "EXPIRED"].includes(normalized)
+          ? "destructive"
+          : "secondary";
+    return <Badge variant={variant}>{label}</Badge>;
+  }
   if (isTimestampColumn(column) && (typeof value === "string" || typeof value === "number")) {
     return formatLocalTime(value);
   }
@@ -203,6 +216,7 @@ function isNumericColumn(column: string) {
 }
 
 const numericColumns = new Set(["entry_price", "exit_price", "pnl", "price", "quantity", "filled_quantity", "avg_fill_price", "realized_pnl"]);
+const badgeColumns = new Set(["side", "state", "status", "type"]);
 
 function formatNumber(value: string | number) {
   const number = Number(value);
