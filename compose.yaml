@@ -15,6 +15,7 @@ x-strategy-service: &strategy-service
   volumes:
     - ./strategy/config.yml:/app/config.yml:ro
   restart: unless-stopped
+  cpus: "1.0"
   security_opt:
     - no-new-privileges:true
   networks:

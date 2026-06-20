@@ -96,11 +96,10 @@ class RedisStateStore:
         try:
             payload = pickle.loads(raw)
         except Exception as exc:
-            LOGGER.warning("redis state decode failed key=%s error=%s", state_key, exc)
-            return StoredPairState()
+            raise RuntimeError(f"redis state decode failed key={state_key}: {exc}") from exc
 
         if not isinstance(payload, dict):
-            return StoredPairState()
+            raise RuntimeError(f"redis state is invalid key={state_key}")
 
         return StoredPairState(
             strategy_state=payload.get("strategy_state") if isinstance(payload.get("strategy_state"), dict) else None,
@@ -196,6 +195,7 @@ class StrategyMonitorServer:
 
 class StrategyBase(ABC):
     __slots__ = ("config", "last_close_time_ms", "last_close_time_ms_by_symbol")
+    TRANSIENT_STATE_SLOTS = {"config", "ai_client", "_http_client"}
 
     def __init__(self, config: StrategyConfig):
         self.config = config
@@ -245,7 +245,7 @@ class StrategyBase(ABC):
     def snapshot_state(self):
         snapshot: Dict[str, Any] = {}
         for slot in self._iter_slots():
-            if slot == "config":
+            if slot in self.TRANSIENT_STATE_SLOTS:
                 continue
             if not hasattr(self, slot):
                 continue
@@ -258,7 +258,7 @@ class StrategyBase(ABC):
         if not isinstance(snapshot, dict):
             return
         for slot in self._iter_slots():
-            if slot == "config":
+            if slot in self.TRANSIENT_STATE_SLOTS:
                 continue
             if slot not in snapshot:
                 continue
@@ -945,6 +945,12 @@ class StrategyRunner:
             db_pool_max_size,
         )
 
+        fatal_error = asyncio.get_running_loop().create_future()
+
+        def fail_runtime(exc: BaseException) -> None:
+            if not fatal_error.done():
+                fatal_error.set_exception(exc)
+
         nc = NATS()
 
         async def on_disconnected():
@@ -957,7 +963,7 @@ class StrategyRunner:
 
         async def on_error(exc):
             metrics.last_error = f"NATS async error: {exc}"
-            LOGGER.warning("NATS async error: %s", exc)
+            fail_runtime(exc)
 
         async def on_closed():
             LOGGER.warning("NATS connection closed")
@@ -977,7 +983,6 @@ class StrategyRunner:
         )
         js = nc.jetstream()
         active_pairs: Dict[str, Dict[str, Any]] = {}
-        shared_strategy_lock = asyncio.Lock()
         refresh_interval_sec = max(1, int(self.runtime.strategy_config_refresh_interval_sec or 10))
         no_pairs_logged = False
         last_active_summary = ""
@@ -990,17 +995,10 @@ class StrategyRunner:
         async def load_pair_state(state_key: str) -> StoredPairState:
             return await redis_store.load(state_key)
 
-        def clone_strategy_for_pair(pair_key: str) -> tuple[StrategyBase, asyncio.Lock]:
-            try:
-                pair_strategy = copy.deepcopy(self.strategy)
-                return pair_strategy, asyncio.Lock()
-            except Exception as exc:
-                LOGGER.warning(
-                    "strategy clone failed pair=%s error=%s; falling back to shared strategy lock",
-                    pair_key,
-                    exc,
-                )
-                return self.strategy, shared_strategy_lock
+        def clone_strategy_for_pair() -> tuple[StrategyBase, asyncio.Lock]:
+            pair_strategy = copy.copy(self.strategy)
+            pair_strategy.restore_state(initial_state)
+            return pair_strategy, asyncio.Lock()
 
         async def process_message(pair_key: str, msg) -> None:
             try:
@@ -1241,6 +1239,7 @@ class StrategyRunner:
                 LOGGER.exception("handler error pair=%s", pair_key)
                 with contextlib.suppress(Exception):
                     await msg.nak(delay=1)
+                raise
 
         async def pair_worker(pair_key: str) -> None:
             while True:
@@ -1275,18 +1274,14 @@ class StrategyRunner:
                     metrics.last_error = f"message queue full pair={pair_key}"
                     LOGGER.warning("message queue full pair=%s", pair_key)
                     await msg.nak(delay=1)
+                    fail_runtime(RuntimeError(metrics.last_error))
 
             return handler
 
         async def reconcile_pairs() -> None:
             nonlocal no_pairs_logged, last_active_summary, last_reconcile_ms
 
-            try:
-                desired_pairs = await self.load_strategy_targets_from_order_configs()
-            except Exception as exc:
-                metrics.last_error = f"failed loading strategy_configs: {exc}"
-                LOGGER.warning("failed loading strategy_configs: %s", exc)
-                return
+            desired_pairs = await self.load_strategy_targets_from_order_configs()
 
             last_reconcile_ms = now_ms()
             metrics.last_reconcile_ms = last_reconcile_ms
@@ -1329,7 +1324,7 @@ class StrategyRunner:
                 worker = pair_ctx.get("worker")
                 if worker is not None:
                     worker.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await worker
                 message_queue = pair_ctx.get("message_queue")
                 if message_queue is not None:
@@ -1366,29 +1361,25 @@ class StrategyRunner:
                     target["interval"],
                 )
 
-                try:
-                    restored = await load_pair_state(state_key)
+                restored = await load_pair_state(state_key)
 
-                    if restored.strategy_state is None:
-                        temp_strategy, _ = clone_strategy_for_pair(key)
-                        temp_strategy.restore_state(initial_state)
-                        self._apply_strategy_overrides(target.get("order_config"), temp_strategy)
-                        original_strategy = self.strategy
-                        try:
-                            self.strategy = temp_strategy
-                            await self.warmup_from_postgres(
-                                target["exchange"],
-                                target["market_type"],
-                                target["symbol"],
-                                target["interval"],
-                            )
-                        finally:
-                            self.strategy = original_strategy
-                        latest_state = temp_strategy.snapshot_state()
-                        await save_pair_state(state_key, StoredPairState(strategy_state=latest_state))
-                except Exception as exc:
-                    metrics.last_error = f"warmup skipped for pair={key}: {exc}"
-                    LOGGER.warning("warmup skipped pair=%s error=%s", key, exc)
+                if restored.strategy_state is None:
+                    temp_strategy, _ = clone_strategy_for_pair()
+                    temp_strategy.restore_state(initial_state)
+                    self._apply_strategy_overrides(target.get("order_config"), temp_strategy)
+                    original_strategy = self.strategy
+                    try:
+                        self.strategy = temp_strategy
+                        await self.warmup_from_postgres(
+                            target["exchange"],
+                            target["market_type"],
+                            target["symbol"],
+                            target["interval"],
+                        )
+                    finally:
+                        self.strategy = original_strategy
+                    latest_state = temp_strategy.snapshot_state()
+                    await save_pair_state(state_key, StoredPairState(strategy_state=latest_state))
 
                 subject = self._resolve_subject_for_pair(target["exchange"], target["symbol"], target["interval"])
                 queue_name = self._resolve_queue_name(
@@ -1398,7 +1389,7 @@ class StrategyRunner:
                     target["interval"],
                 )
                 queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(self.runtime.message_queue_size or 1000)))
-                pair_strategy, pair_lock = clone_strategy_for_pair(key)
+                pair_strategy, pair_lock = clone_strategy_for_pair()
                 active_pairs[key] = {
                     "target": target,
                     "strategy": pair_strategy,
@@ -1441,21 +1432,14 @@ class StrategyRunner:
                             cb=build_handler(key),
                         )
                 except Exception as exc:
-                    metrics.last_error = f"subscribe error pair={key}: {exc}"
-                    LOGGER.warning(
-                        "subscribe error pair=%s subject=%s stream=%s queue=%s durable=%s error=%s:%s; retrying on next reconcile",
-                        key,
-                        subject,
-                        KLINE_STREAM_NAME,
-                        queue_name,
-                        queue_name,
-                        type(exc).__name__,
-                        exc,
-                    )
                     active_pairs.pop(key, None)
-                    continue
+                    raise RuntimeError(f"subscribe error pair={key}: {exc}") from exc
                 active_pairs[key]["subscription"] = sub
-                active_pairs[key]["worker"] = asyncio.create_task(pair_worker(key))
+                worker = asyncio.create_task(pair_worker(key))
+                worker.add_done_callback(
+                    lambda task: None if task.cancelled() or task.exception() is None else fail_runtime(task.exception())
+                )
+                active_pairs[key]["worker"] = worker
                 LOGGER.info(
                     "subscribed strategy pair=%s stream=%s subject=%s queue=%s durable=%s",
                     key,
@@ -1523,6 +1507,7 @@ class StrategyRunner:
                 LOGGER.exception("position close sync failed")
                 with contextlib.suppress(Exception):
                     await msg.nak(delay=1)
+                fail_runtime(exc)
 
         async def monitor_payload() -> Dict[str, Any]:
             def _slice_by_tokens(values: Dict[str, Any], tokens: tuple[str, ...]) -> Dict[str, Any]:
@@ -1642,24 +1627,24 @@ class StrategyRunner:
                 await reconcile_pairs()
                 if control_subscription is None:
                     durable = "STRATEGY_CONTROL_" + re.sub(r"[^A-Za-z0-9_-]", "_", str(self.runtime.strategy_id or self.strategy.config.name))[:120]
-                    try:
-                        control_subscription = await js.subscribe(
-                            STRATEGY_POSITION_CLOSED_SUBJECT,
-                            manual_ack=True,
-                            durable=durable,
-                            stream=STRATEGY_CONTROL_STREAM_NAME,
-                            deliver_policy=DeliverPolicy.ALL,
-                            cb=handle_position_closed,
-                        )
-                    except Exception as exc:
-                        LOGGER.warning("strategy control subscribe failed; retrying: %s", exc)
-                await asyncio.sleep(refresh_interval_sec)
+                    control_subscription = await js.subscribe(
+                        STRATEGY_POSITION_CLOSED_SUBJECT,
+                        manual_ack=True,
+                        durable=durable,
+                        stream=STRATEGY_CONTROL_STREAM_NAME,
+                        deliver_policy=DeliverPolicy.ALL,
+                        cb=handle_position_closed,
+                    )
+                try:
+                    await asyncio.wait_for(asyncio.shield(fatal_error), timeout=refresh_interval_sec)
+                except asyncio.TimeoutError:
+                    pass
         finally:
             for pair_ctx in list(active_pairs.values()):
                 worker = pair_ctx.get("worker")
                 if worker is not None:
                     worker.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await worker
             if monitor_server is not None:
                 await monitor_server.close()

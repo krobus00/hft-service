@@ -1,3 +1,5 @@
+import pickle
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -38,6 +40,19 @@ class ExternalCloseStrategy(StrategyBase):
         return None
 
 
+class ClientStrategy(StrategyBase):
+    __slots__ = ("ai_client", "_http_client", "cooldown")
+
+    def __init__(self):
+        super().__init__(StrategyConfig("test", "BTCUSDT", "1m", 1))
+        self.ai_client = threading.RLock()
+        self._http_client = threading.RLock()
+        self.cooldown = 2
+
+    def on_closed_candle(self, candle, is_warmup=False):
+        return None
+
+
 class ExternalCloseTest(unittest.TestCase):
     def test_clears_direct_and_per_symbol_position_state(self):
         strategy = ExternalCloseStrategy()
@@ -50,6 +65,14 @@ class ExternalCloseTest(unittest.TestCase):
         self.assertIsNone(strategy.states["BTCUSDT"]["entry_price"])
         self.assertFalse(strategy.states["BTCUSDT"]["trail_armed"])
         self.assertEqual(strategy.states["BTCUSDT"]["reentry_lock_side"], "LONG")
+
+    def test_snapshot_excludes_runtime_clients(self):
+        snapshot = ClientStrategy().snapshot_state()
+
+        self.assertEqual(snapshot["cooldown"], 2)
+        self.assertNotIn("ai_client", snapshot)
+        self.assertNotIn("_http_client", snapshot)
+        pickle.dumps(snapshot)
 
 
 class RedisStateStoreTest(unittest.IsolatedAsyncioTestCase):
@@ -81,6 +104,14 @@ class RedisStateStoreTest(unittest.IsolatedAsyncioTestCase):
         await store.save("pair", expected)
 
         self.assertEqual(await store.load("pair"), expected)
+
+    async def test_invalid_state_is_fatal(self):
+        client = FakeRedis()
+        store = RedisStateStore(client, "test", 0)
+        client.values[store.key("pair")] = pickle.dumps([])
+
+        with self.assertRaises(RuntimeError):
+            await store.load("pair")
 
 
 if __name__ == "__main__":
