@@ -109,6 +109,11 @@ func (r *StrategyConfigRepository) ListExchanges(ctx context.Context) ([]string,
 	return items, err
 }
 
+func (r *StrategyConfigRepository) CountEnabled(ctx context.Context) (enabled, total int64, err error) {
+	err = r.db.QueryRowxContext(ctx, "SELECT COUNT(*) FILTER (WHERE enabled), COUNT(*) FROM strategy_configs").Scan(&enabled, &total)
+	return
+}
+
 func (r *StrategyConfigRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
 	model := &entity.StrategyConfig{}
 	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).

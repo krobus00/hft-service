@@ -8,7 +8,7 @@ import {
   KeyRound,
   LayoutDashboard,
   LayoutList,
-  Lock,
+  Radio,
   Settings,
   Shield,
   SlidersHorizontal,
@@ -54,16 +54,14 @@ export function ResourceNav({
               <button
                 key={resource.key}
                 type="button"
-                disabled={!allowed}
                 className={cn(
                   "group relative flex h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm transition-colors",
                   "border border-transparent text-muted-foreground hover:border-border hover:bg-background hover:text-foreground",
                   active && "border-primary/25 bg-primary/10 text-foreground shadow-sm",
-                  !allowed && "cursor-not-allowed opacity-45 hover:border-transparent hover:bg-transparent hover:text-muted-foreground",
                   collapsed && "justify-center px-0",
                 )}
                 onClick={() => onSelect(resource.key)}
-                title={allowed ? resource.description : `Requires ${resource.readPermission}`}
+                title={resource.description}
               >
                 {active ? (
                   <span className="absolute left-0 top-2 h-7 w-1 rounded-r-full bg-primary" />
@@ -72,15 +70,14 @@ export function ResourceNav({
                   className={cn(
                     "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-card transition-colors",
                     active && "border-primary/30 bg-primary text-primary-foreground",
-                    !allowed && "bg-muted",
                   )}
                 >
-                  {allowed ? <Icon className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                  <Icon className="h-4 w-4" />
                 </span>
                 <span className={cn("min-w-0 flex-1", collapsed && "sr-only")}>
                   <span className="block truncate font-medium">{resource.label}</span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {allowed ? resource.shortDescription : "No access"}
+                    {resource.shortDescription}
                   </span>
                 </span>
               </button>
@@ -99,6 +96,7 @@ const resourceIcon: Partial<Record<ResourceKey, typeof Database>> = {
   dailyReports: BarChart3,
   strategyPerformance: BarChart3,
   marketKlines: CandlestickChart,
+  priceReferences: Radio,
   marketBackfills: History,
   symbolMappings: SlidersHorizontal,
   klineSubscriptions: BellRing,
@@ -116,5 +114,14 @@ function groupResources(resources: ResourceConfig[]) {
     const name = resource.navParent ?? "";
     groups.set(name, [...(groups.get(name) ?? []), resource]);
   }
-  return Array.from(groups.entries()).map(([name, items]) => ({ name, items }));
+  const preferred = ["", "Trading", "Automation", "Market Data", "Administration"];
+  const names = [
+    ...preferred.filter((name) => groups.has(name)),
+    ...Array.from(groups.keys()).filter((name) => !preferred.includes(name)),
+  ];
+  return names
+    .map((name) => ({
+      name,
+      items: (groups.get(name) ?? []).sort((left, right) => (left.navOrder ?? 0) - (right.navOrder ?? 0)),
+    }));
 }

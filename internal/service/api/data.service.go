@@ -25,6 +25,7 @@ type DataService struct {
 	authRepo              *repository.APIAuthRepository
 	settingRepo           *repository.APISettingRepository
 	orderHistoryRepo      *repository.OrderHistoryRepository
+	priceReferenceRepo    *repository.PriceReferenceRepository
 	marketKlineRepo       *repository.MarketKlineRepository
 	symbolMappingRepo     *repository.SymbolMappingRepository
 	klineSubscriptionRepo *repository.KlineSubscriptionRepository
@@ -43,6 +44,7 @@ func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext)
 		authRepo:              repository.NewAPIAuthRepository(apiDB),
 		settingRepo:           repository.NewAPISettingRepository(apiDB),
 		orderHistoryRepo:      repository.NewOrderHistoryRepository(orderDB),
+		priceReferenceRepo:    repository.NewPriceReferenceRepository(orderDB),
 		marketKlineRepo:       repository.NewMarketKlineRepository(marketDB),
 		symbolMappingRepo:     repository.NewSymbolMappingRepository(marketDB),
 		klineSubscriptionRepo: repository.NewKlineSubscriptionRepository(marketDB),
@@ -60,6 +62,36 @@ func (s *DataService) GetAuthConfig(ctx context.Context) (*AuthConfigResponse, e
 		return nil, err
 	}
 	return &AuthConfigResponse{ShowSetupLink: settingBoolValue(setting["value"], true)}, nil
+}
+
+func (s *DataService) GetDashboardOverview(ctx context.Context) (*DashboardOverviewResponse, error) {
+	now := time.Now().UTC()
+	summary, recent, err := s.orderHistoryRepo.GetDashboardOverview(ctx, now.Add(-24*time.Hour), 20)
+	if err != nil {
+		return nil, err
+	}
+	enabled, total, err := s.strategyConfigRepo.CountEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := &DashboardOverviewResponse{
+		GeneratedAt:       now,
+		Orders24h:         summary.Orders24h,
+		ProblemOrders24h:  summary.ProblemOrders24h,
+		ClosedTrades:      summary.ClosedTrades,
+		WinningTrades:     summary.WinningTrades,
+		RunningTrades:     summary.RunningTrades,
+		RealizedPnL:       summary.RealizedPnL,
+		RunningPnL:        summary.RunningPnL,
+		EnabledStrategies: enabled,
+		TotalStrategies:   total,
+		LastPriceAt:       nullTimePtr(summary.LastPriceAt),
+		RecentOrders:      make([]OrderHistoryResponse, 0, len(recent)),
+	}
+	for i := range recent {
+		result.RecentOrders = append(result.RecentOrders, *orderHistoryWithMetricsResponse(&recent[i]))
+	}
+	return result, nil
 }
 
 func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, error) {
@@ -80,7 +112,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"exchange":         exchanges,
 		"role":             roles,
 		"permission":       permissions,
-		"dashboard_page":   {"orders", "orderPnL", "dailyReports", "strategyPerformance", "marketKlines", "marketBackfills", "symbolMappings", "klineSubscriptions", "strategyConfigs", "settings", "users", "roles", "permissions", "dashboardPages"},
+		"dashboard_page":   {"orders", "orderPnL", "dailyReports", "strategyPerformance", "strategyConfigs", "marketKlines", "priceReferences", "marketBackfills", "symbolMappings", "klineSubscriptions", "users", "roles", "permissions", "settings", "dashboardPages"},
 		"market_type":      {"spot", "futures"},
 		"position_side":    {"BOTH", "LONG", "SHORT"},
 		"order_side":       {"BUY", "SELL", "LONG", "SHORT"},
@@ -128,9 +160,6 @@ func (s *DataService) ListOrders(ctx context.Context, req *apiutil.PaginationReq
 	if err != nil {
 		return nil, err
 	}
-	if err := s.populateOpenOrderPnL(ctx, resp); err != nil {
-		return nil, err
-	}
 	return orderHistoryPaginationResponse(resp), nil
 }
 
@@ -140,142 +169,16 @@ func (s *DataService) GetOrder(ctx context.Context, id string) (*OrderHistoryRes
 	if err != nil {
 		return nil, err
 	}
-	if err := s.populateOpenOrderMetric(ctx, result); err != nil {
-		return nil, err
-	}
 	return orderHistoryWithMetricsResponse(result), nil
 }
 
-func (s *DataService) populateOpenOrderPnL(ctx context.Context, resp *apiutil.PaginationResp) error {
-	items, ok := resp.Items.([]entity.OrderHistoryWithMetrics)
-	if !ok {
-		return nil
-	}
-	keys := make([]entity.MarketPriceKey, 0, len(items))
-	seen := map[string]struct{}{}
-	for i := range items {
-		if !needsCurrentPricePnL(&items[i]) {
-			continue
-		}
-		key := orderMarketPriceKey(items[i].OrderHistory)
-		keyID := marketPriceKeyID(key)
-		if _, exists := seen[keyID]; exists {
-			continue
-		}
-		seen[keyID] = struct{}{}
-		keys = append(keys, key)
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-
-	prices, err := s.marketKlineRepo.ListLatestClosePrices(ctx, keys)
-	if err != nil {
-		return err
-	}
-	priceByKey := make(map[string]decimal.Decimal, len(prices))
-	for _, price := range prices {
-		priceByKey[marketPriceKeyID(entity.MarketPriceKey{
-			Exchange:   price.Exchange,
-			MarketType: price.MarketType,
-			Symbol:     price.Symbol,
-		})] = price.ClosePrice
-	}
-
-	for i := range items {
-		if !needsCurrentPricePnL(&items[i]) {
-			continue
-		}
-		currentPrice, exists := priceByKey[marketPriceKeyID(orderMarketPriceKey(items[i].OrderHistory))]
-		if !exists {
-			continue
-		}
-		items[i].PnL = calculateOrderPnL(items[i].Side, *items[i].EntryPrice, currentPrice, orderMetricQuantity(items[i].OrderHistory))
-	}
-	resp.Items = items
-	return nil
+func (s *DataService) ListPriceReferences(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	return s.priceReferenceRepo.GetPagination(ctx, req)
 }
 
-func (s *DataService) populateOpenOrderMetric(ctx context.Context, item *entity.OrderHistoryWithMetrics) error {
-	if !needsCurrentPricePnL(item) {
-		return nil
-	}
-	prices, err := s.marketKlineRepo.ListLatestClosePrices(ctx, []entity.MarketPriceKey{orderMarketPriceKey(item.OrderHistory)})
-	if err != nil {
-		return err
-	}
-	if len(prices) == 0 {
-		return nil
-	}
-	item.PnL = calculateOrderPnL(item.Side, *item.EntryPrice, prices[0].ClosePrice, orderMetricQuantity(item.OrderHistory))
-	return nil
-}
-
-func needsCurrentPricePnL(item *entity.OrderHistoryWithMetrics) bool {
-	return item != nil && isOpenOrderState(item.State) && item.EntryPrice != nil && item.PnL == nil
-}
-
-func isOpenOrderState(state string) bool {
-	return state == "open" || state == "running"
-}
-
-func orderMarketPriceKey(order entity.OrderHistory) entity.MarketPriceKey {
-	return entity.MarketPriceKey{
-		Exchange:   order.Exchange,
-		MarketType: order.MarketType,
-		Symbol:     order.Symbol,
-	}
-}
-
-func marketPriceKeyID(key entity.MarketPriceKey) string {
-	return key.Exchange + "|" + key.MarketType + "|" + key.Symbol
-}
-
-func orderMetricQuantity(order entity.OrderHistory) decimal.Decimal {
-	if !order.FilledQuantity.IsZero() {
-		return order.FilledQuantity
-	}
-	return order.Quantity
-}
-
-func calculateOrderPnL(side entity.OrderSide, entryPrice, exitPrice, quantity decimal.Decimal) *decimal.Decimal {
-	if quantity.IsZero() {
-		return nil
-	}
-	switch side {
-	case entity.OrderSideShort, entity.OrderSideSell:
-		result := entryPrice.Sub(exitPrice).Mul(quantity)
-		return &result
-	default:
-		result := exitPrice.Sub(entryPrice).Mul(quantity)
-		return &result
-	}
-}
-
-func (s *DataService) CreateOrder(ctx context.Context, values map[string]any) (*OrderHistoryResponse, error) {
-	item := mapOrderHistory(values, nil)
-	if err := s.orderHistoryRepo.Create(ctx, item); err != nil {
-		return nil, err
-	}
-	return s.GetOrder(ctx, item.ID)
-}
-
-func (s *DataService) UpdateOrder(ctx context.Context, id string, values map[string]any) (*OrderHistoryResponse, error) {
-	current, err := s.orderHistoryRepo.FindByID(ctx, id)
-	if current == nil || err != nil {
-		_, err := ensureFound(current, err)
-		return nil, err
-	}
-	item := mapOrderHistory(values, current)
-	item.ID = id
-	if err := s.orderHistoryRepo.Update(ctx, item); err != nil {
-		return nil, err
-	}
-	return s.GetOrder(ctx, id)
-}
-
-func (s *DataService) DeleteOrder(ctx context.Context, id string) error {
-	return s.orderHistoryRepo.Delete(ctx, id)
+func (s *DataService) GetPriceReference(ctx context.Context, id string) (*entity.PriceReference, error) {
+	item, err := s.priceReferenceRepo.FindByID(ctx, id)
+	return ensureFound(item, err)
 }
 
 func (s *DataService) ListOrderTradePnL(ctx context.Context, filter entity.OrderReportFilter) (*apiutil.PaginationResp, error) {
@@ -309,31 +212,6 @@ func (s *DataService) ListMarketKlines(ctx context.Context, req *apiutil.Paginat
 func (s *DataService) GetMarketKline(ctx context.Context, id string) (*entity.MarketKline, error) {
 	item, err := s.marketKlineRepo.FindByID(ctx, id)
 	return ensureFound(item, err)
-}
-
-func (s *DataService) CreateMarketKline(ctx context.Context, values map[string]any) (*entity.MarketKline, error) {
-	item := mapMarketKline(values, nil)
-	if err := s.marketKlineRepo.Create(ctx, item); err != nil {
-		return nil, err
-	}
-	return s.GetMarketKline(ctx, item.ID)
-}
-
-func (s *DataService) UpdateMarketKline(ctx context.Context, id string, values map[string]any) (*entity.MarketKline, error) {
-	current, err := s.marketKlineRepo.FindByID(ctx, id)
-	if current == nil || err != nil {
-		return ensureFound(current, err)
-	}
-	item := mapMarketKline(values, current)
-	item.ID = id
-	if err := s.marketKlineRepo.Update(ctx, item); err != nil {
-		return nil, err
-	}
-	return s.GetMarketKline(ctx, id)
-}
-
-func (s *DataService) DeleteMarketKline(ctx context.Context, id string) error {
-	return s.marketKlineRepo.Delete(ctx, id)
 }
 
 func (s *DataService) ListSymbolMappings(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
@@ -600,7 +478,13 @@ func (s *DataService) GetUser(ctx context.Context, id string) (*APIUserResponse,
 	if err != nil {
 		return nil, err
 	}
-	return apiUserResponse(user), nil
+	roles, err := s.authRepo.ListRoleNamesByUserID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	result := apiUserResponse(user)
+	result.Roles = roles
+	return result, nil
 }
 
 func (s *DataService) CreateUser(ctx context.Context, values map[string]any) (*APIUserResponse, error) {
@@ -657,11 +541,19 @@ func (s *DataService) ListRoles(ctx context.Context, req *apiutil.PaginationReq)
 	return s.authRepo.GetRolesPagination(ctx, req)
 }
 
-func (s *DataService) GetRole(ctx context.Context, id string) (*entity.APIRole, error) {
-	return s.authRepo.FindRoleByID(ctx, id)
+func (s *DataService) GetRole(ctx context.Context, id string) (*APIRoleResponse, error) {
+	role, err := s.authRepo.FindRoleByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	permissions, err := s.authRepo.ListPermissionNamesByRoleID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &APIRoleResponse{APIRole: *role, Permissions: permissions}, nil
 }
 
-func (s *DataService) CreateRole(ctx context.Context, values map[string]any) (*entity.APIRole, error) {
+func (s *DataService) CreateRole(ctx context.Context, values map[string]any) (*APIRoleResponse, error) {
 	role := &entity.APIRole{
 		Name:        stringValue(values, "name", ""),
 		Description: stringValue(values, "description", ""),
@@ -672,7 +564,7 @@ func (s *DataService) CreateRole(ctx context.Context, values map[string]any) (*e
 	return s.GetRole(ctx, role.ID)
 }
 
-func (s *DataService) UpdateRole(ctx context.Context, id string, values map[string]any) (*entity.APIRole, error) {
+func (s *DataService) UpdateRole(ctx context.Context, id string, values map[string]any) (*APIRoleResponse, error) {
 	current, err := s.authRepo.FindRoleByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -794,87 +686,6 @@ func mapDashboardPage(values map[string]any, current *entity.APIDashboardPage) *
 	item.WritePermission = stringValue(values, "write_permission", item.WritePermission)
 	item.SortOrder = intValue(values, "sort_order", item.SortOrder)
 	item.Visible = boolValue(values, "visible", item.Visible)
-	return item
-}
-
-func mapOrderHistory(values map[string]any, current *entity.OrderHistory) *entity.OrderHistory {
-	now := time.Now().UTC()
-	item := &entity.OrderHistory{
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		MarketType:     "spot",
-		PositionSide:   "BOTH",
-		TradeCondition: "UNKNOWN",
-	}
-	if current != nil {
-		item = current
-		item.UpdatedAt = now
-	}
-	item.RequestID = stringValue(values, "request_id", item.RequestID)
-	item.UserID = stringValue(values, "user_id", item.UserID)
-	item.Exchange = stringValue(values, "exchange", item.Exchange)
-	item.MarketType = stringValue(values, "market_type", item.MarketType)
-	item.PositionSide = stringValue(values, "position_side", item.PositionSide)
-	item.Symbol = stringValue(values, "symbol", item.Symbol)
-	item.OrderID = stringValue(values, "order_id", item.OrderID)
-	item.EntryOrderID = stringValue(values, "entry_order_id", item.EntryOrderID)
-	item.ClientOrderID = nullStringValue(values, "client_order_id", item.ClientOrderID)
-	item.Side = entity.OrderSide(stringValue(values, "side", string(item.Side)))
-	item.Type = entity.OrderType(stringValue(values, "type", string(item.Type)))
-	item.Price = decimalPtrValue(values, "price", item.Price)
-	item.Quantity = decimalValue(values, "quantity", item.Quantity)
-	item.FilledQuantity = decimalValue(values, "filled_quantity", item.FilledQuantity)
-	item.AvgFillPrice = decimalPtrValue(values, "avg_fill_price", item.AvgFillPrice)
-	item.Status = stringValue(values, "status", item.Status)
-	item.Leverage = decimalPtrValue(values, "leverage", item.Leverage)
-	item.Fee = decimalPtrValue(values, "fee", item.Fee)
-	item.RealizedPnl = decimalPtrValue(values, "realized_pnl", item.RealizedPnl)
-	item.CreatedAtExchange = nullTimeValue(values, "created_at_exchange", item.CreatedAtExchange)
-	item.SentAt = nullTimeValue(values, "sent_at", item.SentAt)
-	item.AcknowledgedAt = nullTimeValue(values, "acknowledged_at", item.AcknowledgedAt)
-	item.FilledAt = nullTimeValue(values, "filled_at", item.FilledAt)
-	item.StrategyID = nullStringValue(values, "strategy_id", item.StrategyID)
-	item.TradeCondition = stringValue(values, "trade_condition", item.TradeCondition)
-	item.OrderReason = stringValue(values, "order_reason", item.OrderReason)
-	item.ExitType = stringValue(values, "exit_type", item.ExitType)
-	item.ErrorMessage = nullStringValue(values, "error_message", item.ErrorMessage)
-	item.IsPaperTrading = boolValue(values, "is_paper_trading", item.IsPaperTrading)
-	return item
-}
-
-func mapMarketKline(values map[string]any, current *entity.MarketKline) *entity.MarketKline {
-	now := time.Now().UTC()
-	item := &entity.MarketKline{
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		MarketType: "spot",
-		EventTime:  now,
-		OpenTime:   now,
-		CloseTime:  now,
-	}
-	if current != nil {
-		item = current
-		item.UpdatedAt = now
-	}
-	item.ID = stringValue(values, "id", item.ID)
-	item.Exchange = stringValue(values, "exchange", item.Exchange)
-	item.MarketType = stringValue(values, "market_type", item.MarketType)
-	item.EventType = stringValue(values, "event_type", item.EventType)
-	item.EventTime = timeValue(values, "event_time", item.EventTime)
-	item.Symbol = stringValue(values, "symbol", item.Symbol)
-	item.Interval = stringValue(values, "interval", item.Interval)
-	item.OpenTime = timeValue(values, "open_time", item.OpenTime)
-	item.CloseTime = timeValue(values, "close_time", item.CloseTime)
-	item.OpenPrice = decimalValue(values, "open_price", item.OpenPrice)
-	item.HighPrice = decimalValue(values, "high_price", item.HighPrice)
-	item.LowPrice = decimalValue(values, "low_price", item.LowPrice)
-	item.ClosePrice = decimalValue(values, "close_price", item.ClosePrice)
-	item.BaseVolume = decimalValue(values, "base_volume", item.BaseVolume)
-	item.QuoteVolume = decimalValue(values, "quote_volume", item.QuoteVolume)
-	item.TakerBaseVolume = decimalValue(values, "taker_base_volume", item.TakerBaseVolume)
-	item.TakerQuoteVolume = decimalValue(values, "taker_quote_volume", item.TakerQuoteVolume)
-	item.TradeCount = int32(intValue(values, "trade_count", int(item.TradeCount)))
-	item.IsClosed = boolValue(values, "is_closed", item.IsClosed)
 	return item
 }
 
@@ -1069,22 +880,6 @@ func decimalValue(values map[string]any, key string, fallback decimal.Decimal) d
 	return parsed
 }
 
-func decimalPtrValue(values map[string]any, key string, fallback *decimal.Decimal) *decimal.Decimal {
-	value, ok := values[key]
-	if !ok {
-		return fallback
-	}
-	raw := strings.TrimSpace(fmt.Sprint(value))
-	if raw == "" || raw == "<nil>" {
-		return nil
-	}
-	parsed, err := decimal.NewFromString(raw)
-	if err != nil {
-		return fallback
-	}
-	return &parsed
-}
-
 func nullStringValue(values map[string]any, key string, fallback sql.NullString) sql.NullString {
 	value, ok := values[key]
 	if !ok {
@@ -1092,35 +887,6 @@ func nullStringValue(values map[string]any, key string, fallback sql.NullString)
 	}
 	raw := strings.TrimSpace(fmt.Sprint(value))
 	return sql.NullString{String: raw, Valid: raw != ""}
-}
-
-func nullTimeValue(values map[string]any, key string, fallback sql.NullTime) sql.NullTime {
-	value, ok := values[key]
-	if !ok {
-		return fallback
-	}
-	raw := strings.TrimSpace(fmt.Sprint(value))
-	if raw == "" || raw == "<nil>" {
-		return sql.NullTime{}
-	}
-	parsed, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		return fallback
-	}
-	return sql.NullTime{Time: parsed, Valid: true}
-}
-
-func timeValue(values map[string]any, key string, fallback time.Time) time.Time {
-	value, ok := values[key]
-	if !ok {
-		return fallback
-	}
-	raw := strings.TrimSpace(fmt.Sprint(value))
-	parsed, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }
 
 func stringSliceValue(values map[string]any, key string) []string {

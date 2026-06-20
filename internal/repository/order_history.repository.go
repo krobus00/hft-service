@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
@@ -239,7 +240,7 @@ func (r *OrderHistoryRepository) ListOpenEntriesByStrategyConfig(ctx context.Con
 			"oh.symbol":          config.Symbol,
 			"oh.trade_condition": string(entity.TradeConditionEntry),
 		}).
-		Where("exit_match.exit_price IS NULL").
+		Where("trade.exit_price IS NULL").
 		OrderBy("oh.created_at DESC")
 
 	sqlQuery, args, err := query.ToSql()
@@ -250,6 +251,44 @@ func (r *OrderHistoryRepository) ListOpenEntriesByStrategyConfig(ctx context.Con
 	items := []entity.OrderHistoryWithMetrics{}
 	err = r.db.SelectContext(ctx, &items, sqlQuery, args...)
 	return items, err
+}
+
+func (r *OrderHistoryRepository) GetDashboardOverview(ctx context.Context, since time.Time, recentLimit uint64) (entity.DashboardOrderSummary, []entity.OrderHistoryWithMetrics, error) {
+	var summary entity.DashboardOrderSummary
+	if err := r.db.GetContext(ctx, &summary, `SELECT
+	(SELECT COUNT(*) FROM order_histories WHERE created_at >= $1) AS orders_24h,
+	(SELECT COUNT(*) FROM order_histories WHERE created_at >= $1 AND (status IN ('REJECTED', 'EXPIRED') OR error_message <> '')) AS problem_orders_24h,
+	(SELECT COUNT(*) FROM order_trades WHERE exit_time >= $1) AS closed_trades,
+	(SELECT COUNT(*) FROM order_trades WHERE exit_time >= $1 AND profit > 0) AS winning_trades,
+	(SELECT COUNT(*) FROM order_trades WHERE exit_time IS NULL) AS running_trades,
+	(SELECT COALESCE(SUM(profit), 0) FROM order_trades WHERE exit_time >= $1) AS realized_pnl,
+	(SELECT COALESCE(SUM(CASE
+		WHEN trade.side IN ('LONG','BUY') THEN (price.price - trade.entry_price) * trade.quantity
+		WHEN trade.side IN ('SHORT','SELL') THEN (trade.entry_price - price.price) * trade.quantity
+	END), 0)
+	FROM order_trades trade
+	JOIN price_references price ON price.exchange = trade.exchange
+		AND price.market_type = trade.market_type
+		AND price.symbol = trade.symbol
+	WHERE trade.exit_time IS NULL AND trade.entry_price IS NOT NULL) AS running_pnl,
+	(SELECT MAX(updated_at) FROM price_references) AS last_price_at
+	`, since); err != nil {
+		return entity.DashboardOrderSummary{}, nil, err
+	}
+
+	recentQuery, recentArgs, err := orderHistoryMetricsSelect().
+		Where(sq.Eq{"oh.trade_condition": string(entity.TradeConditionEntry)}).
+		OrderBy("oh.created_at DESC").
+		Limit(recentLimit).
+		ToSql()
+	if err != nil {
+		return entity.DashboardOrderSummary{}, nil, err
+	}
+	recent := []entity.OrderHistoryWithMetrics{}
+	if err := r.db.SelectContext(ctx, &recent, recentQuery, recentArgs...); err != nil {
+		return entity.DashboardOrderSummary{}, nil, err
+	}
+	return summary, recent, nil
 }
 
 func orderHistoryBaseSort(req *apiutil.PaginationReq) (string, string) {
@@ -280,34 +319,25 @@ func orderHistoryMetricsSelect() sq.SelectBuilder {
 		Select(
 			"oh.*",
 			`CASE
-				WHEN exit_match.exit_price IS NOT NULL THEN 'closed'
+				WHEN trade.exit_price IS NOT NULL THEN 'closed'
 				ELSE 'running'
 			END AS state`,
-			`COALESCE(oh.avg_fill_price, oh.price) AS entry_price`,
-			`exit_match.exit_price AS exit_price`,
+			`COALESCE(trade.entry_price, oh.avg_fill_price, oh.price) AS entry_price`,
+			`trade.exit_price AS exit_price`,
 			`CASE
-				WHEN exit_match.exit_price IS NOT NULL
-					AND COALESCE(oh.avg_fill_price, oh.price) IS NOT NULL
-				THEN COALESCE(
-					exit_match.realized_pnl,
-					CASE
-						WHEN oh.side IN ('LONG','BUY') THEN (exit_match.exit_price - COALESCE(oh.avg_fill_price, oh.price)) * COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity)
-						WHEN oh.side IN ('SHORT','SELL') THEN (COALESCE(oh.avg_fill_price, oh.price) - exit_match.exit_price) * COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity)
-					END
-				)
+				WHEN COALESCE(trade.entry_price, oh.avg_fill_price, oh.price) IS NULL THEN NULL
+				WHEN trade.exit_price IS NOT NULL THEN trade.profit
+				WHEN pr.price IS NOT NULL THEN CASE
+					WHEN oh.side IN ('LONG','BUY') THEN (pr.price - COALESCE(trade.entry_price, oh.avg_fill_price, oh.price)) * COALESCE(trade.quantity, NULLIF(oh.filled_quantity, 0), oh.quantity)
+					WHEN oh.side IN ('SHORT','SELL') THEN (COALESCE(trade.entry_price, oh.avg_fill_price, oh.price) - pr.price) * COALESCE(trade.quantity, NULLIF(oh.filled_quantity, 0), oh.quantity)
+				END
 			END AS pnl`,
 		).
 		From("order_histories oh").
-		LeftJoin(`LATERAL (
-			SELECT COALESCE(x.avg_fill_price, x.price) AS exit_price, x.realized_pnl
-			FROM order_histories x
-			WHERE oh.entry_order_id <> ''
-				AND x.entry_order_id = oh.entry_order_id
-				AND x.trade_condition <> 'ENTRY'
-				AND COALESCE(x.avg_fill_price, x.price) IS NOT NULL
-			ORDER BY x.created_at DESC
-			LIMIT 1
-		) exit_match ON true`)
+		LeftJoin("order_trades trade ON trade.entry_history_id = oh.id").
+		LeftJoin(`price_references pr ON pr.exchange = oh.exchange
+			AND pr.market_type = oh.market_type
+			AND pr.symbol = oh.symbol`)
 }
 
 func (r *OrderHistoryRepository) ListExchanges(ctx context.Context) ([]string, error) {
@@ -407,7 +437,7 @@ func (r *OrderHistoryRepository) Delete(ctx context.Context, id string) error {
 }
 
 func (r *OrderHistoryRepository) ListTradePnL(ctx context.Context, filter entity.OrderReportFilter) ([]entity.OrderTradePnL, int64, error) {
-	whereSQL, args := orderReportWhere(filter)
+	whereSQL, args := tradeReportWhere(filter)
 	limit := filter.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 50
@@ -420,65 +450,13 @@ func (r *OrderHistoryRepository) ListTradePnL(ctx context.Context, filter entity
 	limitArg := len(args) - 1
 	offsetArg := len(args)
 
-	query := fmt.Sprintf(`
-WITH filtered_orders AS (
-	SELECT entry_order_id, strategy_id, symbol, trade_condition, avg_fill_price, filled_quantity, quantity, side, created_at
-	FROM order_histories
-	WHERE %s
-),
-paired AS (
-	SELECT
-		entry_order_id,
-		COALESCE(MAX(strategy_id) FILTER (WHERE trade_condition = 'ENTRY'), MAX(strategy_id), '') AS strategy_id,
-		MAX(symbol) AS symbol,
-		MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') AS entry_price,
-		MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') AS exit_price,
-		MAX(COALESCE(NULLIF(filled_quantity, 0), quantity)) FILTER (WHERE trade_condition = 'ENTRY') AS qty,
-		MAX(side) FILTER (WHERE trade_condition = 'ENTRY') AS side,
-		MIN(created_at) AS entry_time,
-		MAX(created_at) AS exit_time
-	FROM filtered_orders
-	GROUP BY entry_order_id
-	HAVING COUNT(*) = 2
-		AND COUNT(*) FILTER (WHERE trade_condition = 'ENTRY') = 1
-		AND COUNT(*) FILTER (WHERE trade_condition <> 'ENTRY') = 1
-		AND MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') IS NOT NULL
-		AND MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') IS NOT NULL
-),
-calculated AS (
-	SELECT
-		entry_order_id,
-		strategy_id,
-		symbol,
-		side,
-		entry_price,
-		exit_price,
-		COALESCE(qty, 0) AS qty,
-		entry_time,
-		exit_time,
-		COALESCE(
-			CASE
-				WHEN side IN ('LONG','BUY') THEN (exit_price - entry_price) * qty
-				WHEN side IN ('SHORT','SELL') THEN (entry_price - exit_price) * qty
-			END,
-			0
-		) AS profit
-	FROM paired
-)
-SELECT
-	entry_order_id,
-	strategy_id,
-	symbol,
-	side,
-	entry_price,
-	exit_price,
-	qty,
-	profit,
+	query := fmt.Sprintf(`SELECT
+	entry_order_id, COALESCE(strategy_id, '') AS strategy_id, symbol, side,
+	entry_price, exit_price, quantity AS qty, profit,
 	SUM(profit) OVER (ORDER BY exit_time ASC, entry_order_id ASC) AS running_profit,
-	entry_time,
-	exit_time,
-	COUNT(*) OVER() AS total_count
-FROM calculated
+	entry_time, exit_time, COUNT(*) OVER() AS total_count
+FROM order_trades
+WHERE %s
 ORDER BY exit_time DESC, entry_order_id DESC
 LIMIT $%d OFFSET $%d`, whereSQL, limitArg, offsetArg)
 
@@ -494,61 +472,21 @@ LIMIT $%d OFFSET $%d`, whereSQL, limitArg, offsetArg)
 }
 
 func (r *OrderHistoryRepository) ListDailyReport(ctx context.Context, filter entity.OrderReportFilter) ([]entity.DailyOrderReport, error) {
-	whereSQL, args := orderReportWhere(filter)
-	query := fmt.Sprintf(`
-WITH filtered_orders AS (
-	SELECT entry_order_id, strategy_id, symbol, trade_condition, avg_fill_price, filled_quantity, quantity, side, created_at
-	FROM order_histories
-	WHERE %s
-),
-paired AS (
-	SELECT
-		entry_order_id,
-		COALESCE(MAX(strategy_id) FILTER (WHERE trade_condition = 'ENTRY'), MAX(strategy_id), '') AS strategy_id,
-		MAX(symbol) AS symbol,
-		MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') AS entry_price,
-		MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') AS exit_price,
-		MAX(COALESCE(NULLIF(filled_quantity, 0), quantity)) FILTER (WHERE trade_condition = 'ENTRY') AS qty,
-		MAX(side) FILTER (WHERE trade_condition = 'ENTRY') AS side,
-		MIN(created_at) AS entry_time,
-		MAX(created_at) AS exit_time
-	FROM filtered_orders
-	GROUP BY entry_order_id
-	HAVING COUNT(*) = 2
-		AND COUNT(*) FILTER (WHERE trade_condition = 'ENTRY') = 1
-		AND COUNT(*) FILTER (WHERE trade_condition <> 'ENTRY') = 1
-		AND MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') IS NOT NULL
-		AND MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') IS NOT NULL
-),
-calculated AS (
-	SELECT
-		strategy_id,
-		symbol,
-		entry_time,
-		exit_time,
-		COALESCE(qty, 0) AS qty,
-		COALESCE(
-			CASE
-				WHEN side IN ('LONG','BUY') THEN (exit_price - entry_price) * qty
-				WHEN side IN ('SHORT','SELL') THEN (entry_price - exit_price) * qty
-			END,
-			0
-		) AS profit
-	FROM paired
-)
-SELECT
+	whereSQL, args := tradeReportWhere(filter)
+	query := fmt.Sprintf(`SELECT
 	date_trunc('day', exit_time)::date AS trade_date,
-	strategy_id,
+	COALESCE(strategy_id, '') AS strategy_id,
 	symbol,
 	MIN(entry_time) AS start_trade_at,
 	MAX(exit_time) AS end_trade_at,
 	COALESCE(SUM(profit), 0) AS total_profit,
 	COALESCE(AVG(CASE WHEN profit > 0 THEN 1 ELSE 0 END), 0) AS win_rate,
-	COALESCE(AVG(qty), 0) AS avg_size,
+	COALESCE(AVG(quantity), 0) AS avg_size,
 	COUNT(*) AS total_trades,
 	COALESCE(SUM(CASE WHEN profit >= 0 THEN 1 ELSE 0 END), 0) AS winning_trades,
 	COALESCE(SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END), 0) AS losing_trades
-FROM calculated
+FROM order_trades
+WHERE %s
 GROUP BY date_trunc('day', exit_time)::date, strategy_id, symbol
 ORDER BY trade_date DESC, strategy_id ASC, symbol ASC
 LIMIT 1000`, whereSQL)
@@ -559,52 +497,13 @@ LIMIT 1000`, whereSQL)
 }
 
 func (r *OrderHistoryRepository) ListStrategyPerformance(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {
-	whereSQL, args := orderReportWhere(filter)
-	query := fmt.Sprintf(`
-WITH filtered_orders AS (
-	SELECT entry_order_id, strategy_id, symbol, trade_condition, avg_fill_price, filled_quantity, quantity, side, created_at
-	FROM order_histories
-	WHERE %s
-),
-paired AS (
-	SELECT
-		entry_order_id,
-		COALESCE(MAX(strategy_id) FILTER (WHERE trade_condition = 'ENTRY'), MAX(strategy_id), '') AS strategy_id,
-		MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') AS entry_price,
-		MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') AS exit_price,
-		MAX(COALESCE(NULLIF(filled_quantity, 0), quantity)) FILTER (WHERE trade_condition = 'ENTRY') AS qty,
-		MAX(side) FILTER (WHERE trade_condition = 'ENTRY') AS side,
-		MIN(created_at) AS entry_time,
-		MAX(created_at) AS exit_time
-	FROM filtered_orders
-	GROUP BY entry_order_id
-	HAVING COUNT(*) = 2
-		AND COUNT(*) FILTER (WHERE trade_condition = 'ENTRY') = 1
-		AND COUNT(*) FILTER (WHERE trade_condition <> 'ENTRY') = 1
-		AND MAX(avg_fill_price) FILTER (WHERE trade_condition = 'ENTRY') IS NOT NULL
-		AND MAX(avg_fill_price) FILTER (WHERE trade_condition <> 'ENTRY') IS NOT NULL
-),
-calculated AS (
-	SELECT
-		COALESCE(NULLIF(strategy_id, ''), 'unknown') AS strategy_id,
-		entry_time,
-		exit_time,
-		COALESCE(qty, 0) AS qty,
-		COALESCE(
-			CASE
-				WHEN side IN ('LONG','BUY') THEN (exit_price - entry_price) * qty
-				WHEN side IN ('SHORT','SELL') THEN (entry_price - exit_price) * qty
-			END,
-			0
-		) AS profit
-	FROM paired
-)
-SELECT
-	strategy_id,
+	whereSQL, args := tradeReportWhere(filter)
+	query := fmt.Sprintf(`SELECT
+	COALESCE(NULLIF(strategy_id, ''), 'unknown') AS strategy_id,
 	COALESCE(SUM(profit), 0) AS total_profit,
 	COALESCE(AVG(CASE WHEN profit > 0 THEN 1 ELSE 0 END), 0) AS win_rate,
 	COALESCE(AVG(profit), 0) AS avg_profit,
-	COALESCE(AVG(qty), 0) AS avg_size,
+	COALESCE(AVG(quantity), 0) AS avg_size,
 	COALESCE(MAX(profit), 0) AS best_trade,
 	COALESCE(MIN(profit), 0) AS worst_trade,
 	COALESCE(
@@ -617,8 +516,9 @@ SELECT
 	COALESCE(SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END), 0) AS losing_trades,
 	MIN(entry_time) AS first_trade_at,
 	MAX(exit_time) AS last_trade_at
-FROM calculated
-GROUP BY strategy_id
+FROM order_trades
+WHERE %s
+GROUP BY COALESCE(NULLIF(strategy_id, ''), 'unknown')
 ORDER BY total_profit DESC, win_rate DESC, total_trades DESC, strategy_id ASC
 LIMIT 1000`, whereSQL)
 
@@ -627,19 +527,16 @@ LIMIT 1000`, whereSQL)
 	return items, err
 }
 
-func orderReportWhere(filter entity.OrderReportFilter) (string, []any) {
-	conditions := []string{
-		"entry_order_id <> ''",
-		"avg_fill_price IS NOT NULL",
-	}
+func tradeReportWhere(filter entity.OrderReportFilter) (string, []any) {
+	conditions := []string{"exit_price IS NOT NULL", "profit IS NOT NULL"}
 	args := []any{}
 	if filter.StartTime != nil {
 		args = append(args, *filter.StartTime)
-		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", len(args)))
+		conditions = append(conditions, fmt.Sprintf("exit_time >= $%d", len(args)))
 	}
 	if filter.EndTime != nil {
 		args = append(args, *filter.EndTime)
-		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", len(args)))
+		conditions = append(conditions, fmt.Sprintf("exit_time <= $%d", len(args)))
 	}
 	if strings.TrimSpace(filter.StrategyID) != "" {
 		args = append(args, strings.TrimSpace(filter.StrategyID))

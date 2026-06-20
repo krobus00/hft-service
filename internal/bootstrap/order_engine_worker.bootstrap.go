@@ -34,11 +34,14 @@ func StartOrderEngineWorker(cmd *cobra.Command, args []string) {
 	symbolMappingRepo := repository.NewSymbolMappingRepository(marketDataDB)
 	marketKlineRepo := repository.NewMarketKlineRepository(marketDataDB)
 	orderHistoryRepo := repository.NewOrderHistoryRepository(orderEngineDB)
+	priceReferenceRepo := repository.NewPriceReferenceRepository(orderEngineDB)
 
 	initConfiguredExchanges(ctx, symbolMappingRepo, nil, js, marketKlineRepo)
 
 	syncInterval := resolveOrderHistorySyncInterval()
 	orderHistorySyncService := orderengine.NewOrderHistorySyncService(exchange.GlobalExchangeRegistry, orderHistoryRepo, syncInterval)
+	priceReferenceService := orderengine.NewPriceReferenceService(priceReferenceRepo, js)
+	util.ContinueOrFatal(priceReferenceService.Subscribe(ctx))
 
 	go orderHistorySyncService.Run(ctx)
 

@@ -2,95 +2,32 @@
 
 import {
   Activity,
-  ArrowDownRight,
-  ArrowUpRight,
-  ChevronLeft,
-  ChevronRight,
+  AlertTriangle,
+  Bot,
+  CircleDollarSign,
   Loader2,
+  Radio,
   RefreshCw,
   Target,
-  TrendingUp,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { listResource } from "@/lib/api-client";
-import { resources } from "@/lib/resources";
+import { getDashboardOverview, type DashboardOrder, type DashboardOverview } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
-type OrderHistory = {
-  id?: string;
-  exchange?: string;
-  market_type?: string;
-  symbol?: string;
-  order_id?: string;
-  entry_order_id?: string;
-  side?: string;
-  quantity?: string | number;
-  filled_quantity?: string | number;
-  avg_fill_price?: string | number | null;
-  price?: string | number | null;
-  realized_pnl?: string | number | null;
-  state?: string | null;
-  entry_price?: string | number | null;
-  exit_price?: string | number | null;
-  pnl?: string | number | null;
-  status?: string;
-  strategy_id?: string | null;
-  trade_condition?: string;
-  created_at?: string;
-  filled_at?: string | null;
-};
-
-type DashboardTrade = {
-  id: string;
-  strategyID: string;
-  symbol: string;
-  side: string;
-  qty: number;
-  entryPrice: number;
-  exitPrice?: number;
-  markPrice?: number;
-  pnl?: number;
-  status: "closed" | "running";
-  time: string;
-};
-
-type OverviewData = {
-  orders: OrderHistory[];
-  trades: DashboardTrade[];
-  runningTrades: DashboardTrade[];
-};
-
 export function DashboardOverviewPanel() {
-  const [data, setData] = useState<OverviewData>({
-    orders: [],
-    trades: [],
-    runningTrades: [],
-  });
+  const [data, setData] = useState<DashboardOverview | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
-  const [tradePage, setTradePage] = useState(1);
 
   const loadOverview = useCallback(async () => {
     setIsLoading(true);
     setError("");
-
-    const end = new Date();
-    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-
     try {
-      const orders = await listLast24hOrders(start, end);
-      const trades = buildTradeRows(orders);
-
-      setData({
-        orders,
-        trades,
-        runningTrades: trades.filter((trade) => trade.status === "running"),
-      });
-      setTradePage(1);
+      setData(await getDashboardOverview());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load dashboard overview.");
     } finally {
@@ -102,20 +39,14 @@ export function DashboardOverviewPanel() {
     void loadOverview();
   }, [loadOverview]);
 
-  const stats = useMemo(() => buildStats(data), [data]);
-  const totalTradePages = Math.max(1, Math.ceil(data.trades.length / tradePageSize));
-  const currentTradePage = Math.min(tradePage, totalTradePages);
-  const pagedTrades = data.trades.slice(
-    (currentTradePage - 1) * tradePageSize,
-    currentTradePage * tradePageSize,
-  );
+  const insight = useMemo(() => buildInsight(data), [data]);
 
   return (
     <section className="grid gap-5">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="text-sm font-medium text-muted-foreground">Last 24 hours</p>
-          <h2 className="mt-1 text-2xl font-semibold tracking-normal">Trading dashboard</h2>
+          <h2 className="mt-1 text-2xl font-semibold">Trading bot overview</h2>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={loadOverview} disabled={isLoading}>
           <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
@@ -123,184 +54,56 @@ export function DashboardOverviewPanel() {
         </Button>
       </div>
 
-      {error ? (
-        <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
+      {error ? <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label="24h profit"
-          value={formatMoney(stats.closedProfit)}
-          tone={stats.closedProfit < 0 ? "loss" : "gain"}
-          icon={stats.closedProfit < 0 ? ArrowDownRight : ArrowUpRight}
-          detail="Realized PnL from closed trades"
-        />
-        <MetricCard
-          label="Total trade"
-          value={formatInteger(data.orders.length)}
-          icon={Activity}
-          detail="Order history rows in range"
-        />
-        <MetricCard
-          label="Win rate"
-          value={formatPercent(stats.winRate)}
-          icon={Target}
-          detail={`${formatInteger(stats.closedTrades)} closed trades`}
-        />
-        <MetricCard
-          label="Running PnL"
-          value={formatMoney(stats.runningPnl)}
-          tone={stats.runningPnl < 0 ? "loss" : "gain"}
-          icon={TrendingUp}
-          detail={`${formatInteger(data.runningTrades.length)} running trades`}
-        />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <MetricCard label="Realized PnL" value={money(data?.realized_pnl)} icon={CircleDollarSign} tone={number(data?.realized_pnl) < 0 ? "loss" : "gain"} />
+        <MetricCard label="Running PnL" value={money(data?.running_pnl)} icon={Activity} tone={number(data?.running_pnl) < 0 ? "loss" : "gain"} />
+        <MetricCard label="Win rate" value={percent(data ? data.winning_trades / Math.max(data.closed_trades, 1) : 0)} icon={Target} />
+        <MetricCard label="Open positions" value={integer(data?.running_trades)} icon={Radio} />
+        <MetricCard label="Strategies" value={`${data?.enabled_strategies ?? 0}/${data?.total_strategies ?? 0}`} icon={Bot} />
+        <MetricCard label="Order activity" value={integer(data?.orders_24h)} icon={Activity} />
       </div>
 
-      <div className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <Card className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md">
-          <CardHeader className="flex-row items-center justify-between gap-3 border-b p-4">
-            <CardTitle className="text-base">Recent order history with PnL</CardTitle>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {formatInteger(data.trades.length)} rows
-            </span>
+      <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <Card className="min-w-0 overflow-hidden rounded-md">
+          <CardHeader className="flex-row items-center justify-between border-b p-4">
+            <CardTitle className="text-base">Recent positions</CardTitle>
+            <span className="text-xs text-muted-foreground">Latest 20 entries</span>
           </CardHeader>
-          <CardContent className="min-h-0 flex-1 p-0">
+          <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[860px] text-left text-sm">
+              <table className="w-full min-w-[820px] text-left text-sm">
                 <thead className="bg-muted text-xs uppercase text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-3 font-medium">Symbol</th>
-                    <th className="px-3 py-3 font-medium">Strategy</th>
-                    <th className="px-3 py-3 font-medium">Side</th>
-                    <th className="px-3 py-3 font-medium">State</th>
-                    <th className="px-3 py-3 font-medium">Qty</th>
-                    <th className="px-3 py-3 font-medium">Entry</th>
-                    <th className="px-3 py-3 font-medium">Exit / Mark</th>
-                    <th className="px-3 py-3 font-medium">PnL</th>
-                    <th className="px-3 py-3 font-medium">Time</th>
+                    <th className="px-3 py-3">Symbol</th><th className="px-3 py-3">Strategy</th>
+                    <th className="px-3 py-3">Side</th><th className="px-3 py-3">State</th>
+                    <th className="px-3 py-3">Qty</th><th className="px-3 py-3">Entry</th>
+                    <th className="px-3 py-3">Exit</th><th className="px-3 py-3">PnL</th>
+                    <th className="px-3 py-3">Time</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {isLoading ? (
-                    <tr>
-                      <td className="px-3 py-10 text-center text-muted-foreground" colSpan={9}>
-                        <span className="inline-flex items-center gap-2">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Loading overview
-                        </span>
-                      </td>
-                    </tr>
-                  ) : pagedTrades.length > 0 ? (
-                    pagedTrades.map((trade) => (
-                      <tr key={trade.id} className="border-t">
-                        <td className="px-3 py-3 font-medium">{trade.symbol}</td>
-                        <td className="max-w-48 truncate px-3 py-3 text-muted-foreground">
-                          {trade.strategyID || "-"}
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge variant="outline">{trade.side}</Badge>
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge variant={trade.status === "running" ? "secondary" : "outline"}>
-                            {trade.status}
-                          </Badge>
-                        </td>
-                        <td className="px-3 py-3 tabular-nums">{formatNumberValue(trade.qty)}</td>
-                        <td className="px-3 py-3 tabular-nums">{formatNumberValue(trade.entryPrice)}</td>
-                        <td className="px-3 py-3 tabular-nums">
-                          {formatNumberValue(trade.exitPrice ?? trade.markPrice)}
-                        </td>
-                        <td className={moneyCellClass(trade.pnl)}>
-                          {trade.pnl == null ? "-" : formatMoney(trade.pnl)}
-                        </td>
-                        <td className="px-3 py-3 text-muted-foreground">
-                          {formatDateTime(trade.time)}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td className="px-3 py-10 text-center text-muted-foreground" colSpan={9}>
-                        No order history rows in the last 24 hours
-                      </td>
-                    </tr>
+                  {isLoading && !data ? (
+                    <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Loading overview</td></tr>
+                  ) : data?.recent_orders.length ? data.recent_orders.map((order) => <OrderRow key={order.id} order={order} />) : (
+                    <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">No order history yet</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
-            <div className="flex flex-col gap-2 border-t px-3 py-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                Page {currentTradePage} of {totalTradePages} - {formatInteger(data.trades.length)} rows
-              </span>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={isLoading || currentTradePage <= 1}
-                  onClick={() => setTradePage((page) => Math.max(1, page - 1))}
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                  Previous
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={isLoading || currentTradePage >= totalTradePages}
-                  onClick={() => setTradePage((page) => Math.min(totalTradePages, page + 1))}
-                >
-                  Next
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
           </CardContent>
         </Card>
 
-        <Card className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md">
-          <CardHeader className="flex-row items-center justify-between gap-3 border-b p-4">
-            <CardTitle className="text-base">Running trades</CardTitle>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {formatInteger(data.runningTrades.length)}
-            </span>
-          </CardHeader>
-          <CardContent className="min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto p-3">
-            {isLoading ? (
-              <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading orders
-              </p>
-            ) : data.runningTrades.length > 0 ? (
-              <div className="grid min-w-0 gap-2">
-                {data.runningTrades.map((trade) => (
-                  <div key={trade.id} className="min-w-0 rounded-md border bg-background px-3 py-2">
-                    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-                      <p className="min-w-0 truncate text-sm font-medium" title={trade.symbol}>
-                        {trade.symbol}
-                      </p>
-                      <span className={cn("text-xs font-semibold tabular-nums", pnlTone(trade.pnl))}>
-                        {trade.pnl == null ? "-" : formatMoney(trade.pnl)}
-                      </span>
-                    </div>
-                    <div className="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-xs text-muted-foreground">
-                      <span className="min-w-0 truncate" title={trade.strategyID || "-"}>
-                        {trade.strategyID || "-"} - {trade.side}
-                      </span>
-                      <span className="shrink-0 tabular-nums">
-                        entry {formatNumberValue(trade.entryPrice)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="rounded-md border border-dashed px-3 py-8 text-center text-sm text-muted-foreground">
-                No unpaired entry orders
-              </p>
-            )}
+        <Card className="rounded-md">
+          <CardHeader className="border-b p-4"><CardTitle className="text-base">Bot status</CardTitle></CardHeader>
+          <CardContent className="grid gap-3 p-4">
+            <StatusRow label="Market feed" value={insight.marketLabel} healthy={insight.marketHealthy} detail={data?.last_price_at ? `Last price ${relativeTime(data.last_price_at)}` : "No price received"} />
+            <StatusRow label="Strategies" value={insight.strategyLabel} healthy={insight.strategyHealthy} detail={`${data?.enabled_strategies ?? 0} enabled`} />
+            <StatusRow label="Order errors" value={data?.problem_orders_24h ? "Needs attention" : "Clear"} healthy={!data?.problem_orders_24h} detail={`${data?.problem_orders_24h ?? 0} rejected or expired`} />
+            <div className="border-t pt-3 text-xs text-muted-foreground">
+              Updated {data?.generated_at ? relativeTime(data.generated_at) : "-"}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -308,213 +111,44 @@ export function DashboardOverviewPanel() {
   );
 }
 
-function buildStats(data: OverviewData) {
-  const closedTrades = data.trades.filter((trade) => trade.status === "closed");
-  const closedProfit = closedTrades.reduce((total, trade) => total + (trade.pnl ?? 0), 0);
-  const winningTrades = closedTrades.filter((trade) => (trade.pnl ?? 0) > 0).length;
-  const runningPnl = data.runningTrades.reduce((total, trade) => total + (trade.pnl ?? 0), 0);
-  return {
-    closedProfit,
-    closedTrades: closedTrades.length,
-    runningPnl,
-    winRate: closedTrades.length > 0 ? winningTrades / closedTrades.length : 0,
-  };
-}
-
-function MetricCard({
-  label,
-  value,
-  detail,
-  tone,
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "gain" | "loss";
-  icon: typeof Activity;
-}) {
+function OrderRow({ order }: { order: DashboardOrder }) {
   return (
-    <Card className="rounded-md">
-      <CardContent className="flex min-h-32 items-start justify-between gap-3 p-4">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-muted-foreground">{label}</p>
-          <p className={cn("mt-3 truncate text-2xl font-semibold tabular-nums", toneClass(tone))}>
-            {value}
-          </p>
-          <p className="mt-2 truncate text-xs text-muted-foreground">{detail}</p>
-        </div>
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
-          <Icon className="h-4 w-4" />
-        </span>
-      </CardContent>
-    </Card>
+    <tr className="border-t">
+      <td className="px-3 py-3 font-medium">{order.symbol}</td>
+      <td className="max-w-48 truncate px-3 py-3 text-muted-foreground">{order.strategy_id || "-"}</td>
+      <td className="px-3 py-3"><Badge variant="outline">{order.side}</Badge></td>
+      <td className="px-3 py-3"><Badge variant={order.state === "running" ? "secondary" : "outline"}>{order.state}</Badge></td>
+      <td className="px-3 py-3 tabular-nums">{decimal(number(order.filled_quantity) || order.quantity)}</td>
+      <td className="px-3 py-3 tabular-nums">{decimal(order.entry_price)}</td>
+      <td className="px-3 py-3 tabular-nums">{decimal(order.exit_price)}</td>
+      <td className={cn("px-3 py-3 font-medium tabular-nums", number(order.pnl) < 0 ? "text-destructive" : "text-primary")}>{order.pnl == null ? "-" : money(order.pnl)}</td>
+      <td className="px-3 py-3 text-muted-foreground">{dateTime(order.created_at)}</td>
+    </tr>
   );
 }
 
-const orderResource = resources.find((resource) => resource.key === "orders") ?? resources[0];
-const tradePageSize = 10;
-
-async function listLast24hOrders(start: Date, end: Date) {
-  const firstPage = await listResource(orderResource, {
-    page: 1,
-    limit: 100,
-    keyword: "",
-    filters: { created_at: { op: "between", value: [start.toISOString(), end.toISOString()] } },
-    sortField: "created_at",
-    sortDirection: "desc",
-  });
-  const items = firstPage.items.map((item) => item as OrderHistory);
-  for (let page = 2; page <= firstPage.meta.totalPages; page += 1) {
-    const result = await listResource(orderResource, {
-      page,
-      limit: 100,
-      keyword: "",
-      filters: { created_at: { op: "between", value: [start.toISOString(), end.toISOString()] } },
-      sortField: "created_at",
-      sortDirection: "desc",
-    });
-    items.push(...result.items.map((item) => item as OrderHistory));
-  }
-  return items;
+function MetricCard({ label, value, icon: Icon, tone }: { label: string; value: string; icon: typeof Activity; tone?: "gain" | "loss" }) {
+  return <Card className="rounded-md"><CardContent className="p-4"><div className="flex items-center justify-between text-xs font-medium uppercase text-muted-foreground"><span>{label}</span><Icon className="h-4 w-4" /></div><p className={cn("mt-3 text-xl font-semibold tabular-nums", tone === "loss" ? "text-destructive" : tone === "gain" ? "text-primary" : "")}>{value}</p></CardContent></Card>;
 }
 
-function buildTradeRows(orders: OrderHistory[]) {
-  const rows: DashboardTrade[] = [];
-
-  for (const order of orders) {
-    const entryPrice = toNumber(order.entry_price) ?? orderPrice(order);
-    const qty = orderQuantity(order);
-    if (entryPrice == null || !qty) {
-      continue;
-    }
-
-    const status = isRunningOrder(order) ? "running" : "closed";
-    const exitPrice = toNumber(order.exit_price);
-    const pnl = toNumber(order.pnl) ?? orderRealizedPnl(order);
-    const markPrice = status === "running" ? inferMarkPrice(order.side, entryPrice, pnl, qty) : undefined;
-    rows.push({
-      id: `${status}:${order.id ?? order.entry_order_id ?? order.order_id ?? rows.length}`,
-      strategyID: order.strategy_id ?? "",
-      symbol: order.symbol ?? "-",
-      side: order.side ?? "-",
-      qty,
-      entryPrice,
-      exitPrice,
-      markPrice,
-      pnl,
-      status,
-      time: order.filled_at ?? order.created_at ?? "",
-    });
-  }
-
-  return rows.sort((left, right) => dateValue(right.time) - dateValue(left.time));
+function StatusRow({ label, value, detail, healthy }: { label: string; value: string; detail: string; healthy: boolean }) {
+  return <div className="rounded-md border p-3"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{label}</span><Badge variant={healthy ? "secondary" : "outline"} className={healthy ? "" : "border-destructive/40 text-destructive"}>{healthy ? <Radio className="mr-1 h-3 w-3" /> : <AlertTriangle className="mr-1 h-3 w-3" />}{value}</Badge></div><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>;
 }
 
-function isRunningOrder(order: OrderHistory) {
-  return new Set(["open", "running"]).has((order.state ?? "").toLowerCase());
+function buildInsight(data: DashboardOverview | null) {
+  const marketAge = data?.last_price_at ? Date.now() - new Date(data.last_price_at).getTime() : Infinity;
+  return {
+    marketHealthy: marketAge < 5 * 60 * 1000,
+    marketLabel: marketAge < 5 * 60 * 1000 ? "Live" : "Stale",
+    strategyHealthy: Boolean(data?.enabled_strategies),
+    strategyLabel: data?.enabled_strategies ? "Running" : "Disabled",
+  };
 }
 
-function orderPrice(order: OrderHistory | undefined) {
-  return toNumber(order?.avg_fill_price) ?? toNumber(order?.price);
-}
-
-function orderQuantity(order: OrderHistory) {
-  return toNumber(order.filled_quantity) ?? toNumber(order.quantity) ?? 0;
-}
-
-function orderRealizedPnl(order: OrderHistory) {
-  return toNumber(order.realized_pnl);
-}
-
-function inferMarkPrice(
-  side: string | undefined,
-  entryPrice: number | undefined,
-  pnl: number | undefined,
-  qty: number,
-) {
-  if (entryPrice == null || pnl == null || !qty) {
-    return undefined;
-  }
-  const normalizedSide = (side ?? "").toUpperCase();
-  if (normalizedSide === "SELL" || normalizedSide === "SHORT") {
-    return entryPrice - pnl / qty;
-  }
-  return entryPrice + pnl / qty;
-}
-
-function dateValue(value: string | null | undefined) {
-  if (!value) {
-    return 0;
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-}
-
-function toNumber(value: string | number | null | undefined) {
-  if (value == null || value === "") {
-    return undefined;
-  }
-  const number = Number(value);
-  return Number.isFinite(number) ? number : undefined;
-}
-
-function moneyCellClass(value: number | undefined) {
-  return `px-3 py-3 tabular-nums ${pnlTone(value)}`;
-}
-
-function pnlTone(value: number | undefined) {
-  if (value == null) {
-    return "text-muted-foreground";
-  }
-  return value < 0 ? "text-destructive" : "text-primary";
-}
-
-function toneClass(tone: "gain" | "loss" | undefined) {
-  if (tone === "gain") {
-    return "text-primary";
-  }
-  if (tone === "loss") {
-    return "text-destructive";
-  }
-  return "";
-}
-
-function formatInteger(value: number) {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
-}
-
-function formatNumberValue(value: number | undefined) {
-  if (value == null || !Number.isFinite(value)) {
-    return "-";
-  }
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(value);
-}
-
-function formatMoney(value: number) {
-  return new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
-function formatPercent(value: number) {
-  return new Intl.NumberFormat(undefined, {
-    style: "percent",
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  }).format(value);
-}
-
-function formatDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value || "-";
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
+function number(value: string | number | undefined) { const parsed = Number(value ?? 0); return Number.isFinite(parsed) ? parsed : 0; }
+function integer(value: number | undefined) { return new Intl.NumberFormat().format(value ?? 0); }
+function money(value: string | number | undefined) { return new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(number(value)); }
+function percent(value: number) { return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 }).format(value); }
+function decimal(value: string | number | undefined) { return value == null || value === "" ? "-" : new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(number(value)); }
+function dateTime(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "-" : new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date); }
+function relativeTime(value: string) { const seconds = Math.round((new Date(value).getTime() - Date.now()) / 1000); const unit = Math.abs(seconds) < 60 ? "second" : Math.abs(seconds) < 3600 ? "minute" : "hour"; const divisor = unit === "second" ? 1 : unit === "minute" ? 60 : 3600; return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(seconds / divisor), unit); }
