@@ -54,6 +54,7 @@ type DailyOrderReport struct {
 	TotalTrades   int64           `db:"total_trades" json:"total_trades"`
 	WinningTrades int64           `db:"winning_trades" json:"winning_trades"`
 	LosingTrades  int64           `db:"losing_trades" json:"losing_trades"`
+	TotalCount    int64           `db:"total_count" json:"-"`
 }
 
 type StrategyPerformanceReport struct {

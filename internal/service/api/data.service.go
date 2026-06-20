@@ -197,8 +197,20 @@ func (s *DataService) ListOrderTradePnL(ctx context.Context, filter entity.Order
 	return apiutil.NewPaginationResp(page, limit, total, items), nil
 }
 
-func (s *DataService) ListDailyOrderReports(ctx context.Context, filter entity.OrderReportFilter) ([]entity.DailyOrderReport, error) {
-	return s.orderHistoryRepo.ListDailyReport(ctx, filter)
+func (s *DataService) ListDailyOrderReports(ctx context.Context, filter entity.OrderReportFilter) (*apiutil.PaginationResp, error) {
+	items, total, err := s.orderHistoryRepo.ListDailyReport(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	page := filter.Page
+	if page <= 0 {
+		page = 1
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	return apiutil.NewPaginationResp(page, limit, total, items), nil
 }
 
 func (s *DataService) ListStrategyPerformanceReports(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {

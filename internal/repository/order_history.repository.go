@@ -278,7 +278,7 @@ func (r *OrderHistoryRepository) GetDashboardOverview(ctx context.Context, since
 
 	recentQuery, recentArgs, err := orderHistoryMetricsSelect().
 		Where(sq.Eq{"oh.trade_condition": string(entity.TradeConditionEntry)}).
-		OrderBy("oh.created_at DESC").
+		OrderBy("(trade.exit_time IS NULL) DESC", "oh.created_at DESC").
 		Limit(recentLimit).
 		ToSql()
 	if err != nil {
@@ -471,8 +471,19 @@ LIMIT $%d OFFSET $%d`, whereSQL, limitArg, offsetArg)
 	return items, total, nil
 }
 
-func (r *OrderHistoryRepository) ListDailyReport(ctx context.Context, filter entity.OrderReportFilter) ([]entity.DailyOrderReport, error) {
+func (r *OrderHistoryRepository) ListDailyReport(ctx context.Context, filter entity.OrderReportFilter) ([]entity.DailyOrderReport, int64, error) {
 	whereSQL, args := tradeReportWhere(filter)
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	page := filter.Page
+	if page <= 0 {
+		page = 1
+	}
+	args = append(args, limit, (page-1)*limit)
+	limitArg := len(args) - 1
+	offsetArg := len(args)
 	query := fmt.Sprintf(`SELECT
 	date_trunc('day', exit_time)::date AS trade_date,
 	COALESCE(strategy_id, '') AS strategy_id,
@@ -484,16 +495,23 @@ func (r *OrderHistoryRepository) ListDailyReport(ctx context.Context, filter ent
 	COALESCE(AVG(quantity), 0) AS avg_size,
 	COUNT(*) AS total_trades,
 	COALESCE(SUM(CASE WHEN profit >= 0 THEN 1 ELSE 0 END), 0) AS winning_trades,
-	COALESCE(SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END), 0) AS losing_trades
+	COALESCE(SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END), 0) AS losing_trades,
+	COUNT(*) OVER() AS total_count
 FROM order_trades
 WHERE %s
 GROUP BY date_trunc('day', exit_time)::date, strategy_id, symbol
 ORDER BY trade_date DESC, strategy_id ASC, symbol ASC
-LIMIT 1000`, whereSQL)
+LIMIT $%d OFFSET $%d`, whereSQL, limitArg, offsetArg)
 
 	items := []entity.DailyOrderReport{}
-	err := r.db.SelectContext(ctx, &items, query, args...)
-	return items, err
+	if err := r.db.SelectContext(ctx, &items, query, args...); err != nil {
+		return nil, 0, err
+	}
+	total := int64(0)
+	if len(items) > 0 {
+		total = items[0].TotalCount
+	}
+	return items, total, nil
 }
 
 func (r *OrderHistoryRepository) ListStrategyPerformance(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {

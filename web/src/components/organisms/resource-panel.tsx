@@ -51,30 +51,6 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
   const canWrite = useMemo(() => canWriteResource(user, resource), [resource, user]);
 
   useEffect(() => {
-    setQuery({
-      page: 1,
-      limit: 10,
-      keyword: "",
-      filters: {},
-      sortField: resource.defaultSort.field,
-      sortDirection: resource.defaultSort.direction,
-    });
-    setDebouncedQuery({
-      page: 1,
-      limit: 10,
-      keyword: "",
-      filters: {},
-      sortField: resource.defaultSort.field,
-      sortDirection: resource.defaultSort.direction,
-    });
-    setItems([]);
-    setMeta(null);
-    setDetail(null);
-    setEditor(null);
-    setError("");
-  }, [resource]);
-
-  useEffect(() => {
     const timeout = globalThis.setTimeout(() => {
       setDebouncedQuery(query);
     }, 300);

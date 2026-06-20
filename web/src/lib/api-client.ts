@@ -428,7 +428,7 @@ export async function listOrderTradePnL(query: OrderReportQuery) {
 
 export async function listDailyOrderReports(query: OrderReportQuery) {
   return withSession((session) =>
-    apiRequest<DailyOrderReport[]>(`/order-reports/daily?${buildReportParams(query)}`, {
+    apiRequest<PaginationResponse<DailyOrderReport>>(`/order-reports/daily?${buildReportParams(query)}`, {
       method: "GET",
       accessToken: session.tokens.access_token,
     }),

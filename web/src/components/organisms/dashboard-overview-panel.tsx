@@ -37,6 +37,12 @@ export function DashboardOverviewPanel() {
 
   useEffect(() => {
     void loadOverview();
+    const interval = globalThis.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadOverview();
+      }
+    }, 15_000);
+    return () => globalThis.clearInterval(interval);
   }, [loadOverview]);
 
   const insight = useMemo(() => buildInsight(data), [data]);
