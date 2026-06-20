@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -129,6 +128,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"order_side":       {"BUY", "SELL", "LONG", "SHORT"},
 		"order_type":       {"MARKET", "LIMIT"},
 		"order_status":     {"NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED", "EXPIRED"},
+		"order_state":      {"running", "closed"},
 		"trade_condition":  {"ENTRY", "EXIT", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP", "SIGNAL", "UNKNOWN"},
 		"exit_type":        {"", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"},
 		"interval":         {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"},
@@ -145,25 +145,15 @@ func (s *DataService) listExchangeEnums(ctx context.Context) ([]string, error) {
 		s.symbolMappingRepo.ListExchanges,
 		s.strategyConfigRepo.ListExchanges,
 	}
-	seen := map[string]struct{}{}
+	groups := make([][]string, 0, len(sources))
 	for _, source := range sources {
 		items, err := source(ctx)
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range items {
-			value := strings.TrimSpace(item)
-			if value != "" {
-				seen[value] = struct{}{}
-			}
-		}
+		groups = append(groups, items)
 	}
-	result := make([]string, 0, len(seen))
-	for item := range seen {
-		result = append(result, item)
-	}
-	sort.Strings(result)
-	return result, nil
+	return repository.NormalizeExchangeEnums(groups...), nil
 }
 
 func (s *DataService) ListOrders(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
@@ -291,35 +281,11 @@ func (s *DataService) GetPriceReference(ctx context.Context, id string) (*entity
 }
 
 func (s *DataService) ListOrderTradePnL(ctx context.Context, filter entity.OrderReportFilter) (*apiutil.PaginationResp, error) {
-	items, total, err := s.orderHistoryRepo.ListTradePnL(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	page := filter.Page
-	if page <= 0 {
-		page = 1
-	}
-	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	return apiutil.NewPaginationResp(page, limit, total, items), nil
+	return s.orderHistoryRepo.ListTradePnL(ctx, filter)
 }
 
 func (s *DataService) ListDailyOrderReports(ctx context.Context, filter entity.OrderReportFilter) (*apiutil.PaginationResp, error) {
-	items, total, err := s.orderHistoryRepo.ListDailyReport(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	page := filter.Page
-	if page <= 0 {
-		page = 1
-	}
-	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	return apiutil.NewPaginationResp(page, limit, total, items), nil
+	return s.orderHistoryRepo.ListDailyReport(ctx, filter)
 }
 
 func (s *DataService) ListStrategyPerformanceReports(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {

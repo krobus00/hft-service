@@ -27,7 +27,7 @@ export const resources: ResourceConfig[] = [
     writePermission: "order:write",
     columns: ["strategy_id", "state", "exchange", "market_type", "symbol", "side", "type", "status", "entry_price", "exit_price", "pnl", "created_at"],
     searchableFields: ["request_id", "symbol", "order_id", "strategy_id"],
-    filterFields: ["strategy_id", "symbol", "exchange", "market_type", "status"],
+    filterFields: ["state", "strategy_id", "symbol", "exchange", "market_type", "status"],
     enumFields: {
       exchange: "exchange",
       market_type: "market_type",
@@ -35,6 +35,7 @@ export const resources: ResourceConfig[] = [
       side: "order_side",
       type: "order_type",
       status: "order_status",
+      state: "order_state",
       trade_condition: "trade_condition",
       exit_type: "exit_type",
     },

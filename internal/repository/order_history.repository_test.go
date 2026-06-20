@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	apiutil "github.com/krobus00/hft-service/internal/api"
 	"github.com/krobus00/hft-service/internal/entity"
 )
 
@@ -23,6 +24,28 @@ func TestOrderHistoryMetricsUsesMaterializedTradesAndPriceReferences(t *testing.
 	}
 }
 
+func TestOrderStateFilterAndSortHappenBeforePagination(t *testing.T) {
+	req := &apiutil.PaginationReq{
+		Filter:   []apiutil.FilterReq{{Field: "state", Op: "eq", Value: []string{"running"}}},
+		Sort:     apiutil.SortReq{Field: "state", Direction: "ASC"},
+		Paginate: apiutil.PaginateReq{Limit: 10, Offset: 10},
+	}
+	query, _, err := orderHistoryMetricsFilteredSelect(req).
+		OrderBy(req.Sort.Field + " " + req.Sort.Direction).
+		Limit(uint64(req.Paginate.Limit)).
+		Offset(uint64(req.Paginate.Offset)).
+		ToSql()
+	if err != nil {
+		t.Fatal(err)
+	}
+	filterAt := strings.LastIndex(query, "WHERE state =")
+	sortAt := strings.LastIndex(query, "ORDER BY state ASC")
+	limitAt := strings.LastIndex(query, "LIMIT 10 OFFSET 10")
+	if filterAt < 0 || sortAt < filterAt || limitAt < sortAt {
+		t.Fatalf("state filter/sort must precede pagination: %s", query)
+	}
+}
+
 func TestTradeReportFiltersByRealizationTime(t *testing.T) {
 	start := time.Unix(1, 0)
 	end := time.Unix(2, 0)
@@ -32,5 +55,18 @@ func TestTradeReportFiltersByRealizationTime(t *testing.T) {
 	}
 	if len(args) != 2 {
 		t.Fatalf("expected 2 filter arguments, got %d", len(args))
+	}
+}
+
+func TestRepositoryOwnsReportPaginationAndEnumSorting(t *testing.T) {
+	page, limit := orderReportPagination(entity.OrderReportFilter{Page: -1, Limit: 1000})
+	if page != 1 || limit != 50 {
+		t.Fatalf("unexpected pagination defaults: page=%d limit=%d", page, limit)
+	}
+
+	got := NormalizeExchangeEnums([]string{" BINANCE", ""}, []string{"BYBIT", "BINANCE"})
+	want := []string{"BINANCE", "BYBIT"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected exchange enums: %v", got)
 	}
 }

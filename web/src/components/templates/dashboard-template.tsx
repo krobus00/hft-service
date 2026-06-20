@@ -135,10 +135,6 @@ export function DashboardTemplate({
               <div className="min-w-0 text-right sm:hidden">
                 <h1 className="truncate text-sm font-semibold">{pageTitle}</h1>
               </div>
-              <Badge variant="success" className="hidden gap-1 sm:inline-flex">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                Console online
-              </Badge>
               <ThemeToggle />
               <div className="relative">
                 <Button

@@ -187,12 +187,7 @@ func (r *OrderHistoryRepository) GetPagination(ctx context.Context, req *apiutil
 }
 
 func (r *OrderHistoryRepository) GetPaginationWithMetrics(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
-	model := &entity.OrderHistory{}
-	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
-		Select("oh.*").
-		From("order_histories oh").
-		Where(sq.Eq{"oh.trade_condition": string(entity.TradeConditionEntry)})
-	baseSelect = req.ApplyFilter(baseSelect, model)
+	baseSelect := orderHistoryMetricsFilteredSelect(req)
 
 	countBuilder := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
 		Select("COUNT(*)").
@@ -207,17 +202,10 @@ func (r *OrderHistoryRepository) GetPaginationWithMetrics(ctx context.Context, r
 		return nil, err
 	}
 
-	baseSortField, baseSortDirection := orderHistoryBaseSort(req)
-	metricSortField, metricSortDirection := orderHistoryMetricSort(req)
-
-	pagedIDs := baseSelect.
-		OrderBy(baseSortField + " " + baseSortDirection).
+	selectBuilder := baseSelect.
+		OrderBy(req.Sort.Field + " " + req.Sort.Direction + " NULLS LAST").
 		Limit(uint64(req.Paginate.Limit)).
 		Offset(uint64(req.Paginate.Offset))
-
-	selectBuilder := orderHistoryMetricsSelect().
-		Where(sq.Expr("oh.id IN (SELECT id FROM (?) paged_ids)", pagedIDs)).
-		OrderBy(metricSortField + " " + metricSortDirection)
 	selectQuery, selectArgs, err := selectBuilder.ToSql()
 	if err != nil {
 		return nil, err
@@ -291,27 +279,13 @@ func (r *OrderHistoryRepository) GetDashboardOverview(ctx context.Context, since
 	return summary, recent, nil
 }
 
-func orderHistoryBaseSort(req *apiutil.PaginationReq) (string, string) {
-	if isOrderHistoryMetricSort(req.Sort.Field) {
-		return "created_at", "DESC"
-	}
-	return req.Sort.Field, req.Sort.Direction
-}
-
-func orderHistoryMetricSort(req *apiutil.PaginationReq) (string, string) {
-	if isOrderHistoryMetricSort(req.Sort.Field) {
-		return req.Sort.Field, req.Sort.Direction + " NULLS LAST"
-	}
-	return req.Sort.Field, req.Sort.Direction
-}
-
-func isOrderHistoryMetricSort(field string) bool {
-	switch field {
-	case "state", "entry_price", "exit_price", "pnl":
-		return true
-	default:
-		return false
-	}
+func orderHistoryMetricsFilteredSelect(req *apiutil.PaginationReq) sq.SelectBuilder {
+	metrics := orderHistoryMetricsSelect().
+		Where(sq.Eq{"oh.trade_condition": string(entity.TradeConditionEntry)})
+	query := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("*").
+		FromSelect(metrics, "orders_with_metrics")
+	return req.ApplyFilter(query, &entity.OrderHistory{})
 }
 
 func orderHistoryMetricsSelect() sq.SelectBuilder {
@@ -436,16 +410,9 @@ func (r *OrderHistoryRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *OrderHistoryRepository) ListTradePnL(ctx context.Context, filter entity.OrderReportFilter) ([]entity.OrderTradePnL, int64, error) {
+func (r *OrderHistoryRepository) ListTradePnL(ctx context.Context, filter entity.OrderReportFilter) (*apiutil.PaginationResp, error) {
 	whereSQL, args := tradeReportWhere(filter)
-	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	page := filter.Page
-	if page <= 0 {
-		page = 1
-	}
+	page, limit := orderReportPagination(filter)
 	args = append(args, limit, (page-1)*limit)
 	limitArg := len(args) - 1
 	offsetArg := len(args)
@@ -462,25 +429,18 @@ LIMIT $%d OFFSET $%d`, whereSQL, limitArg, offsetArg)
 
 	items := []entity.OrderTradePnL{}
 	if err := r.db.SelectContext(ctx, &items, query, args...); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	total := int64(0)
 	if len(items) > 0 {
 		total = items[0].TotalCount
 	}
-	return items, total, nil
+	return apiutil.NewPaginationResp(page, limit, total, items), nil
 }
 
-func (r *OrderHistoryRepository) ListDailyReport(ctx context.Context, filter entity.OrderReportFilter) ([]entity.DailyOrderReport, int64, error) {
+func (r *OrderHistoryRepository) ListDailyReport(ctx context.Context, filter entity.OrderReportFilter) (*apiutil.PaginationResp, error) {
 	whereSQL, args := tradeReportWhere(filter)
-	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	page := filter.Page
-	if page <= 0 {
-		page = 1
-	}
+	page, limit := orderReportPagination(filter)
 	args = append(args, limit, (page-1)*limit)
 	limitArg := len(args) - 1
 	offsetArg := len(args)
@@ -505,13 +465,25 @@ LIMIT $%d OFFSET $%d`, whereSQL, limitArg, offsetArg)
 
 	items := []entity.DailyOrderReport{}
 	if err := r.db.SelectContext(ctx, &items, query, args...); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	total := int64(0)
 	if len(items) > 0 {
 		total = items[0].TotalCount
 	}
-	return items, total, nil
+	return apiutil.NewPaginationResp(page, limit, total, items), nil
+}
+
+func orderReportPagination(filter entity.OrderReportFilter) (int64, int64) {
+	page := filter.Page
+	if page <= 0 {
+		page = 1
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	return page, limit
 }
 
 func (r *OrderHistoryRepository) ListStrategyPerformance(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {

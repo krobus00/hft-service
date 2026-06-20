@@ -4,11 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 )
+
+func NormalizeExchangeEnums(groups ...[]string) []string {
+	seen := map[string]struct{}{}
+	for _, group := range groups {
+		for _, item := range group {
+			if value := strings.TrimSpace(item); value != "" {
+				seen[value] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for item := range seen {
+		result = append(result, item)
+	}
+	sort.Strings(result)
+	return result
+}
 
 func selectMaps(ctx context.Context, db *sqlx.DB, query string, args ...any) ([]map[string]any, error) {
 	rows, err := db.QueryxContext(ctx, query, args...)
