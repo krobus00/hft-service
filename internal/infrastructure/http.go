@@ -186,6 +186,7 @@ func httpCORSMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Request-Id")
 			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 
 		if origin != "" && r.Method == http.MethodOptions && strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")) != "" {

@@ -98,6 +98,17 @@ ORDER BY p.name`, userID)
 	return permissions, err
 }
 
+func (r *APIAuthRepository) ListPermissionNamesByRoleID(ctx context.Context, roleID string) ([]string, error) {
+	permissions := []string{}
+	err := r.db.SelectContext(ctx, &permissions, `
+SELECT p.name
+FROM permissions p
+JOIN role_permissions rp ON rp.permission_id = p.id
+WHERE rp.role_id = $1
+ORDER BY p.name`, roleID)
+	return permissions, err
+}
+
 func (r *APIAuthRepository) ListRoleNames(ctx context.Context) ([]string, error) {
 	items := []string{}
 	err := r.db.SelectContext(ctx, &items, "SELECT name FROM roles ORDER BY name")

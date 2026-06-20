@@ -12,19 +12,6 @@ type KlineData struct {
 	IsClosed bool
 }
 
-type MarketPriceKey struct {
-	Exchange   string
-	MarketType string
-	Symbol     string
-}
-
-type MarketClosePrice struct {
-	Exchange   string          `db:"exchange"`
-	MarketType string          `db:"market_type"`
-	Symbol     string          `db:"symbol"`
-	ClosePrice decimal.Decimal `db:"close_price"`
-}
-
 type MarketKlineBackfillRequest struct {
 	MarketType MarketType
 	Symbol     string

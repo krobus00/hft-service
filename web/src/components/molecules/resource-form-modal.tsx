@@ -72,7 +72,7 @@ export function ResourceFormModal({
                   field,
                   sampleValue,
                   value,
-                  options: enumOptions(resource, enums, field),
+                  options: enumOptions(resource, enums, field, value),
                   multiple: Boolean(resource.multiEnumFields?.includes(field)),
                   disabled: disabled || isSubmitting,
                   onChange: (nextValue) => updateField(field, nextValue),
@@ -367,7 +367,7 @@ function buildInitialValues(
 ) {
   return fields.reduce<Record<string, FieldValue>>((result, field) => {
     const sampleValue = sample[field];
-    const rawValue = initial[field] ?? sampleValue ?? "";
+    const rawValue = initial[field] ?? "";
     if (isPlainObject(sampleValue) || isPlainObject(rawValue)) {
       result[field] = normalizeObjectField(rawValue);
       return result;
@@ -513,12 +513,15 @@ function enumOptions(
   resource: ResourceConfig,
   enums: Record<string, string[]>,
   field: string,
+  value: FieldValue | undefined,
 ) {
   const enumKey = resource.enumFields?.[field];
   if (!enumKey) {
     return [];
   }
-  return enums[enumKey] ?? [];
+  const options = enums[enumKey] ?? [];
+  const current = Array.isArray(value) ? value : [String(value ?? "")];
+  return Array.from(new Set([...current, ...options]));
 }
 
 function humanize(value: string) {

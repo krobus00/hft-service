@@ -82,6 +82,37 @@ export type StrategyPerformanceReport = {
   last_trade_at: string;
 };
 
+export type DashboardOrder = {
+  id: string;
+  strategy_id?: string;
+  exchange: string;
+  market_type: string;
+  symbol: string;
+  side: string;
+  state: "closed" | "running";
+  filled_quantity: string;
+  quantity: string;
+  entry_price?: string;
+  exit_price?: string;
+  pnl?: string;
+  created_at: string;
+};
+
+export type DashboardOverview = {
+  generated_at: string;
+  orders_24h: number;
+  problem_orders_24h: number;
+  closed_trades: number;
+  winning_trades: number;
+  running_trades: number;
+  realized_pnl: string;
+  running_pnl: string;
+  enabled_strategies: number;
+  total_strategies: number;
+  last_price_at?: string;
+  recent_orders: DashboardOrder[];
+};
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9804/api/v1";
 
@@ -377,6 +408,15 @@ export async function getDashboardPagesMenu() {
   );
 }
 
+export async function getDashboardOverview() {
+  return withSession((session) =>
+    apiRequest<DashboardOverview>("/dashboard/overview", {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
 export async function listOrderTradePnL(query: OrderReportQuery) {
   return withSession((session) =>
     apiRequest<PaginationResponse<OrderTradePnL>>(`/order-reports/trades?${buildReportParams(query)}`, {
@@ -388,7 +428,7 @@ export async function listOrderTradePnL(query: OrderReportQuery) {
 
 export async function listDailyOrderReports(query: OrderReportQuery) {
   return withSession((session) =>
-    apiRequest<DailyOrderReport[]>(`/order-reports/daily?${buildReportParams(query)}`, {
+    apiRequest<PaginationResponse<DailyOrderReport>>(`/order-reports/daily?${buildReportParams(query)}`, {
       method: "GET",
       accessToken: session.tokens.access_token,
     }),

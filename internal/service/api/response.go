@@ -17,6 +17,27 @@ type APIUserResponse struct {
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	Roles       []string   `json:"roles,omitempty"`
+}
+
+type APIRoleResponse struct {
+	entity.APIRole
+	Permissions []string `json:"permissions"`
+}
+
+type DashboardOverviewResponse struct {
+	GeneratedAt       time.Time              `json:"generated_at"`
+	Orders24h         int64                  `json:"orders_24h"`
+	ProblemOrders24h  int64                  `json:"problem_orders_24h"`
+	ClosedTrades      int64                  `json:"closed_trades"`
+	WinningTrades     int64                  `json:"winning_trades"`
+	RunningTrades     int64                  `json:"running_trades"`
+	RealizedPnL       decimal.Decimal        `json:"realized_pnl"`
+	RunningPnL        decimal.Decimal        `json:"running_pnl"`
+	EnabledStrategies int64                  `json:"enabled_strategies"`
+	TotalStrategies   int64                  `json:"total_strategies"`
+	LastPriceAt       *time.Time             `json:"last_price_at"`
+	RecentOrders      []OrderHistoryResponse `json:"recent_orders"`
 }
 
 type OrderHistoryResponse struct {

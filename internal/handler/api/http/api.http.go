@@ -42,6 +42,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/profile", h.withAuth(h.Profile))
 	mux.HandleFunc("/api/v1/form/enums", h.withAuth(h.FormEnums))
 	mux.HandleFunc("/api/v1/dashboard/pages/menu", h.withAuth(h.DashboardPageMenu))
+	mux.HandleFunc("/api/v1/dashboard/overview", h.withPermission(constant.PermissionOrderRead, h.DashboardOverview))
 
 	mux.HandleFunc("/api/v1/order-reports/trades", h.withPermission(constant.PermissionOrderReportRead, h.OrderTradePnL))
 	mux.HandleFunc("/api/v1/order-reports/daily", h.withPermission(constant.PermissionOrderReportRead, h.DailyOrderReports))
@@ -52,6 +53,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/market/backfills/", h.withPermission(constant.PermissionMarketRead, h.MarketBackfillByID))
 	mux.HandleFunc("/api/v1/market/klines", h.withPermission(constant.PermissionMarketRead, h.MarketKlines))
 	mux.HandleFunc("/api/v1/market/klines/", h.withPermission(constant.PermissionMarketRead, h.MarketKlineByID))
+	mux.HandleFunc("/api/v1/market/price-references", h.withPermission(constant.PermissionMarketRead, h.PriceReferences))
+	mux.HandleFunc("/api/v1/market/price-references/", h.withPermission(constant.PermissionMarketRead, h.PriceReferenceByID))
 	mux.HandleFunc("/api/v1/market/symbol-mappings", h.withPermission(constant.PermissionMarketRead, h.SymbolMappings))
 	mux.HandleFunc("/api/v1/market/symbol-mappings/", h.withPermission(constant.PermissionMarketRead, h.SymbolMappingByID))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptions))
@@ -208,28 +211,24 @@ func (h *Handler) DashboardPageMenu(w http.ResponseWriter, r *http.Request) {
 	writeDataResult(w, result, err)
 }
 
-func (h *Handler) Orders(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		req, ok := parsePagination(w, r, &entity.OrderHistory{})
-		if !ok {
-			return
-		}
-		result, err := h.dataService.ListOrders(r.Context(), req)
-		writeDataResult(w, result, err)
-	case http.MethodPost:
-		if !requirePermission(w, r, constant.PermissionOrderWrite) {
-			return
-		}
-		var body map[string]any
-		if !decodeBody(w, r, &body) {
-			return
-		}
-		result, err := h.dataService.CreateOrder(r.Context(), body)
-		writeDataResult(w, result, err)
-	default:
-		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+func (h *Handler) DashboardOverview(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
 	}
+	result, err := h.dataService.GetDashboardOverview(r.Context())
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) Orders(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	req, ok := parsePagination(w, r, &entity.OrderHistory{})
+	if !ok {
+		return
+	}
+	result, err := h.dataService.ListOrders(r.Context(), req)
+	writeDataResult(w, result, err)
 }
 
 func (h *Handler) OrderTradePnL(w http.ResponseWriter, r *http.Request) {
@@ -269,85 +268,63 @@ func (h *Handler) StrategyPerformanceReports(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) OrderByID(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
 	id, ok := pathID(w, r, "/api/v1/orders/")
 	if !ok {
 		return
 	}
-	switch r.Method {
-	case http.MethodGet:
-		result, err := h.dataService.GetOrder(r.Context(), id)
-		writeDataResult(w, result, err)
-	case http.MethodPut, http.MethodPatch:
-		if !requirePermission(w, r, constant.PermissionOrderWrite) {
-			return
-		}
-		var body map[string]any
-		if !decodeBody(w, r, &body) {
-			return
-		}
-		result, err := h.dataService.UpdateOrder(r.Context(), id, body)
-		writeDataResult(w, result, err)
-	case http.MethodDelete:
-		if !requirePermission(w, r, constant.PermissionOrderWrite) {
-			return
-		}
-		writeDeleteResult(w, h.dataService.DeleteOrder(r.Context(), id))
-	default:
-		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
-	}
+	result, err := h.dataService.GetOrder(r.Context(), id)
+	writeDataResult(w, result, err)
 }
 
 func (h *Handler) MarketKlines(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		req, ok := parsePagination(w, r, &entity.MarketKline{})
-		if !ok {
-			return
-		}
-		result, err := h.dataService.ListMarketKlines(r.Context(), req)
-		writeDataResult(w, result, err)
-	case http.MethodPost:
-		if !requirePermission(w, r, constant.PermissionMarketWrite) {
-			return
-		}
-		var body map[string]any
-		if !decodeBody(w, r, &body) {
-			return
-		}
-		result, err := h.dataService.CreateMarketKline(r.Context(), body)
-		writeDataResult(w, result, err)
-	default:
-		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	if !requireMethod(w, r, http.MethodGet) {
+		return
 	}
+	req, ok := parsePagination(w, r, &entity.MarketKline{})
+	if !ok {
+		return
+	}
+	result, err := h.dataService.ListMarketKlines(r.Context(), req)
+	writeDataResult(w, result, err)
 }
 
 func (h *Handler) MarketKlineByID(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
 	id, ok := pathID(w, r, "/api/v1/market/klines/")
 	if !ok {
 		return
 	}
-	switch r.Method {
-	case http.MethodGet:
-		result, err := h.dataService.GetMarketKline(r.Context(), id)
-		writeDataResult(w, result, err)
-	case http.MethodPut, http.MethodPatch:
-		if !requirePermission(w, r, constant.PermissionMarketWrite) {
-			return
-		}
-		var body map[string]any
-		if !decodeBody(w, r, &body) {
-			return
-		}
-		result, err := h.dataService.UpdateMarketKline(r.Context(), id, body)
-		writeDataResult(w, result, err)
-	case http.MethodDelete:
-		if !requirePermission(w, r, constant.PermissionMarketWrite) {
-			return
-		}
-		writeDeleteResult(w, h.dataService.DeleteMarketKline(r.Context(), id))
-	default:
-		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	result, err := h.dataService.GetMarketKline(r.Context(), id)
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) PriceReferences(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
 	}
+	req, ok := parsePagination(w, r, &entity.PriceReference{})
+	if !ok {
+		return
+	}
+	result, err := h.dataService.ListPriceReferences(r.Context(), req)
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) PriceReferenceByID(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	id, ok := pathID(w, r, "/api/v1/market/price-references/")
+	if !ok {
+		return
+	}
+	result, err := h.dataService.GetPriceReference(r.Context(), id)
+	writeDataResult(w, result, err)
 }
 
 func (h *Handler) MarketBackfills(w http.ResponseWriter, r *http.Request) {

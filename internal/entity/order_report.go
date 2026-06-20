@@ -1,10 +1,22 @@
 package entity
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+type DashboardOrderSummary struct {
+	Orders24h        int64           `db:"orders_24h"`
+	ProblemOrders24h int64           `db:"problem_orders_24h"`
+	ClosedTrades     int64           `db:"closed_trades"`
+	WinningTrades    int64           `db:"winning_trades"`
+	RunningTrades    int64           `db:"running_trades"`
+	RealizedPnL      decimal.Decimal `db:"realized_pnl"`
+	RunningPnL       decimal.Decimal `db:"running_pnl"`
+	LastPriceAt      sql.NullTime    `db:"last_price_at"`
+}
 
 type OrderReportFilter struct {
 	StartTime  *time.Time
@@ -42,6 +54,7 @@ type DailyOrderReport struct {
 	TotalTrades   int64           `db:"total_trades" json:"total_trades"`
 	WinningTrades int64           `db:"winning_trades" json:"winning_trades"`
 	LosingTrades  int64           `db:"losing_trades" json:"losing_trades"`
+	TotalCount    int64           `db:"total_count" json:"-"`
 }
 
 type StrategyPerformanceReport struct {

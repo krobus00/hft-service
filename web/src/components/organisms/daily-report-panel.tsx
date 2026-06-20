@@ -1,12 +1,12 @@
 "use client";
 
-import { RefreshCw, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { listDailyOrderReports, type DailyOrderReport } from "@/lib/api-client";
-import type { ResourceConfig } from "@/types/api";
+import type { PaginationMeta, ResourceConfig } from "@/types/api";
 
 type DailyReportPanelProps = {
   resource: ResourceConfig;
@@ -22,6 +22,8 @@ type ReportFilters = {
 export function DailyReportPanel({ resource }: DailyReportPanelProps) {
   const [filters, setFilters] = useState<ReportFilters>(() => defaultFilters());
   const [items, setItems] = useState<DailyOrderReport[]>([]);
+  const [meta, setMeta] = useState<PaginationMeta | null>(null);
+  const [page, setPage] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -34,14 +36,17 @@ export function DailyReportPanel({ resource }: DailyReportPanelProps) {
         end_time: toAPITime(filters.endTime),
         strategy_id: filters.strategyID.trim(),
         symbol: filters.symbol.trim(),
+        page,
+        limit: 20,
       });
-      setItems(result);
+      setItems(result.items);
+      setMeta(result.meta);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to load daily reports.");
     } finally {
       setIsLoading(false);
     }
-  }, [filters]);
+  }, [filters, page]);
 
   useEffect(() => {
     void loadItems();
@@ -57,7 +62,10 @@ export function DailyReportPanel({ resource }: DailyReportPanelProps) {
       <ReportToolbar
         filters={filters}
         isLoading={isLoading}
-        onChange={setFilters}
+        onChange={(nextFilters) => {
+          setFilters(nextFilters);
+          setPage(1);
+        }}
         onRefresh={loadItems}
       />
 
@@ -68,9 +76,9 @@ export function DailyReportPanel({ resource }: DailyReportPanelProps) {
       ) : null}
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <Metric label="Total profit" value={formatMoney(totalProfit)} tone={totalProfit < 0 ? "loss" : "gain"} />
-        <Metric label="Total trades" value={String(totalTrades)} />
-        <Metric label="Win rate" value={formatPercent(winRate)} />
+        <Metric label="Page profit" value={formatMoney(totalProfit)} tone={totalProfit < 0 ? "loss" : "gain"} />
+        <Metric label="Page trades" value={String(totalTrades)} />
+        <Metric label="Page win rate" value={formatPercent(winRate)} />
       </div>
 
       <div className="overflow-hidden rounded-md border bg-card">
@@ -110,8 +118,16 @@ export function DailyReportPanel({ resource }: DailyReportPanelProps) {
             </tbody>
           </table>
         </div>
-        <div className="border-t px-3 py-3 text-sm text-muted-foreground">
-          Showing {items.length} grouped rows
+        <div className="flex items-center justify-between border-t px-3 py-3 text-sm text-muted-foreground">
+          <span>Page {meta?.page ?? page} of {meta?.totalPages ?? 0} · {meta?.totalItems ?? 0} grouped rows</span>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={isLoading || page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+              <ChevronLeft className="h-4 w-4" /> Previous
+            </Button>
+            <Button type="button" variant="outline" size="sm" disabled={isLoading || !meta || page >= meta.totalPages} onClick={() => setPage((current) => current + 1)}>
+              Next <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </div>
     </section>

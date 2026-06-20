@@ -34,6 +34,7 @@ export type ResourceKey =
   | "dailyReports"
   | "strategyPerformance"
   | "marketKlines"
+  | "priceReferences"
   | "marketBackfills"
   | "symbolMappings"
   | "klineSubscriptions"
