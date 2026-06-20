@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.framework import RedisStateStore, StoredPairState, StrategyBase
 from core.models import StrategyConfig
@@ -16,6 +18,9 @@ class FakeRedis:
 
     async def delete(self, key):
         self.values.pop(key, None)
+
+    async def ping(self):
+        return True
 
 
 class ExternalCloseStrategy(StrategyBase):
@@ -48,6 +53,27 @@ class ExternalCloseTest(unittest.TestCase):
 
 
 class RedisStateStoreTest(unittest.IsolatedAsyncioTestCase):
+    async def test_connect_uses_binary_responses(self):
+        client = FakeRedis()
+        options = {}
+
+        def from_url(url, **kwargs):
+            options.update(kwargs)
+            return client
+
+        redis_module = SimpleNamespace(from_url=from_url)
+        runtime = SimpleNamespace(
+            redis_url="redis://localhost:6379/0",
+            redis_key_prefix="test",
+            redis_state_ttl_sec=0,
+        )
+
+        with patch("core.framework.redis_async", redis_module):
+            store = await RedisStateStore.connect(runtime)
+
+        self.assertIs(store.client, client)
+        self.assertEqual(options, {"decode_responses": False})
+
     async def test_round_trip(self):
         store = RedisStateStore(FakeRedis(), "test", 0)
         expected = StoredPairState({"cooldown": 2}, 100.5, "order-1")

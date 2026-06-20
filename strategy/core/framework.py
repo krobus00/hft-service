@@ -74,7 +74,7 @@ class RedisStateStore:
         if redis_async is None:
             raise RuntimeError("redis package is required for strategy state")
 
-        client = redis_async.from_url(redis_url, encoding=None, decode_responses=False)
+        client = redis_async.from_url(redis_url, decode_responses=False)
         try:
             await client.ping()
         except Exception as exc:
