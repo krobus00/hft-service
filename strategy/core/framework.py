@@ -67,23 +67,20 @@ class RedisStateStore:
         self.ttl_sec = max(0, int(ttl_sec or 0))
 
     @classmethod
-    async def connect(cls, runtime: RuntimeConfig) -> Optional["RedisStateStore"]:
+    async def connect(cls, runtime: RuntimeConfig) -> "RedisStateStore":
         redis_url = str(runtime.redis_url or "").strip()
         if not redis_url:
-            LOGGER.info("redis state store disabled")
-            return None
+            raise RuntimeError("redis_url is required for strategy state")
         if redis_async is None:
-            LOGGER.warning("redis package is not installed; state persistence disabled")
-            return None
+            raise RuntimeError("redis package is required for strategy state")
 
         client = redis_async.from_url(redis_url, encoding=None, decode_responses=False)
         try:
             await client.ping()
         except Exception as exc:
-            LOGGER.warning("redis state store unavailable: %s", exc)
             with contextlib.suppress(Exception):
                 await client.aclose()
-            return None
+            raise RuntimeError(f"redis state store unavailable: {exc}") from exc
 
         LOGGER.info("redis state store connected prefix=%s ttl_sec=%s", runtime.redis_key_prefix, runtime.redis_state_ttl_sec)
         return cls(client, runtime.redis_key_prefix, runtime.redis_state_ttl_sec)
@@ -933,9 +930,6 @@ class StrategyRunner:
         )
 
         initial_state = self.strategy.snapshot_state()
-        state_store: Dict[str, Any] = {}
-        entry_price_store: Dict[str, float] = {}
-        entry_order_id_store: Dict[str, str] = {}
         metrics = StrategyMetrics()
         redis_store = await RedisStateStore.connect(self.runtime)
         db_pool_min_size = max(1, int(self.runtime.db_pool_min_size or 1))
@@ -990,37 +984,11 @@ class StrategyRunner:
         last_reconcile_ms = 0
         monitor_server: Optional[StrategyMonitorServer] = None
 
-        async def save_pair_state(state_key: str, strategy_state: Dict[str, Any]) -> None:
-            state_store[state_key] = strategy_state
-            if redis_store is None:
-                return
-            try:
-                await redis_store.save(
-                    state_key,
-                    StoredPairState(
-                        strategy_state=strategy_state,
-                        entry_price=entry_price_store.get(state_key),
-                        entry_order_id=entry_order_id_store.get(state_key, ""),
-                    ),
-                )
-            except Exception as exc:
-                metrics.last_error = f"redis state save failed: {exc}"
-                LOGGER.warning("redis state save failed key=%s error=%s", state_key, exc)
+        async def save_pair_state(state_key: str, state: StoredPairState) -> None:
+            await redis_store.save(state_key, state)
 
         async def load_pair_state(state_key: str) -> StoredPairState:
-            if redis_store is None:
-                return StoredPairState(strategy_state=state_store.get(state_key))
-            try:
-                restored = await redis_store.load(state_key)
-                if restored.strategy_state is None and state_key in state_store:
-                    restored.strategy_state = state_store.get(state_key)
-                    restored.entry_price = entry_price_store.get(state_key)
-                    restored.entry_order_id = entry_order_id_store.get(state_key, "")
-                return restored
-            except Exception as exc:
-                metrics.last_error = f"redis state load failed: {exc}"
-                LOGGER.warning("redis state load failed key=%s error=%s", state_key, exc)
-                return StoredPairState(strategy_state=state_store.get(state_key))
+            return await redis_store.load(state_key)
 
         def clone_strategy_for_pair(pair_key: str) -> tuple[StrategyBase, asyncio.Lock]:
             try:
@@ -1135,21 +1103,6 @@ class StrategyRunner:
                         )
                         trade_count = self._kline_field(data, "TradeCount", "trade_count", default=0)
 
-                        LOGGER.info(
-                            "[%s] nats_market_kline_received subject=%s pair=%s exchange=%s market_type=%s "
-                            "symbol=%s interval=%s close_time=%s is_closed=%s close=%s",
-                            self.strategy.config.name,
-                            getattr(msg, "subject", ""),
-                            pair_key,
-                            expected_exchange,
-                            effective_market_type,
-                            incoming_symbol,
-                            incoming_interval,
-                            close_time,
-                            is_closed,
-                            close_price,
-                        )
-
                         candle = Candle(
                             close_time_ms=parse_iso_to_ms(close_time),
                             close=float(close_price),
@@ -1169,8 +1122,10 @@ class StrategyRunner:
                             expected_market_type,
                             candle.interval,
                         )
-                        previous_snapshot = state_store.get(state_key)
-                        pair_strategy.restore_state(previous_snapshot if previous_snapshot is not None else initial_state)
+                        stored_state = await load_pair_state(state_key)
+                        pair_strategy.restore_state(
+                            stored_state.strategy_state if stored_state.strategy_state is not None else initial_state
+                        )
                         self._apply_strategy_overrides(target.get("order_config"), pair_strategy)
 
                         snapshot = pair_strategy.snapshot_state()
@@ -1204,16 +1159,16 @@ class StrategyRunner:
                                         if not entry_order_id:
                                             entry_order_id = gen_id()
                                             signal_metadata["entry_order_id"] = entry_order_id
-                                        entry_order_id_store[state_key] = entry_order_id
+                                        stored_state.entry_order_id = entry_order_id
                                     elif self._is_exit_trade_condition(trade_condition):
                                         if self._metadata_float(signal_metadata, "entry_price") is None:
-                                            remembered_entry = entry_price_store.get(state_key)
+                                            remembered_entry = stored_state.entry_price
                                             if remembered_entry is not None:
                                                 signal_metadata["entry_price"] = float(remembered_entry)
 
                                         exit_entry_order_id = str(signal_metadata.get("entry_order_id", "")).strip()
                                         if not exit_entry_order_id:
-                                            remembered_entry_order_id = entry_order_id_store.get(state_key)
+                                            remembered_entry_order_id = stored_state.entry_order_id
                                             if remembered_entry_order_id:
                                                 exit_entry_order_id = remembered_entry_order_id
                                                 signal_metadata["entry_order_id"] = remembered_entry_order_id
@@ -1250,10 +1205,10 @@ class StrategyRunner:
                                     if trade_condition == "ENTRY":
                                         persisted_entry = self._metadata_float(signal_metadata, "entry_price")
                                         if persisted_entry is not None:
-                                            entry_price_store[state_key] = float(persisted_entry)
+                                            stored_state.entry_price = float(persisted_entry)
                                     elif self._is_exit_trade_condition(trade_condition):
-                                        entry_price_store.pop(state_key, None)
-                                        entry_order_id_store.pop(state_key, None)
+                                        stored_state.entry_price = None
+                                        stored_state.entry_order_id = ""
 
                                     published_summaries.append(
                                         (signal.reason, trade_condition, signal.side, signal.price)
@@ -1275,7 +1230,8 @@ class StrategyRunner:
                                 )
 
                         latest_state = pair_strategy.snapshot_state()
-                        await save_pair_state(state_key, latest_state)
+                        stored_state.strategy_state = latest_state
+                        await save_pair_state(state_key, stored_state)
 
                 await msg.ack()
                 metrics.messages_acked += 1
@@ -1392,18 +1348,12 @@ class StrategyRunner:
                 )
                 pair_strategy = pair_ctx.get("strategy")
                 if isinstance(pair_strategy, StrategyBase):
-                    await save_pair_state(state_key, pair_strategy.snapshot_state())
+                    stored_state = await load_pair_state(state_key)
+                    stored_state.strategy_state = pair_strategy.snapshot_state()
+                    await save_pair_state(state_key, stored_state)
 
                 if self.runtime.redis_delete_removed_state:
-                    state_store.pop(state_key, None)
-                    entry_price_store.pop(state_key, None)
-                    entry_order_id_store.pop(state_key, None)
-                    if redis_store is not None:
-                        try:
-                            await redis_store.delete(state_key)
-                        except Exception as exc:
-                            metrics.last_error = f"redis state delete failed: {exc}"
-                            LOGGER.warning("redis state delete failed key=%s error=%s", state_key, exc)
+                    await redis_store.delete(state_key)
                 LOGGER.info("removed strategy pair=%s", key)
 
             for key in add_keys:
@@ -1419,17 +1369,9 @@ class StrategyRunner:
                 try:
                     restored = await load_pair_state(state_key)
 
-                    if restored.strategy_state is not None:
-                        state_store[state_key] = restored.strategy_state
-                        if restored.entry_price is not None:
-                            entry_price_store[state_key] = float(restored.entry_price)
-                        if restored.entry_order_id:
-                            entry_order_id_store[state_key] = restored.entry_order_id
-                        LOGGER.info("restored strategy state from redis pair=%s", key)
-                    else:
-                        previous = state_store.get(state_key)
+                    if restored.strategy_state is None:
                         temp_strategy, _ = clone_strategy_for_pair(key)
-                        temp_strategy.restore_state(previous if previous is not None else initial_state)
+                        temp_strategy.restore_state(initial_state)
                         self._apply_strategy_overrides(target.get("order_config"), temp_strategy)
                         original_strategy = self.strategy
                         try:
@@ -1443,7 +1385,7 @@ class StrategyRunner:
                         finally:
                             self.strategy = original_strategy
                         latest_state = temp_strategy.snapshot_state()
-                        await save_pair_state(state_key, latest_state)
+                        await save_pair_state(state_key, StoredPairState(strategy_state=latest_state))
                 except Exception as exc:
                     metrics.last_error = f"warmup skipped for pair={key}: {exc}"
                     LOGGER.warning("warmup skipped pair=%s error=%s", key, exc)
@@ -1561,15 +1503,19 @@ class StrategyRunner:
                         or str(target["exchange"]).strip().upper() != exchange
                         or str(target["market_type"]).strip().lower() != market_type
                         or str(target["symbol"]).strip().upper() != symbol
-                        or entry_order_id_store.get(state_key) != entry_order_id
                     ):
                         continue
                     async with pair_ctx["lock"]:
+                        stored_state = await load_pair_state(state_key)
+                        if stored_state.entry_order_id != entry_order_id:
+                            continue
                         pair_strategy = pair_ctx["strategy"]
+                        pair_strategy.restore_state(stored_state.strategy_state)
                         pair_strategy.on_external_close()
-                        entry_price_store.pop(state_key, None)
-                        entry_order_id_store.pop(state_key, None)
-                        await save_pair_state(state_key, pair_strategy.snapshot_state())
+                        await save_pair_state(
+                            state_key,
+                            StoredPairState(strategy_state=pair_strategy.snapshot_state()),
+                        )
                     LOGGER.info("strategy state synced after manual close pair=%s entry_order_id=%s", pair_key, entry_order_id)
                 await msg.ack()
             except Exception as exc:
@@ -1588,7 +1534,13 @@ class StrategyRunner:
                 return out
 
             active_pair_map = {key: ctx.get("target", {}) for key, ctx in active_pairs.items()}
-            state_by_pair = {key: self._to_jsonable(value) for key, value in state_store.items()}
+            state_by_pair = {}
+            for key, ctx in active_pairs.items():
+                target = ctx["target"]
+                state_key = self._state_key(
+                    target["strategy"], target["exchange"], target["symbol"], target["market_type"], target["interval"]
+                )
+                state_by_pair[key] = self._to_jsonable((await load_pair_state(state_key)).strategy_state or {})
             subscriptions = {
                 key: {
                     "subject": str(ctx.get("subject", "")),
@@ -1654,7 +1606,7 @@ class StrategyRunner:
                     "nats_connected": bool(nc.is_connected),
                     "nats_closed": bool(nc.is_closed),
                     "last_reconcile_ms": last_reconcile_ms,
-                    "redis_enabled": redis_store is not None,
+                    "redis_enabled": True,
                 },
                 "metrics": {
                     "messages_seen": metrics.messages_seen,
@@ -1711,8 +1663,7 @@ class StrategyRunner:
                         await worker
             if monitor_server is not None:
                 await monitor_server.close()
-            if redis_store is not None:
-                await redis_store.close()
+            await redis_store.close()
             if self.db_pool is not None:
                 await self.db_pool.close()
                 self.db_pool = None

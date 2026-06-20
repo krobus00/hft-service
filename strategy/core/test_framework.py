@@ -1,7 +1,21 @@
 import unittest
 
-from core.framework import StrategyBase
+from core.framework import RedisStateStore, StoredPairState, StrategyBase
 from core.models import StrategyConfig
+
+
+class FakeRedis:
+    def __init__(self):
+        self.values = {}
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def set(self, key, value, **kwargs):
+        self.values[key] = value
+
+    async def delete(self, key):
+        self.values.pop(key, None)
 
 
 class ExternalCloseStrategy(StrategyBase):
@@ -31,6 +45,16 @@ class ExternalCloseTest(unittest.TestCase):
         self.assertIsNone(strategy.states["BTCUSDT"]["entry_price"])
         self.assertFalse(strategy.states["BTCUSDT"]["trail_armed"])
         self.assertEqual(strategy.states["BTCUSDT"]["reentry_lock_side"], "LONG")
+
+
+class RedisStateStoreTest(unittest.IsolatedAsyncioTestCase):
+    async def test_round_trip(self):
+        store = RedisStateStore(FakeRedis(), "test", 0)
+        expected = StoredPairState({"cooldown": 2}, 100.5, "order-1")
+
+        await store.save("pair", expected)
+
+        self.assertEqual(await store.load("pair"), expected)
 
 
 if __name__ == "__main__":
