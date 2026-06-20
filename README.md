@@ -513,7 +513,7 @@ Then run:
 make up-service
 ```
 
-The strategy profile includes `strategy-krobot01`, `strategy-krobot02`, `strategy-krobot03`, `strategy-ai`, `strategy-supertrend`, and `strategy-capital-guard`. The `capital_guard.py` service publishes its monitor on `${STRATEGY_CAPITAL_GUARD_PORT:-19017}` and uses the `python-capital-guard` strategy key in `strategy_configs`.
+The strategy profile includes `strategy-krobot01`, `strategy-krobot02`, `strategy-krobot03`, `strategy-ai`, `strategy-supertrend`, `strategy-capital-guard`, and `strategy-micro-grid`. The Micro Grid monitor uses `${STRATEGY_MICRO_GRID_PORT:-19018}` and its `strategy_configs` key is `python-micro-grid`.
 
 Redis and NATS passwords are optional. If you set them in Compose, also update `config.yml` and `strategy/config.yml` URLs to match.
 

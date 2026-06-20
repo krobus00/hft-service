@@ -63,6 +63,12 @@ Main strategy design goals:
 - Risk behavior: No local TP/SL/trailing-stop logic. Strategy fully trusts Supertrend direction changes.
 - Runtime standard: Pair routing, user mapping, and risk-config resolution are handled by `strategy_configs` + shared `core/framework.py` (no per-strategy `kline_subject`/`queue_name` settings).
 
+#### `micro_grid.py` (Micro Grid)
+
+- Buys when price falls one configured grid step below the latest anchor.
+- Sells when price rises one configured grid step above the latest anchor.
+- Uses `python-micro-grid` as its `strategy_configs` key.
+
 #### `capital_guard.py` (Guarded Trend Scalper)
 
 - Signal style: Conservative trend/momentum entry for liquid, short-interval markets.
@@ -175,6 +181,7 @@ Rules:
 
 - `strategy` must match the strategy key used by the Python runner, for example `python-krobot01-ema200-vwap-macd`.
 - For `capital_guard.py`, use `python-capital-guard`.
+- For `micro_grid.py`, use `python-micro-grid`.
 - `symbol/interval/exchange/market_type` must match active market-data rows.
 - `user_id` must match a configured exchange account key.
 - `position_side` and `source` are stored in DB rows so one strategy process can route different pairs correctly.

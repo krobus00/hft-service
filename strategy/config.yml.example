@@ -77,6 +77,14 @@ krobot03:
   rsi_buy_min: 52
   rsi_sell_max: 48
 
+micro_grid:
+  name: MICRO_GRID
+  monitor_enabled: true
+  monitor_host: 127.0.0.1
+  monitor_port: 19018
+  historical_limit: 100
+  grid_step_pct: 0.10
+
 template:
   name: TEMPLATE
   monitor_enabled: true

@@ -248,6 +248,23 @@ services:
     profiles:
       - strategy
 
+  strategy-micro-grid:
+    <<: *strategy-service
+    command: ["bash", "-c", "python micro_grid.py"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+      migrate-order-engine:
+        condition: service_completed_successfully
+    ports:
+      - "${STRATEGY_MICRO_GRID_PORT:-19018}:19018"
+    profiles:
+      - strategy
+
   redis:
     image: redis:7-alpine
     container_name: hft-redis
