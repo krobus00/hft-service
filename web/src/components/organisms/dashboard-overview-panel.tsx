@@ -4,6 +4,8 @@ import {
   Activity,
   AlertTriangle,
   Bot,
+  ChevronLeft,
+  ChevronRight,
   CircleDollarSign,
   Loader2,
   Radio,
@@ -22,6 +24,7 @@ export function DashboardOverviewPanel() {
   const [data, setData] = useState<DashboardOverview | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [recentPage, setRecentPage] = useState(1);
 
   const loadOverview = useCallback(async () => {
     setIsLoading(true);
@@ -46,6 +49,9 @@ export function DashboardOverviewPanel() {
   }, [loadOverview]);
 
   const insight = useMemo(() => buildInsight(data), [data]);
+  const recentPageCount = Math.max(1, Math.ceil((data?.recent_orders.length ?? 0) / 10));
+  const currentRecentPage = Math.min(recentPage, recentPageCount);
+  const recentOrders = data?.recent_orders.slice((currentRecentPage - 1) * 10, currentRecentPage * 10) ?? [];
 
   return (
     <section className="grid gap-5">
@@ -92,11 +98,22 @@ export function DashboardOverviewPanel() {
                 <tbody>
                   {isLoading && !data ? (
                     <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Loading overview</td></tr>
-                  ) : data?.recent_orders.length ? data.recent_orders.map((order) => <OrderRow key={order.id} order={order} />) : (
+                  ) : recentOrders.length ? recentOrders.map((order) => <OrderRow key={order.id} order={order} />) : (
                     <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">No order history yet</td></tr>
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="flex items-center justify-between border-t px-3 py-3 text-sm text-muted-foreground">
+              <span>Page {currentRecentPage} of {recentPageCount} · {data?.recent_orders.length ?? 0} positions</span>
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" size="sm" disabled={currentRecentPage <= 1} onClick={() => setRecentPage((page) => page - 1)}>
+                  <ChevronLeft className="h-4 w-4" /> Previous
+                </Button>
+                <Button type="button" variant="outline" size="sm" disabled={currentRecentPage >= recentPageCount} onClick={() => setRecentPage((page) => page + 1)}>
+                  Next <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
