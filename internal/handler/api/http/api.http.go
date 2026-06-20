@@ -220,15 +220,28 @@ func (h *Handler) DashboardOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Orders(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.OrderHistory{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListOrders(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionOrderWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		claims := claimsFromContext(r.Context())
+		result, err := h.dataService.CreateManualOrder(r.Context(), claims.Subject, body)
+		writeOrderActionResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
-	req, ok := parsePagination(w, r, &entity.OrderHistory{})
-	if !ok {
-		return
-	}
-	result, err := h.dataService.ListOrders(r.Context(), req)
-	writeDataResult(w, result, err)
 }
 
 func (h *Handler) OrderTradePnL(w http.ResponseWriter, r *http.Request) {
@@ -268,15 +281,35 @@ func (h *Handler) StrategyPerformanceReports(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) OrderByID(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
-	}
 	id, ok := pathID(w, r, "/api/v1/orders/")
 	if !ok {
 		return
 	}
+	if strings.HasSuffix(id, "/close") {
+		if !requireMethod(w, r, http.MethodPost) || !requirePermission(w, r, constant.PermissionOrderWrite) {
+			return
+		}
+		result, err := h.dataService.CloseOrder(r.Context(), strings.TrimSuffix(id, "/close"))
+		writeOrderActionResult(w, result, err)
+		return
+	}
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
 	result, err := h.dataService.GetOrder(r.Context(), id)
 	writeDataResult(w, result, err)
+}
+
+func writeOrderActionResult(w http.ResponseWriter, result *apiservice.ManualOrderResult, err error) {
+	if err == nil {
+		apiutil.WriteSuccess(w, result)
+		return
+	}
+	if errors.Is(err, apiservice.ErrInvalidManualOrder) || errors.Is(err, apiservice.ErrPositionNotRunning) {
+		apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, err.Error())
+		return
+	}
+	writeDataResult(w, nil, err)
 }
 
 func (h *Handler) MarketKlines(w http.ResponseWriter, r *http.Request) {

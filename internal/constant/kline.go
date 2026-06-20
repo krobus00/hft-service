@@ -12,15 +12,18 @@ const (
 	KlineStreamName       = "KLINE"
 	KlineStreamSubjectAll = "KLINE.>"
 
-	OrderEngineQueueName  = "order_engine_queue"
-	OrderEngineQueueGroup = "order_engine_group"
-	NotificationQueueName = "notification_queue"
+	OrderEngineQueueName   = "order_engine_queue"
+	OrderEngineQueueGroup  = "order_engine_group"
+	NotificationQueueName  = "notification_queue"
 	NotificationQueueGroup = "notification_group"
 
-	OrderEngineStreamName              = "order_engine"
-	OrderEngineStreamSubjectAll        = "order_engine.*"
-	OrderEngineStreamSubjectPlaceOrder = "order_engine.place_order"
+	OrderEngineStreamName                     = "order_engine"
+	OrderEngineStreamSubjectAll               = "order_engine.*"
+	OrderEngineStreamSubjectPlaceOrder        = "order_engine.place_order"
 	OrderEngineStreamSubjectNotificationAlert = "order_engine.notification_alert"
+
+	StrategyControlStreamName            = "strategy_control"
+	StrategyControlSubjectPositionClosed = "strategy_control.position_closed"
 )
 
 func GetKlineStreamSubject(exchange, symbol, interval string) string {

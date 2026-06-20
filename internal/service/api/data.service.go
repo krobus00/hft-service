@@ -39,6 +39,17 @@ type AuthConfigResponse struct {
 
 type FormEnumsResponse map[string][]string
 
+var (
+	ErrInvalidManualOrder = errors.New("invalid manual order")
+	ErrPositionNotRunning = errors.New("position is not running")
+)
+
+type ManualOrderResult struct {
+	RequestID  string `json:"request_id"`
+	StrategyID string `json:"strategy_id"`
+	Status     string `json:"status"`
+}
+
 func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext) *DataService {
 	return &DataService{
 		authRepo:              repository.NewAPIAuthRepository(apiDB),
@@ -170,6 +181,104 @@ func (s *DataService) GetOrder(ctx context.Context, id string) (*OrderHistoryRes
 		return nil, err
 	}
 	return orderHistoryWithMetricsResponse(result), nil
+}
+
+func (s *DataService) CreateManualOrder(ctx context.Context, userID string, values map[string]any) (*ManualOrderResult, error) {
+	if s.js == nil {
+		return nil, errors.New("order publisher is not configured")
+	}
+	requestID, err := apiutil.NewRandomToken()
+	if err != nil {
+		return nil, err
+	}
+	order, err := buildManualEntryOrder(userID, "manual-"+requestID, values)
+	if err != nil {
+		return nil, err
+	}
+	if err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{Data: order}); err != nil {
+		return nil, err
+	}
+	return &ManualOrderResult{RequestID: order.RequestID, StrategyID: "manual", Status: "queued"}, nil
+}
+
+func (s *DataService) CloseOrder(ctx context.Context, id string) (*ManualOrderResult, error) {
+	if s.js == nil {
+		return nil, errors.New("order publisher is not configured")
+	}
+	entry, err := s.orderHistoryRepo.FindByIDWithMetrics(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil || entry.State != "running" || entry.TradeCondition != string(entity.TradeConditionEntry) {
+		return nil, ErrPositionNotRunning
+	}
+	order, err := buildManualCloseOrder(entry.OrderHistory)
+	if err != nil {
+		return nil, err
+	}
+	if order.IsPaperTrading {
+		price, err := s.priceReferenceRepo.FindByMarket(ctx, order.Exchange, order.MarketType, order.Symbol)
+		if err != nil {
+			return nil, err
+		}
+		if price == nil || !price.Price.IsPositive() {
+			return nil, fmt.Errorf("%w: current paper-trading price is unavailable", ErrInvalidManualOrder)
+		}
+		order.Price = price.Price
+	}
+	if err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{Data: order}); err != nil {
+		return nil, err
+	}
+	strategyID := ""
+	if order.StrategyID != nil {
+		strategyID = *order.StrategyID
+	}
+	return &ManualOrderResult{RequestID: order.RequestID, StrategyID: strategyID, Status: "queued"}, nil
+}
+
+func buildManualEntryOrder(userID, requestID string, values map[string]any) (entity.OrderRequest, error) {
+	marketType := entity.NormalizeMarketType(stringValue(values, "market_type", "spot"))
+	side := entity.NormalizeOrderSideByMarket(stringValue(values, "side", ""), marketType)
+	quantity := decimalValue(values, "quantity", decimal.Zero)
+	price := decimalValue(values, "price", decimal.Zero)
+	exchange := strings.ToLower(stringValue(values, "exchange", ""))
+	symbol := strings.ToUpper(stringValue(values, "symbol", ""))
+	isPaperTrading := boolValue(values, "is_paper_trading", false)
+	if strings.TrimSpace(userID) == "" || exchange == "" || symbol == "" || side == "" || !quantity.IsPositive() || (isPaperTrading && !price.IsPositive()) {
+		return entity.OrderRequest{}, ErrInvalidManualOrder
+	}
+	strategyID := "manual"
+	return entity.OrderRequest{
+		RequestID: requestID, UserID: userID, EntryOrderID: requestID,
+		Exchange: exchange, MarketType: string(marketType), PositionSide: string(entity.NormalizePositionSide(stringValue(values, "position_side", "BOTH"))),
+		Symbol: symbol, Type: entity.OrderTypeMarket, Side: side, Price: price, Quantity: quantity,
+		RequestedAt: time.Now().UTC().UnixMilli(), Source: "dashboard", StrategyID: &strategyID, StrategyName: strategyID,
+		TradeCondition: string(entity.TradeConditionEntry), OrderReason: "manual_entry",
+		NeedNotification: boolValue(values, "need_notification", true), IsPaperTrading: isPaperTrading,
+	}, nil
+}
+
+func buildManualCloseOrder(entry entity.OrderHistory) (entity.OrderRequest, error) {
+	quantity := entry.FilledQuantity
+	if quantity.IsZero() {
+		quantity = entry.Quantity
+	}
+	side, ok := closeOrderSide(entry.Side, entity.NormalizeMarketType(entry.MarketType))
+	if !ok || !quantity.IsPositive() {
+		return entity.OrderRequest{}, ErrInvalidManualOrder
+	}
+	entryOrderID := strings.TrimSpace(entry.EntryOrderID)
+	if entryOrderID == "" {
+		return entity.OrderRequest{}, ErrInvalidManualOrder
+	}
+	strategyID := strings.TrimSpace(entry.StrategyID.String)
+	return entity.OrderRequest{
+		RequestID: "manual-close-" + entry.ID, UserID: entry.UserID, EntryOrderID: entryOrderID,
+		Exchange: entry.Exchange, MarketType: entry.MarketType, PositionSide: entry.PositionSide, Symbol: entry.Symbol,
+		Type: entity.OrderTypeMarket, Side: side, Price: decimal.Zero, Quantity: quantity,
+		RequestedAt: time.Now().UTC().UnixMilli(), Source: "dashboard", StrategyID: &strategyID, StrategyName: strategyID,
+		TradeCondition: string(entity.TradeConditionExit), OrderReason: "manual_close", IsPaperTrading: entry.IsPaperTrading,
+	}, nil
 }
 
 func (s *DataService) ListPriceReferences(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {

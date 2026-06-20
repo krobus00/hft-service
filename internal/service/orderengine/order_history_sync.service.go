@@ -6,6 +6,7 @@ import (
 
 	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/repository"
+	"github.com/nats-io/nats.go"
 	"github.com/sirupsen/logrus"
 )
 
@@ -17,9 +18,10 @@ type OrderHistorySyncService struct {
 	exchanges        map[entity.ExchangeName]entity.Exchange
 	orderHistoryRepo *repository.OrderHistoryRepository
 	syncInterval     time.Duration
+	js               nats.JetStreamContext
 }
 
-func NewOrderHistorySyncService(exchanges map[entity.ExchangeName]entity.Exchange, orderHistoryRepo *repository.OrderHistoryRepository, syncInterval time.Duration) *OrderHistorySyncService {
+func NewOrderHistorySyncService(exchanges map[entity.ExchangeName]entity.Exchange, orderHistoryRepo *repository.OrderHistoryRepository, js nats.JetStreamContext, syncInterval time.Duration) *OrderHistorySyncService {
 	if syncInterval <= 0 {
 		syncInterval = defaultOrderHistorySyncInterval
 	}
@@ -28,6 +30,7 @@ func NewOrderHistorySyncService(exchanges map[entity.ExchangeName]entity.Exchang
 		exchanges:        exchanges,
 		orderHistoryRepo: orderHistoryRepo,
 		syncInterval:     syncInterval,
+		js:               js,
 	}
 }
 
@@ -90,6 +93,11 @@ func (s *OrderHistorySyncService) SyncPendingOrderHistories(ctx context.Context)
 		}
 		if updatedHistory.UpdatedAt.IsZero() {
 			updatedHistory.UpdatedAt = time.Now().UTC()
+		}
+
+		if err := publishManualPositionClosed(s.js, updatedHistory); err != nil {
+			logrus.WithError(err).WithField("order_id", history.OrderID).Error("failed to publish strategy position close")
+			continue
 		}
 
 		err = s.orderHistoryRepo.Update(ctx, updatedHistory)

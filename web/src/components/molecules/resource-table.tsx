@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronsUpDown, ChevronLeft, ChevronRight, Eye, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, ChevronLeft, ChevronRight, Eye, LogOut, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ type ResourceTableProps = {
   sortDirection: SortDirection;
   onDetail: (id: string) => void;
   onDelete: (id: string) => void;
+  onClosePosition: (id: string) => void;
   onPageChange: (page: number) => void;
   onSortChange: (field: string) => void;
 };
@@ -26,6 +27,7 @@ export function ResourceTable({
   sortDirection,
   onDetail,
   onDelete,
+  onClosePosition,
   onPageChange,
   onSortChange,
 }: ResourceTableProps) {
@@ -82,7 +84,19 @@ export function ResourceTable({
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
-                        {canWrite ? (
+                        {canWrite && resource.key === "orders" && item.state === "running" ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            onClick={() => onClosePosition(id)}
+                            disabled={!id}
+                            title="Close position"
+                          >
+                            <LogOut className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                        {canWrite && !resource.createOnly ? (
                           <Button
                             type="button"
                             variant="outline"

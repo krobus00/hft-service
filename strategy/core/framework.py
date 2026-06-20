@@ -28,6 +28,8 @@ except Exception:  # pragma: no cover - redis is optional at runtime.
 LOGGER = logging.getLogger("strategy.framework")
 KLINE_STREAM_NAME = "KLINE"
 DEFAULT_ORDER_SUBJECT = "order_engine.place_order"
+STRATEGY_CONTROL_STREAM_NAME = "strategy_control"
+STRATEGY_POSITION_CLOSED_SUBJECT = "strategy_control.position_closed"
 if not logging.getLogger().handlers:
     logging.basicConfig(
         level=logging.INFO,
@@ -265,6 +267,40 @@ class StrategyBase(ABC):
                 continue
             setattr(self, slot, self._safe_deepcopy(snapshot[slot]))
         return None
+
+    def on_external_close(self) -> None:
+        def reset(values: Any) -> None:
+            if not isinstance(values, dict):
+                return
+            exited_side = str(values.get("position_side") or "").strip().upper()
+            for key in ("position_side", "entry_price", "highest_since_entry", "lowest_since_entry", "tp_anchor_price"):
+                if key in values:
+                    values[key] = None
+            for key in ("trail_armed", "trailing_armed", "intrabar_risk_guard"):
+                if key in values:
+                    values[key] = False
+            for key in ("bars_in_pos", "tp_ladder_steps"):
+                if key in values:
+                    values[key] = 0
+            if "cooldown" in values:
+                values["cooldown"] = max(int(values.get("cooldown") or 0), int(getattr(self, "cooldown_bars", 0) or 0))
+            if "reentry_lock_side" in values and exited_side in {"LONG", "SHORT"}:
+                values["reentry_lock_side"] = exited_side
+
+        snapshot = self.snapshot_state()
+        reset(snapshot)
+        states = snapshot.get("states")
+        if isinstance(states, dict):
+            for state in states.values():
+                reset(state)
+        for active, configured in (
+            ("active_take_profit_pct", "take_profit_pct"),
+            ("active_stop_loss_pct", "stop_loss_pct"),
+            ("active_trailing_stop_pct", "trailing_stop_pct"),
+        ):
+            if active in snapshot and configured in snapshot:
+                snapshot[active] = snapshot[configured]
+        self.restore_state(snapshot)
 
     def on_price_update(self, candle: Candle) -> Optional[Signal]:
         return None
@@ -1502,6 +1538,46 @@ class StrategyRunner:
                 no_pairs_logged = True
                 last_active_summary = ""
 
+        async def handle_position_closed(msg) -> None:
+            try:
+                payload = orjson.loads(msg.data)
+                data = payload.get("data", {}) if isinstance(payload, dict) else {}
+                strategy_id = str(data.get("strategy_id") or "").strip()
+                exchange = str(data.get("exchange") or "").strip().upper()
+                market_type = str(data.get("market_type") or "").strip().lower()
+                symbol = str(data.get("symbol") or "").strip().upper()
+                entry_order_id = str(data.get("entry_order_id") or "").strip()
+                if not all((strategy_id, exchange, market_type, symbol, entry_order_id)):
+                    await msg.ack()
+                    return
+
+                for pair_key, pair_ctx in list(active_pairs.items()):
+                    target = pair_ctx["target"]
+                    state_key = self._state_key(
+                        target["strategy"], target["exchange"], target["symbol"], target["market_type"], target["interval"]
+                    )
+                    if (
+                        str(target["strategy"]).strip() != strategy_id
+                        or str(target["exchange"]).strip().upper() != exchange
+                        or str(target["market_type"]).strip().lower() != market_type
+                        or str(target["symbol"]).strip().upper() != symbol
+                        or entry_order_id_store.get(state_key) != entry_order_id
+                    ):
+                        continue
+                    async with pair_ctx["lock"]:
+                        pair_strategy = pair_ctx["strategy"]
+                        pair_strategy.on_external_close()
+                        entry_price_store.pop(state_key, None)
+                        entry_order_id_store.pop(state_key, None)
+                        await save_pair_state(state_key, pair_strategy.snapshot_state())
+                    LOGGER.info("strategy state synced after manual close pair=%s entry_order_id=%s", pair_key, entry_order_id)
+                await msg.ack()
+            except Exception as exc:
+                metrics.last_error = f"position close sync failed: {exc}"
+                LOGGER.exception("position close sync failed")
+                with contextlib.suppress(Exception):
+                    await msg.nak(delay=1)
+
         async def monitor_payload() -> Dict[str, Any]:
             def _slice_by_tokens(values: Dict[str, Any], tokens: tuple[str, ...]) -> Dict[str, Any]:
                 out: Dict[str, Any] = {}
@@ -1598,6 +1674,7 @@ class StrategyRunner:
                 "strategy_state_by_pair": strategy_state_by_pair,
             }
 
+        control_subscription = None
         try:
             if self.runtime.monitor_enabled:
                 monitor_server = StrategyMonitorServer(
@@ -1611,6 +1688,19 @@ class StrategyRunner:
                 if nc.is_closed:
                     raise RuntimeError("NATS connection closed; strategy exiting for supervisor restart")
                 await reconcile_pairs()
+                if control_subscription is None:
+                    durable = "STRATEGY_CONTROL_" + re.sub(r"[^A-Za-z0-9_-]", "_", str(self.runtime.strategy_id or self.strategy.config.name))[:120]
+                    try:
+                        control_subscription = await js.subscribe(
+                            STRATEGY_POSITION_CLOSED_SUBJECT,
+                            manual_ack=True,
+                            durable=durable,
+                            stream=STRATEGY_CONTROL_STREAM_NAME,
+                            deliver_policy=DeliverPolicy.ALL,
+                            cb=handle_position_closed,
+                        )
+                    except Exception as exc:
+                        LOGGER.warning("strategy control subscribe failed; retrying: %s", exc)
                 await asyncio.sleep(refresh_interval_sec)
         finally:
             for pair_ctx in list(active_pairs.values()):

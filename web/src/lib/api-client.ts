@@ -399,6 +399,15 @@ export async function deleteResource(resource: ResourceConfig, id: string) {
   );
 }
 
+export async function closeOrder(id: string) {
+  return withSession((session) =>
+    apiRequest<{ request_id: string; strategy_id: string; status: string }>(`/orders/${encodeURIComponent(id)}/close`, {
+      method: "POST",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
 export async function getDashboardPagesMenu() {
   return withSession((session) =>
     apiRequest<DashboardPageConfig[]>("/dashboard/pages/menu", {

@@ -67,6 +67,7 @@ export type ResourceConfig = {
     direction: SortDirection;
   };
   sampleBody?: Record<string, unknown>;
+  createOnly?: boolean;
   navParent?: string;
   navOrder?: number;
 };

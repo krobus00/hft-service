@@ -52,6 +52,7 @@ class SupertrendStrategy(StrategyBase):
             "trend": 0,
             "position_side": None,
             "entry_price": None,
+            "reentry_lock_side": None,
         }
         self.states[symbol] = state
         return state
@@ -186,6 +187,10 @@ class SupertrendStrategy(StrategyBase):
 
         trend_label = "UP" if trend > 0 else "DOWN"
         current_side = str(state.get("position_side") or "").strip().upper() or "FLAT"
+        reentry_lock = str(state.get("reentry_lock_side") or "").strip().upper()
+        if (reentry_lock == "LONG" and trend < 0) or (reentry_lock == "SHORT" and trend > 0):
+            state["reentry_lock_side"] = None
+            reentry_lock = ""
         metadata = {
             "symbol": str(candle.symbol or self.config.symbol or "").strip().upper(),
             "state_key": state_key,
@@ -194,7 +199,7 @@ class SupertrendStrategy(StrategyBase):
         }
 
         has_tracked_entry = state.get("entry_price") is not None
-        if trend > 0 and (state["position_side"] != "LONG" or not has_tracked_entry):
+        if trend > 0 and reentry_lock != "LONG" and (state["position_side"] != "LONG" or not has_tracked_entry):
             LOGGER.info(
                 "supertrend_entry key=%s trend=%s previous_side=%s close=%.8f",
                 state_key,
@@ -208,7 +213,7 @@ class SupertrendStrategy(StrategyBase):
                 return [exit_signal, entry_signal]
             return self._enter_long(state, candle, metadata)
 
-        if trend < 0 and (state["position_side"] != "SHORT" or not has_tracked_entry):
+        if trend < 0 and reentry_lock != "SHORT" and (state["position_side"] != "SHORT" or not has_tracked_entry):
             LOGGER.info(
                 "supertrend_entry key=%s trend=%s previous_side=%s close=%.8f",
                 state_key,

@@ -14,6 +14,7 @@ const (
 
 const (
 	PermissionOrderRead           = "order:read"
+	PermissionOrderWrite          = "order:write"
 	PermissionOrderReportRead     = "order_report:read"
 	PermissionMarketRead          = "market:read"
 	PermissionMarketConfigWrite   = "market_config:write"

@@ -25,6 +25,17 @@ func (r *PriceReferenceRepository) FindByID(ctx context.Context, id string) (*en
 	return &item, nil
 }
 
+func (r *PriceReferenceRepository) FindByMarket(ctx context.Context, exchange, marketType, symbol string) (*entity.PriceReference, error) {
+	var item entity.PriceReference
+	if err := r.db.GetContext(ctx, &item, "SELECT * FROM price_references WHERE exchange = $1 AND market_type = $2 AND symbol = $3", exchange, marketType, symbol); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (r *PriceReferenceRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
 	model := &entity.PriceReference{}
 	base := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).Select("*").From("price_references")

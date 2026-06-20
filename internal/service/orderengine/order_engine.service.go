@@ -46,28 +46,33 @@ func NewOrderEngineService(exchanges map[entity.ExchangeName]entity.Exchange, or
 }
 
 func (e *OrderEngineService) JetstreamEventInit(ctx context.Context) error {
-	streamConfig := &nats.StreamConfig{
-		Name:      constant.OrderEngineStreamName,
-		Subjects:  []string{constant.OrderEngineStreamSubjectAll},
-		Retention: nats.WorkQueuePolicy,
-		Storage:   nats.FileStorage,
-		MaxAge:    24 * time.Hour,
+	configs := []*nats.StreamConfig{
+		{Name: constant.OrderEngineStreamName, Subjects: []string{constant.OrderEngineStreamSubjectAll}, Retention: nats.WorkQueuePolicy, Storage: nats.FileStorage, MaxAge: 24 * time.Hour},
+		{Name: constant.StrategyControlStreamName, Subjects: []string{constant.StrategyControlSubjectPositionClosed}, Retention: nats.LimitsPolicy, Storage: nats.FileStorage, MaxAge: 7 * 24 * time.Hour},
 	}
+	for _, streamConfig := range configs {
+		if err := ensureStream(ctx, e.js, streamConfig); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	stream, err := e.js.StreamInfo(constant.OrderEngineStreamName, nats.Context(ctx))
+func ensureStream(ctx context.Context, js nats.JetStreamContext, streamConfig *nats.StreamConfig) error {
+	stream, err := js.StreamInfo(streamConfig.Name, nats.Context(ctx))
 	if err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 		logrus.Error(err)
 		return err
 	}
 
 	if stream == nil {
-		logrus.Infof("creating stream: %s", constant.OrderEngineStreamName)
-		_, err = e.js.AddStream(streamConfig, nats.Context(ctx))
+		logrus.Infof("creating stream: %s", streamConfig.Name)
+		_, err = js.AddStream(streamConfig, nats.Context(ctx))
 		return err
 	}
 
-	logrus.Infof("updating stream: %s", constant.OrderEngineStreamName)
-	_, err = e.js.UpdateStream(streamConfig, nats.Context(ctx))
+	logrus.Infof("updating stream: %s", streamConfig.Name)
+	_, err = js.UpdateStream(streamConfig, nats.Context(ctx))
 	if err != nil {
 		logrus.Error(err)
 		return err
@@ -183,6 +188,9 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 	}
 
 	if existingOrderHistory != nil {
+		if err := publishManualPositionClosed(s.js, existingOrderHistory); err != nil {
+			return nil, err
+		}
 		logrus.Warnf("duplicate order request: %s, request ID: %s", order.Exchange, order.RequestID)
 		return nil, ErrDuplicateOrder
 	}
@@ -194,6 +202,10 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 		if err != nil {
 			logrus.Error(err)
 			return nil, ErrCreateOrderHistoryFailed
+		}
+
+		if err = publishManualPositionClosed(s.js, orderHistory); err != nil {
+			return nil, err
 		}
 
 		err = s.publishOrderNotificationEvent(order, orderHistory)
@@ -219,6 +231,10 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 		return nil, ErrCreateOrderHistoryFailed
 	}
 
+	if err = publishManualPositionClosed(s.js, orderHistory); err != nil {
+		return nil, err
+	}
+
 	err = s.publishOrderNotificationEvent(order, orderHistory)
 	if err != nil {
 		logrus.Error(err)
@@ -226,6 +242,20 @@ func (s *OrderEngineService) PlaceOrder(ctx context.Context, order entity.OrderR
 	}
 
 	return orderHistory, nil
+}
+
+func publishManualPositionClosed(js nats.JetStreamContext, history *entity.OrderHistory) error {
+	if history == nil || history.Status != "FILLED" || history.OrderReason != "manual_close" {
+		return nil
+	}
+	event := entity.StrategyPositionClosedEvent{Data: entity.StrategyPositionClosed{
+		EntryOrderID: history.EntryOrderID,
+		StrategyID:   strings.TrimSpace(history.StrategyID.String),
+		Exchange:     history.Exchange,
+		MarketType:   history.MarketType,
+		Symbol:       history.Symbol,
+	}}
+	return util.PublishEvent(js, constant.StrategyControlSubjectPositionClosed, event)
 }
 
 func (s *OrderEngineService) PlaceOrderAsync(ctx context.Context, order entity.OrderRequest) error {

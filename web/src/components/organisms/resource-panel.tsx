@@ -8,6 +8,7 @@ import { ResourceTable } from "@/components/molecules/resource-table";
 import { ResourceToolbar } from "@/components/molecules/resource-toolbar";
 import {
   createResource,
+  closeOrder,
   deleteResource,
   getResourceDetail,
   getFormEnums,
@@ -149,6 +150,22 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
     }
   }
 
+  async function handleClosePosition(id: string) {
+    if (!id || !canWrite || pendingAction || !window.confirm("Close this running position at market price?")) {
+      return;
+    }
+    setPendingAction(`close:${id}`);
+    setError("");
+    try {
+      await closeOrder(id);
+      await loadItems();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to close position.");
+    } finally {
+      setPendingAction("");
+    }
+  }
+
   async function submitEditor(value: Record<string, unknown>) {
     if (!editor || !canWrite || pendingAction) {
       return;
@@ -234,6 +251,7 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
         sortDirection={query.sortDirection}
         onDetail={openDetail}
         onDelete={handleDelete}
+        onClosePosition={handleClosePosition}
         onPageChange={(page) => setQuery((current) => ({ ...current, page }))}
         onSortChange={(field) =>
           setQuery((current) => ({
@@ -263,7 +281,7 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
         <ResourceDetailModal
           title={`${resource.label} detail`}
           data={detail}
-          canWrite={canWrite}
+          canWrite={canWrite && !resource.createOnly}
           onEdit={openUpdate}
           onClose={() => setDetail(null)}
         />

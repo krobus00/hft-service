@@ -180,6 +180,18 @@ type OrderNotificationEvent struct {
 	Data OrderNotification `json:"data"`
 }
 
+type StrategyPositionClosed struct {
+	EntryOrderID string `json:"entry_order_id"`
+	StrategyID   string `json:"strategy_id"`
+	Exchange     string `json:"exchange"`
+	MarketType   string `json:"market_type"`
+	Symbol       string `json:"symbol"`
+}
+
+type StrategyPositionClosedEvent struct {
+	Data StrategyPositionClosed `json:"data"`
+}
+
 type OrderHistory struct {
 	ID                string           `db:"id" json:"id"`
 	RequestID         string           `db:"request_id" json:"request_id"`
