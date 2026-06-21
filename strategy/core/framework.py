@@ -811,6 +811,8 @@ class StrategyRunner:
             metadata=metadata,
         )
         entry_order_id = str(metadata.get("entry_order_id", "")).strip()
+        if not entry_order_id and not self._is_exit_trade_condition(trade_condition):
+            entry_order_id = gen_id()
 
         internal_payload: Dict[str, Any] = {}
         raw_internal = metadata.get("internal")
@@ -1259,22 +1261,15 @@ class StrategyRunner:
                     await msg.ack()
                     metrics.messages_acked += 1
                     return
-                try:
-                    pair_ctx["message_queue"].put_nowait(msg)
-                    metrics.messages_enqueued += 1
-                    LOGGER.debug(
-                        "[%s] nats_market_kline_enqueued subject=%s pair=%s pending=%s",
-                        self.strategy.config.name,
-                        getattr(msg, "subject", ""),
-                        pair_key,
-                        pair_ctx["message_queue"].qsize(),
-                    )
-                except asyncio.QueueFull:
-                    metrics.messages_failed += 1
-                    metrics.last_error = f"message queue full pair={pair_key}"
-                    LOGGER.warning("message queue full pair=%s", pair_key)
-                    await msg.nak(delay=1)
-                    fail_runtime(RuntimeError(metrics.last_error))
+                await pair_ctx["message_queue"].put(msg)
+                metrics.messages_enqueued += 1
+                LOGGER.debug(
+                    "[%s] nats_market_kline_enqueued subject=%s pair=%s pending=%s",
+                    self.strategy.config.name,
+                    getattr(msg, "subject", ""),
+                    pair_key,
+                    pair_ctx["message_queue"].qsize(),
+                )
 
             return handler
 

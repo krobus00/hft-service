@@ -487,8 +487,17 @@ func orderReportPagination(filter entity.OrderReportFilter) (int64, int64) {
 }
 
 func (r *OrderHistoryRepository) ListStrategyPerformance(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {
+	query, args := strategyPerformanceQuery(filter)
+	items := []entity.StrategyPerformanceReport{}
+	err := r.db.SelectContext(ctx, &items, query, args...)
+	return items, err
+}
+
+func strategyPerformanceQuery(filter entity.OrderReportFilter) (string, []any) {
 	whereSQL, args := tradeReportWhere(filter)
-	query := fmt.Sprintf(`SELECT
+	signalWhereSQL, args := signalPerformanceWhere(filter, args)
+	query := fmt.Sprintf(`WITH paired AS (
+	SELECT
 	COALESCE(NULLIF(strategy_id, ''), 'unknown') AS strategy_id,
 	COALESCE(SUM(profit), 0) AS total_profit,
 	COALESCE(AVG(CASE WHEN profit > 0 THEN 1 ELSE 0 END), 0) AS win_rate,
@@ -509,12 +518,64 @@ func (r *OrderHistoryRepository) ListStrategyPerformance(ctx context.Context, fi
 FROM order_trades
 WHERE %s
 GROUP BY COALESCE(NULLIF(strategy_id, ''), 'unknown')
+), signal_pairs AS (
+	SELECT COALESCE(NULLIF(oh.strategy_id, ''), 'unknown') AS strategy_id, oh.exchange, oh.market_type, oh.symbol,
+		SUM(CASE WHEN oh.side = 'BUY' THEN COALESCE(oh.avg_fill_price, oh.price) * COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity) ELSE 0 END) AS buy_cost,
+		SUM(CASE WHEN oh.side = 'SELL' THEN COALESCE(oh.avg_fill_price, oh.price) * COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity) ELSE 0 END) AS sell_proceeds,
+		SUM(COALESCE(oh.fee, 0)) AS fees,
+		SUM(CASE WHEN oh.side = 'BUY' THEN COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity) ELSE -COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity) END) AS inventory_quantity,
+		SUM(COALESCE(NULLIF(oh.filled_quantity, 0), oh.quantity)) AS total_size,
+		COUNT(*) AS total_orders,
+		MIN(COALESCE(oh.filled_at, oh.created_at)) AS first_fill_at,
+		MAX(COALESCE(oh.filled_at, oh.created_at)) AS last_fill_at
+	FROM order_histories oh
+	WHERE %s
+	GROUP BY COALESCE(NULLIF(oh.strategy_id, ''), 'unknown'), oh.exchange, oh.market_type, oh.symbol
+), signal AS (
+	SELECT sp.strategy_id,
+		SUM(sp.sell_proceeds + sp.inventory_quantity * COALESCE(pr.price, 0) - sp.buy_cost - sp.fees) AS total_profit,
+		0::numeric AS win_rate,
+		SUM(sp.sell_proceeds + sp.inventory_quantity * COALESCE(pr.price, 0) - sp.buy_cost - sp.fees) / NULLIF(SUM(sp.total_orders), 0) AS avg_profit,
+		SUM(sp.total_size) / NULLIF(SUM(sp.total_orders), 0) AS avg_size,
+		0::numeric AS best_trade, 0::numeric AS worst_trade, 0::numeric AS profit_factor,
+		SUM(sp.total_orders)::bigint AS total_trades,
+		0::bigint AS winning_trades, 0::bigint AS losing_trades,
+		MIN(sp.first_fill_at) AS first_trade_at, MAX(sp.last_fill_at) AS last_trade_at
+	FROM signal_pairs sp
+	LEFT JOIN price_references pr ON pr.exchange = sp.exchange AND pr.market_type = sp.market_type AND pr.symbol = sp.symbol
+	GROUP BY sp.strategy_id
+)
+SELECT * FROM paired
+UNION ALL
+SELECT * FROM signal
 ORDER BY total_profit DESC, win_rate DESC, total_trades DESC, strategy_id ASC
-LIMIT 1000`, whereSQL)
+LIMIT 1000`, whereSQL, signalWhereSQL)
+	return query, args
+}
 
-	items := []entity.StrategyPerformanceReport{}
-	err := r.db.SelectContext(ctx, &items, query, args...)
-	return items, err
+func signalPerformanceWhere(filter entity.OrderReportFilter, args []any) (string, []any) {
+	conditions := []string{
+		"oh.status = 'FILLED'", "oh.market_type = 'spot'", "oh.trade_condition = 'SIGNAL'",
+		"oh.side IN ('BUY', 'SELL')", "COALESCE(oh.avg_fill_price, oh.price) IS NOT NULL",
+		"NOT EXISTS (SELECT 1 FROM order_trades ot WHERE ot.strategy_id = oh.strategy_id)",
+	}
+	if filter.StartTime != nil {
+		args = append(args, *filter.StartTime)
+		conditions = append(conditions, fmt.Sprintf("COALESCE(oh.filled_at, oh.created_at) >= $%d", len(args)))
+	}
+	if filter.EndTime != nil {
+		args = append(args, *filter.EndTime)
+		conditions = append(conditions, fmt.Sprintf("COALESCE(oh.filled_at, oh.created_at) <= $%d", len(args)))
+	}
+	if strategyID := strings.TrimSpace(filter.StrategyID); strategyID != "" {
+		args = append(args, strategyID)
+		conditions = append(conditions, fmt.Sprintf("oh.strategy_id = $%d", len(args)))
+	}
+	if symbol := strings.TrimSpace(filter.Symbol); symbol != "" {
+		args = append(args, symbol)
+		conditions = append(conditions, fmt.Sprintf("oh.symbol = $%d", len(args)))
+	}
+	return strings.Join(conditions, " AND "), args
 }
 
 func tradeReportWhere(filter entity.OrderReportFilter) (string, []any) {

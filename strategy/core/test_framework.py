@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from core.framework import RedisStateStore, StoredPairState, StrategyBase
+from core.framework import RedisStateStore, StoredPairState, StrategyBase, StrategyRunner
 from core.models import StrategyConfig
 
 
@@ -112,6 +112,27 @@ class RedisStateStoreTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RuntimeError):
             await store.load("pair")
+
+
+class OrderPayloadTest(unittest.TestCase):
+    def test_signal_gets_entry_order_id(self):
+        runtime = SimpleNamespace(
+            order_type="MARKET",
+            order_qty=1,
+            limit_slippage_pct=0,
+            need_notification=False,
+            is_paper_trading=True,
+            position_side="BOTH",
+            source="test",
+            strategy_id="python-micro-grid",
+        )
+        runner = StrategyRunner(ExternalCloseStrategy(), runtime)
+
+        payload = runner.build_order_payload("BUY", 100, "GRID_BUY", "BINANCE", "spot", "BTC_USDT", "1m")
+
+        entry_order_id = payload["data"]["entry_order_id"]
+        self.assertTrue(entry_order_id)
+        self.assertIn(entry_order_id, payload["data"]["internal"])
 
 
 if __name__ == "__main__":

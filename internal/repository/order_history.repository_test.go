@@ -58,6 +58,18 @@ func TestTradeReportFiltersByRealizationTime(t *testing.T) {
 	}
 }
 
+func TestStrategyPerformanceIncludesUnpairedSignalInventory(t *testing.T) {
+	query, args := strategyPerformanceQuery(entity.OrderReportFilter{StrategyID: "python-micro-grid"})
+	for _, want := range []string{"oh.status = 'FILLED'", "oh.trade_condition = 'SIGNAL'", "LEFT JOIN price_references", "sp.sell_proceeds + sp.inventory_quantity"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("strategy performance query missing %q", want)
+		}
+	}
+	if len(args) != 2 || args[0] != "python-micro-grid" || args[1] != "python-micro-grid" {
+		t.Fatalf("unexpected strategy filters: %v", args)
+	}
+}
+
 func TestRepositoryOwnsReportPaginationAndEnumSorting(t *testing.T) {
 	page, limit := orderReportPagination(entity.OrderReportFilter{Page: -1, Limit: 1000})
 	if page != 1 || limit != 50 {

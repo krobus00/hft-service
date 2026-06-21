@@ -209,6 +209,8 @@ entry_order_id, side, type, status, strategy_id, trade_condition,
 is_paper_trading, created_at, updated_at
 ```
 
+`GET /api/v1/order-reports/strategy-performance` requires `order_report:read`. It uses paired trade PnL for ENTRY/EXIT strategies and cashflow plus latest inventory value for unpaired spot SIGNAL strategies such as `python-micro-grid`.
+
 ### Market Klines
 
 Requires `market:read`.
