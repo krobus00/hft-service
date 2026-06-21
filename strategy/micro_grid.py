@@ -2,7 +2,7 @@ import asyncio
 
 import uvloop
 
-from core.common import cfg_value, load_full_config, pct_to_frac, runtime_options
+from core.common import cfg_value, gen_id, load_full_config, pct_to_frac, runtime_options
 from core.framework import StrategyBase, StrategyRunner
 from core.models import Candle, RuntimeConfig, StrategyConfig
 
@@ -14,7 +14,7 @@ MICRO_GRID_CONFIG = CONFIG.get("micro_grid", {})
 
 
 class MicroGridStrategy(StrategyBase):
-    __slots__ = ("anchor_price", "grid_step_pct", "cooldown", "cooldown_bars")
+    __slots__ = ("anchor_price", "grid_step_pct", "cooldown", "cooldown_bars", "open_entries")
 
     def __init__(self, strategy_config: StrategyConfig, section: dict):
         super().__init__(strategy_config)
@@ -22,6 +22,7 @@ class MicroGridStrategy(StrategyBase):
         self.grid_step_pct = float(section.get("grid_step_pct", 0.10))
         self.cooldown = 0
         self.cooldown_bars = int(cfg_value(section, GLOBAL_CONFIG, "cooldown_bars", 0))
+        self.open_entries = []
 
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
         # ponytail: one order per closed candle; use order-book events if sub-candle execution matters.
@@ -47,6 +48,17 @@ class MicroGridStrategy(StrategyBase):
         }
 
         if candle.close <= lower:
+            entry_order_id = gen_id()
+            metadata.update(
+                {
+                    "trade_condition": "ENTRY",
+                    "order_reason": "GRID_BUY",
+                    "entry_order_id": entry_order_id,
+                    "entry_price": candle.close,
+                    "position_side": "LONG",
+                }
+            )
+            self.open_entries.append({"entry_order_id": entry_order_id, "entry_price": candle.close})
             self.anchor_price = candle.close
             self.cooldown = self.cooldown_bars
             return self.buy(candle.close, "GRID_BUY", metadata)
@@ -54,6 +66,20 @@ class MicroGridStrategy(StrategyBase):
         if candle.close >= upper:
             self.anchor_price = candle.close
             self.cooldown = self.cooldown_bars
+            if not self.open_entries:
+                return None
+            # ponytail: grid depth is small; switch to deque if FIFO depth becomes material.
+            entry = self.open_entries.pop(0)
+            metadata.update(
+                {
+                    "trade_condition": "EXIT",
+                    "order_reason": "GRID_SELL",
+                    "entry_order_id": entry["entry_order_id"],
+                    "entry_price": entry["entry_price"],
+                    "exit_price": candle.close,
+                    "position_side": "LONG",
+                }
+            )
             return self.sell(candle.close, "GRID_SELL", metadata)
 
         return None

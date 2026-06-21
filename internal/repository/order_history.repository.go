@@ -203,7 +203,7 @@ func (r *OrderHistoryRepository) GetPaginationWithMetrics(ctx context.Context, r
 	}
 
 	selectBuilder := baseSelect.
-		OrderBy(req.Sort.Field + " " + req.Sort.Direction + " NULLS LAST").
+		OrderBy(orderHistoryMetricsOrderBy(req)...).
 		Limit(uint64(req.Paginate.Limit)).
 		Offset(uint64(req.Paginate.Offset))
 	selectQuery, selectArgs, err := selectBuilder.ToSql()
@@ -217,6 +217,10 @@ func (r *OrderHistoryRepository) GetPaginationWithMetrics(ctx context.Context, r
 	}
 
 	return apiutil.NewPaginationResp(req.Paginate.Page, req.Paginate.Limit, total, items), nil
+}
+
+func orderHistoryMetricsOrderBy(req *apiutil.PaginationReq) []string {
+	return []string{"CASE WHEN state = 'running' THEN 0 ELSE 1 END ASC", req.Sort.Field + " " + req.Sort.Direction + " NULLS LAST"}
 }
 
 func (r *OrderHistoryRepository) ListOpenEntriesByStrategyConfig(ctx context.Context, config entity.StrategyConfig) ([]entity.OrderHistoryWithMetrics, error) {

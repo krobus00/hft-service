@@ -66,7 +66,8 @@ Main strategy design goals:
 #### `micro_grid.py` (Micro Grid)
 
 - Buys when price falls one configured grid step below the latest anchor.
-- Sells when price rises one configured grid step above the latest anchor.
+- Sells when price rises one configured grid step above the latest anchor and an open grid buy exists.
+- Grid buys are tracked as entries and closed FIFO so positions and PnL use the standard order reports.
 - Uses `python-micro-grid` as its `strategy_configs` key.
 
 #### `capital_guard.py` (Guarded Trend Scalper)

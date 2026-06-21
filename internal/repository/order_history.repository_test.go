@@ -46,6 +46,23 @@ func TestOrderStateFilterAndSortHappenBeforePagination(t *testing.T) {
 	}
 }
 
+func TestOrderPaginationKeepsRunningPositionsFirst(t *testing.T) {
+	req := &apiutil.PaginationReq{
+		Sort:     apiutil.SortReq{Field: "created_at", Direction: "DESC"},
+		Paginate: apiutil.PaginateReq{Limit: 10},
+	}
+	query, _, err := orderHistoryMetricsFilteredSelect(req).
+		OrderBy(orderHistoryMetricsOrderBy(req)...).
+		Limit(10).
+		ToSql()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "ORDER BY CASE WHEN state = 'running' THEN 0 ELSE 1 END ASC, created_at DESC NULLS LAST") {
+		t.Fatalf("running positions must sort first: %s", query)
+	}
+}
+
 func TestTradeReportFiltersByRealizationTime(t *testing.T) {
 	start := time.Unix(1, 0)
 	end := time.Unix(2, 0)
