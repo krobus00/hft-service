@@ -1182,6 +1182,9 @@ class AIHybridStrategy(StrategyBase):
         finally:
             self.intrabar_risk_guard = False
 
+    def wants_price_update(self) -> bool:
+        return self.position_side is not None
+
     def _close_long(self, price: float, reason: str, metadata: Dict[str, Any]):
         tagged_metadata = dict(metadata)
         if "trade_condition" not in tagged_metadata:
@@ -1274,7 +1277,12 @@ class AIHybridStrategy(StrategyBase):
             self.stop_loss_streak = 0
         return self.buy(price, reason, tagged_metadata)
 
-    def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
+    async def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
+        if is_warmup:
+            return self._on_closed_candle(candle, is_warmup)
+        return await asyncio.to_thread(self._on_closed_candle, candle, is_warmup)
+
+    def _on_closed_candle(self, candle: Candle, is_warmup: bool = False):
         if not self.allow_new_candle(candle):
             return None
 
@@ -1325,9 +1333,11 @@ class AIHybridStrategy(StrategyBase):
             return None
 
         ai_payload = self._build_ai_payload(candle, ema_fast, ema_slow, macd_line, signal_line, macd_hist, vwap_px, atr, rsi)
-
-        ai_action, ai_confidence, ai_reason, risk_feedback = self._ai_signal(ai_payload)
-        queried = True
+        queried = self.bar_count % self.ai_interval_bars == 0
+        if queried:
+            ai_action, ai_confidence, ai_reason, risk_feedback = self._ai_signal(ai_payload)
+        else:
+            ai_action, ai_confidence, ai_reason, risk_feedback = "HOLD", 0.0, "AI_INTERVAL", {}
 
         if ai_action == "EXIT":
             if self.position_side == "LONG":
@@ -1339,9 +1349,10 @@ class AIHybridStrategy(StrategyBase):
 
         final_action = ai_action
         final_confidence = ai_confidence
-        self.last_ai_action = ai_action
-        self.last_ai_confidence = ai_confidence
-        self.last_ai_reason = ai_reason
+        if queried:
+            self.last_ai_action = ai_action
+            self.last_ai_confidence = ai_confidence
+            self.last_ai_reason = ai_reason
 
         trend_state = str(ai_payload.get("trend", {}).get("trend", "")).strip().lower()
         trend_same = (

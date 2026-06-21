@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import copy
+import inspect
 import json
 import logging
 import pickle
@@ -301,6 +302,9 @@ class StrategyBase(ABC):
 
     def on_price_update(self, candle: Candle) -> Optional[Signal]:
         return None
+
+    def wants_price_update(self) -> bool:
+        return True
 
     @abstractmethod
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False) -> Optional[Signal] | Sequence[Signal]:
@@ -913,7 +917,9 @@ class StrategyRunner:
                 taker_quote_volume=float(row["taker_quote_volume"]),
                 trade_count=int(row["trade_count"]),
             )
-            self.strategy.on_closed_candle(candle, is_warmup=True)
+            result = self.strategy.on_closed_candle(candle, is_warmup=True)
+            if inspect.isawaitable(result):
+                await result
 
         LOGGER.info("warmup completed pair=%s:%s:%s:%s candles=%s", exchange, market_type, symbol, interval, len(rows))
 
@@ -1050,6 +1056,19 @@ class StrategyRunner:
                         ).strip().lower()
                         is_closed = bool(self._kline_field(data, "IsClosed", "is_closed", default=False))
 
+                        intrabar_risk_exit_enabled = bool(
+                            target.get("order_config", {}).get(
+                                "enable_intrabar_risk_exit",
+                                self.runtime.enable_intrabar_risk_exit,
+                            )
+                        )
+                        if not is_closed and (
+                            not intrabar_risk_exit_enabled or not pair_strategy.wants_price_update()
+                        ):
+                            await msg.ack()
+                            metrics.messages_acked += 1
+                            return
+
                         if incoming_symbol != expected_symbol:
                             LOGGER.debug(
                                 "[%s] nats_market_kline_ignored subject=%s pair=%s reason=symbol_mismatch incoming=%s expected=%s",
@@ -1122,25 +1141,31 @@ class StrategyRunner:
                             expected_market_type,
                             candle.interval,
                         )
-                        stored_state = await load_pair_state(state_key)
-                        pair_strategy.restore_state(
-                            stored_state.strategy_state if stored_state.strategy_state is not None else initial_state
-                        )
+                        stored_state = pair_ctx["stored_state"]
                         self._apply_strategy_overrides(target.get("order_config"), pair_strategy)
 
-                        snapshot = pair_strategy.snapshot_state()
-                        intrabar_risk_exit_enabled = bool(
-                            target.get("order_config", {}).get(
-                                "enable_intrabar_risk_exit",
-                                self.runtime.enable_intrabar_risk_exit,
-                            )
-                        )
+                        previous_state = stored_state.strategy_state
+                        stored_entry = (stored_state.entry_price, stored_state.entry_order_id)
                         if is_closed:
                             signal_result = pair_strategy.on_closed_candle(candle, is_warmup=False)
                         elif intrabar_risk_exit_enabled:
                             signal_result = pair_strategy.on_price_update(candle)
                         else:
                             signal_result = None
+
+                        if inspect.isawaitable(signal_result):
+                            async def keep_ack_alive() -> None:
+                                while True:
+                                    await asyncio.sleep(10)
+                                    await msg.in_progress()
+
+                            heartbeat = asyncio.create_task(keep_ack_alive())
+                            try:
+                                signal_result = await signal_result
+                            finally:
+                                heartbeat.cancel()
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await heartbeat
 
                         signals = StrategyBase.normalize_signals(signal_result)
                         if signals:
@@ -1214,7 +1239,7 @@ class StrategyRunner:
                                         (signal.reason, trade_condition, signal.side, signal.price)
                                     )
                             except Exception:
-                                pair_strategy.restore_state(snapshot)
+                                pair_strategy.restore_state(previous_state)
                                 raise
 
                             for reason, trade_condition, side, price in published_summaries:
@@ -1230,8 +1255,14 @@ class StrategyRunner:
                                 )
 
                         latest_state = pair_strategy.snapshot_state()
-                        stored_state.strategy_state = latest_state
-                        await save_pair_state(state_key, stored_state)
+                        latest_state_bytes = pickle.dumps(latest_state, protocol=pickle.HIGHEST_PROTOCOL)
+                        if latest_state_bytes != pair_ctx["strategy_state_bytes"] or stored_entry != (
+                            stored_state.entry_price,
+                            stored_state.entry_order_id,
+                        ):
+                            stored_state.strategy_state = latest_state
+                            await save_pair_state(state_key, stored_state)
+                            pair_ctx["strategy_state_bytes"] = latest_state_bytes
 
                 await msg.ack()
                 metrics.messages_acked += 1
@@ -1338,7 +1369,7 @@ class StrategyRunner:
                 )
                 pair_strategy = pair_ctx.get("strategy")
                 if isinstance(pair_strategy, StrategyBase):
-                    stored_state = await load_pair_state(state_key)
+                    stored_state = pair_ctx["stored_state"]
                     stored_state.strategy_state = pair_strategy.snapshot_state()
                     await save_pair_state(state_key, stored_state)
 
@@ -1374,7 +1405,8 @@ class StrategyRunner:
                     finally:
                         self.strategy = original_strategy
                     latest_state = temp_strategy.snapshot_state()
-                    await save_pair_state(state_key, StoredPairState(strategy_state=latest_state))
+                    restored.strategy_state = latest_state
+                    await save_pair_state(state_key, restored)
 
                 subject = self._resolve_subject_for_pair(target["exchange"], target["symbol"], target["interval"])
                 queue_name = self._resolve_queue_name(
@@ -1385,6 +1417,8 @@ class StrategyRunner:
                 )
                 queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(self.runtime.message_queue_size or 1000)))
                 pair_strategy, pair_lock = clone_strategy_for_pair()
+                pair_strategy.restore_state(restored.strategy_state if restored.strategy_state is not None else initial_state)
+                self._apply_strategy_overrides(target.get("order_config"), pair_strategy)
                 active_pairs[key] = {
                     "target": target,
                     "strategy": pair_strategy,
@@ -1393,6 +1427,8 @@ class StrategyRunner:
                     "queue": queue_name,
                     "message_queue": queue,
                     "lock": pair_lock,
+                    "stored_state": restored,
+                    "strategy_state_bytes": pickle.dumps(restored.strategy_state, protocol=pickle.HIGHEST_PROTOCOL),
                     "worker": None,
                 }
                 try:
@@ -1485,15 +1521,19 @@ class StrategyRunner:
                     ):
                         continue
                     async with pair_ctx["lock"]:
-                        stored_state = await load_pair_state(state_key)
+                        stored_state = pair_ctx["stored_state"]
                         if stored_state.entry_order_id != entry_order_id:
                             continue
                         pair_strategy = pair_ctx["strategy"]
                         pair_strategy.restore_state(stored_state.strategy_state)
                         pair_strategy.on_external_close()
-                        await save_pair_state(
-                            state_key,
-                            StoredPairState(strategy_state=pair_strategy.snapshot_state()),
+                        stored_state.strategy_state = pair_strategy.snapshot_state()
+                        stored_state.entry_price = None
+                        stored_state.entry_order_id = ""
+                        await save_pair_state(state_key, stored_state)
+                        pair_ctx["strategy_state_bytes"] = pickle.dumps(
+                            stored_state.strategy_state,
+                            protocol=pickle.HIGHEST_PROTOCOL,
                         )
                     LOGGER.info("strategy state synced after manual close pair=%s entry_order_id=%s", pair_key, entry_order_id)
                 await msg.ack()
