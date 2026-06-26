@@ -4,6 +4,7 @@ import uvloop
 
 from core.common import cfg_value, gen_id, load_full_config, pct_to_frac, runtime_options
 from core.framework import StrategyBase, StrategyRunner
+from core.indicators import EMA
 from core.models import Candle, RuntimeConfig, StrategyConfig
 
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -14,7 +15,7 @@ MICRO_GRID_CONFIG = CONFIG.get("micro_grid", {})
 
 
 class MicroGridStrategy(StrategyBase):
-    __slots__ = ("anchor_price", "grid_step_pct", "cooldown", "cooldown_bars", "open_entries")
+    __slots__ = ("anchor_price", "grid_step_pct", "cooldown", "cooldown_bars", "open_entries", "trend_ema", "trend_ema_period")
 
     def __init__(self, strategy_config: StrategyConfig, section: dict):
         super().__init__(strategy_config)
@@ -23,11 +24,15 @@ class MicroGridStrategy(StrategyBase):
         self.cooldown = 0
         self.cooldown_bars = int(cfg_value(section, GLOBAL_CONFIG, "cooldown_bars", 0))
         self.open_entries = []
+        self.trend_ema_period = int(section.get("trend_ema_period", 50))
+        self.trend_ema = EMA(self.trend_ema_period)
 
     def on_closed_candle(self, candle: Candle, is_warmup: bool = False):
         # ponytail: one order per closed candle; use order-book events if sub-candle execution matters.
         if not self.allow_new_candle(candle):
             return None
+
+        trend_px = self.trend_ema.update(candle.close)
 
         if is_warmup or self.anchor_price is None:
             self.anchor_price = candle.close
@@ -48,6 +53,9 @@ class MicroGridStrategy(StrategyBase):
         }
 
         if candle.close <= lower:
+            if self.trend_ema.count < self.trend_ema_period or candle.close < trend_px:
+                self.anchor_price = candle.close
+                return None
             entry_order_id = gen_id()
             metadata.update(
                 {

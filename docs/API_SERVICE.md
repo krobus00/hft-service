@@ -304,6 +304,7 @@ Body:
   "user_id": "minimax-01",
   "position_side": "BOTH",
   "source": "dashboard",
+  "monitor_url": "http://localhost:19011",
   "need_notification": true,
   "is_paper_trading": true,
   "order_type": "MARKET",
@@ -322,6 +323,16 @@ Body:
   "enable_intrabar_risk_exit": true
 }
 ```
+
+### Strategy Monitors
+
+Configured from enabled `strategy_configs.monitor_url` values. Read requires `strategy_config:read`; reset/restart requires `strategy_config:write`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/strategy/monitors` | Fetch all configured strategy runner monitor payloads. |
+| `POST` | `/api/v1/strategy/monitors/{name}/reset` | Clear runner strategy state while keeping market data. |
+| `POST` | `/api/v1/strategy/monitors/{name}/restart` | Clear runner strategy state and ask the runner to exit for supervisor restart. |
 
 ### Settings
 

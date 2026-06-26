@@ -84,6 +84,7 @@ micro_grid:
   monitor_port: 19018
   historical_limit: 100
   grid_step_pct: 0.10
+  trend_ema_period: 50
 
 template:
   name: TEMPLATE

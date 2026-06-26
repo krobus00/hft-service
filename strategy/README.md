@@ -67,6 +67,7 @@ Main strategy design goals:
 
 - Buys when price falls one configured grid step below the latest anchor.
 - Sells when price rises one configured grid step above the latest anchor and an open grid buy exists.
+- Skips new grid buys while price is below its trend EMA, so it does not keep averaging down through a crash.
 - Grid buys are tracked as entries and closed FIFO so positions and PnL use the standard order reports.
 - Uses `python-micro-grid` as its `strategy_configs` key.
 

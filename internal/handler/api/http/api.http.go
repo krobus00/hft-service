@@ -59,6 +59,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/market/symbol-mappings/", h.withPermission(constant.PermissionMarketRead, h.SymbolMappingByID))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptions))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions/", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptionByID))
+	mux.HandleFunc("/api/v1/strategy/monitors", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMonitors))
+	mux.HandleFunc("/api/v1/strategy/monitors/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMonitorByName))
 	mux.HandleFunc("/api/v1/strategy/configs", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigs))
 	mux.HandleFunc("/api/v1/strategy/configs/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigByID))
 	mux.HandleFunc("/api/v1/settings", h.withPermission(constant.PermissionSettingsRead, h.Settings))
@@ -564,6 +566,31 @@ func (h *Handler) StrategyConfigByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
+}
+
+func (h *Handler) StrategyMonitors(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	result, err := h.dataService.ListStrategyMonitors(r.Context())
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) StrategyMonitorByName(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/strategy/monitors/"), "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" || (parts[1] != "reset" && parts[1] != "restart") {
+		apiutil.WriteError(w, http.StatusNotFound, constant.NotFoundStatusCode, "not found")
+		return
+	}
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !requirePermission(w, r, constant.PermissionStrategyConfigWrite) {
+		return
+	}
+	result, err := h.dataService.StrategyMonitorAction(r.Context(), parts[0], parts[1])
+	writeDataResult(w, result, err)
 }
 
 func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {

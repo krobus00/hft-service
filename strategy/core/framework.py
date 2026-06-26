@@ -126,16 +126,29 @@ class RedisStateStore:
     async def delete(self, state_key: str) -> None:
         await self.client.delete(self.key(state_key))
 
+    async def delete_pattern(self, pattern: str) -> int:
+        count = 0
+        async for key in self.client.scan_iter(pattern):
+            count += await self.client.delete(key)
+        return count
+
     async def close(self) -> None:
         with contextlib.suppress(Exception):
             await self.client.aclose()
 
 
 class StrategyMonitorServer:
-    def __init__(self, host: str, port: int, payload_factory: Callable[[], Awaitable[Dict[str, Any]]]):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        payload_factory: Callable[[], Awaitable[Dict[str, Any]]],
+        action_handler: Optional[Callable[[str], Awaitable[Dict[str, Any]]]] = None,
+    ):
         self.host = host
         self.port = port
         self.payload_factory = payload_factory
+        self.action_handler = action_handler
         self.server: Optional[asyncio.AbstractServer] = None
 
     async def start(self) -> None:
@@ -156,12 +169,19 @@ class StrategyMonitorServer:
                 if line in {b"\r\n", b"\n", b""}:
                     break
 
+            method = "GET"
             path = "/"
             parts = request_line.decode("utf-8", errors="ignore").split()
+            if len(parts) >= 1:
+                method = parts[0].upper()
             if len(parts) >= 2:
                 path = parts[1]
 
-            if path not in {"/", "/health", "/metrics", "/state"}:
+            if method == "POST" and path in {"/reset", "/restart"} and self.action_handler is not None:
+                await self._write_json(writer, 200, await self.action_handler(path.strip("/")))
+                return
+
+            if method != "GET" or path not in {"/", "/health", "/metrics", "/state"}:
                 await self._write_json(writer, 404, {"status": "not_found"})
                 return
 
@@ -1646,6 +1666,32 @@ class StrategyRunner:
                 "strategy_state_by_pair": strategy_state_by_pair,
             }
 
+        async def reset_runtime_state() -> int:
+            reset_count = 0
+            for key, ctx in active_pairs.items():
+                target = ctx["target"]
+                state_key = self._state_key(
+                    target["strategy"], target["exchange"], target["symbol"], target["market_type"], target["interval"]
+                )
+                await redis_store.delete(state_key)
+                stored_state = StoredPairState(strategy_state=copy.deepcopy(initial_state))
+                pair_strategy = ctx.get("strategy")
+                if isinstance(pair_strategy, StrategyBase):
+                    pair_strategy.restore_state(initial_state)
+                ctx["stored_state"] = stored_state
+                ctx["strategy_state_bytes"] = pickle.dumps(stored_state.strategy_state, protocol=pickle.HIGHEST_PROTOCOL)
+                reset_count += 1
+                LOGGER.info("reset strategy state pair=%s", key)
+            for strategy_key in self._strategy_lookup_keys():
+                reset_count += await redis_store.delete_pattern(redis_store.key(f"{strategy_key}|*"))
+            return reset_count
+
+        async def monitor_action(action: str) -> Dict[str, Any]:
+            reset_count = await reset_runtime_state()
+            if action == "restart":
+                fail_runtime(RuntimeError("strategy restart requested by monitor"))
+            return {"status": "ok", "action": action, "reset_pairs": reset_count}
+
         control_subscription = None
         try:
             if self.runtime.monitor_enabled:
@@ -1653,6 +1699,7 @@ class StrategyRunner:
                     self.runtime.monitor_host,
                     self.runtime.monitor_port,
                     monitor_payload,
+                    monitor_action,
                 )
                 await monitor_server.start()
 
