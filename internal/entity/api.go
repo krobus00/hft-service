@@ -170,6 +170,7 @@ type StrategyConfig struct {
 	PositionSide             string          `db:"position_side" json:"position_side"`
 	Source                   string          `db:"source" json:"source"`
 	Enabled                  bool            `db:"enabled" json:"enabled"`
+	MonitorURL               string          `db:"monitor_url" json:"monitor_url"`
 	NeedNotification         bool            `db:"need_notification" json:"need_notification"`
 	IsPaperTrading           bool            `db:"is_paper_trading" json:"is_paper_trading"`
 	OrderType                string          `db:"order_type" json:"order_type"`
@@ -202,6 +203,7 @@ func (s *StrategyConfig) GetColumn() map[string]string {
 		"position_side":               "position_side",
 		"source":                      "source",
 		"enabled":                     "enabled",
+		"monitor_url":                 "monitor_url",
 		"need_notification":           "need_notification",
 		"is_paper_trading":            "is_paper_trading",
 		"order_type":                  "order_type",
@@ -228,5 +230,5 @@ func (s *StrategyConfig) DefaultSort() apiutil.SortReq {
 }
 
 func (s *StrategyConfig) SearchableFields() []string {
-	return []string{"strategy", "exchange", "market_type", "symbol", "interval", "user_id", "source"}
+	return []string{"strategy", "exchange", "market_type", "symbol", "interval", "user_id", "source", "monitor_url"}
 }

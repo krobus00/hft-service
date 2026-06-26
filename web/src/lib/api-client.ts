@@ -113,6 +113,14 @@ export type DashboardOverview = {
   recent_orders: DashboardOrder[];
 };
 
+export type StrategyMonitor = {
+  name: string;
+  url: string;
+  online: boolean;
+  error?: string;
+  payload?: Record<string, unknown>;
+};
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9804/api/v1";
 
@@ -448,6 +456,24 @@ export async function listStrategyPerformanceReports(query: OrderReportQuery) {
   return withSession((session) =>
     apiRequest<StrategyPerformanceReport[]>(`/order-reports/strategy-performance?${buildReportParams(query)}`, {
       method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function listStrategyMonitors() {
+  return withSession((session) =>
+    apiRequest<StrategyMonitor[]>("/strategy/monitors", {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function runStrategyMonitorAction(name: string, action: "reset" | "restart") {
+  return withSession((session) =>
+    apiRequest<StrategyMonitor>(`/strategy/monitors/${encodeURIComponent(name)}/${action}`, {
+      method: "POST",
       accessToken: session.tokens.access_token,
     }),
   );

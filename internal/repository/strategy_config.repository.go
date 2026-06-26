@@ -35,13 +35,13 @@ func (r *StrategyConfigRepository) FindByID(ctx context.Context, id string) (*en
 func (r *StrategyConfigRepository) Create(ctx context.Context, item *entity.StrategyConfig) error {
 	query := `INSERT INTO strategy_configs (
 		strategy, exchange, market_type, symbol, interval, user_id, position_side, source,
-		enabled, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
+		enabled, monitor_url, need_notification, is_paper_trading, order_type, order_qty, limit_slippage_pct,
 		cooldown_bars, sl_cooldown_bars, max_consecutive_stop_losses, sl_pause_bars,
 		take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_stop_trigger_pct,
 		max_hold_bars, max_positions, enable_intrabar_risk_exit, created_at, updated_at
 	) VALUES (
 		:strategy, :exchange, :market_type, :symbol, :interval, :user_id, :position_side, :source,
-		:enabled, :need_notification, :is_paper_trading, :order_type, :order_qty, :limit_slippage_pct,
+		:enabled, :monitor_url, :need_notification, :is_paper_trading, :order_type, :order_qty, :limit_slippage_pct,
 		:cooldown_bars, :sl_cooldown_bars, :max_consecutive_stop_losses, :sl_pause_bars,
 		:take_profit_pct, :stop_loss_pct, :trailing_stop_pct, :trailing_stop_trigger_pct,
 		:max_hold_bars, :max_positions, :enable_intrabar_risk_exit, :created_at, :updated_at
@@ -69,6 +69,7 @@ func (r *StrategyConfigRepository) Update(ctx context.Context, item *entity.Stra
 			position_side = :position_side,
 			source = :source,
 			enabled = :enabled,
+			monitor_url = :monitor_url,
 			need_notification = :need_notification,
 			is_paper_trading = :is_paper_trading,
 			order_type = :order_type,
@@ -112,6 +113,17 @@ func (r *StrategyConfigRepository) ListExchanges(ctx context.Context) ([]string,
 func (r *StrategyConfigRepository) CountEnabled(ctx context.Context) (enabled, total int64, err error) {
 	err = r.db.QueryRowxContext(ctx, "SELECT COUNT(*) FILTER (WHERE enabled), COUNT(*) FROM strategy_configs").Scan(&enabled, &total)
 	return
+}
+
+func (r *StrategyConfigRepository) ListMonitors(ctx context.Context) ([]entity.StrategyConfig, error) {
+	items := []entity.StrategyConfig{}
+	err := r.db.SelectContext(ctx, &items, `
+		SELECT DISTINCT ON (monitor_url) *
+		FROM strategy_configs
+		WHERE enabled AND btrim(monitor_url) <> ''
+		ORDER BY monitor_url, strategy, id
+	`)
+	return items, err
 }
 
 func (r *StrategyConfigRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {

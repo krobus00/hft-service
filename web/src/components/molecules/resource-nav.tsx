@@ -95,6 +95,7 @@ const resourceIcon: Partial<Record<ResourceKey, typeof Database>> = {
   orderPnL: BarChart3,
   dailyReports: BarChart3,
   strategyPerformance: BarChart3,
+  strategyMonitors: Activity,
   marketKlines: CandlestickChart,
   priceReferences: Radio,
   marketBackfills: History,
