@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	apiutil "github.com/krobus00/hft-service/internal/api"
@@ -19,13 +21,24 @@ import (
 )
 
 const consumerName = "GO_STRATEGY"
+const strategyCacheSyncInterval = 30 * time.Second
+const strategyWorkerCount = 8
+const strategyWorkerQueueSize = 64
 
 type Service struct {
 	js                 nats.JetStreamContext
 	strategyConfigRepo *repository.StrategyConfigRepository
 	ruleRepo           *repository.StrategyRuleRepository
 	stateRepo          *repository.StrategyStateRepository
+	cache              atomic.Pointer[strategyCacheSnapshot]
 }
+
+type cachedStrategySet struct {
+	rules    []entity.StrategyRule
+	configBy map[string]entity.StrategyConfig
+}
+
+type strategyCacheSnapshot map[string]cachedStrategySet
 
 type ruleConditions struct {
 	All []condition `json:"all"`
@@ -40,26 +53,83 @@ type condition struct {
 }
 
 func NewService(js nats.JetStreamContext, strategyConfigRepo *repository.StrategyConfigRepository, ruleRepo *repository.StrategyRuleRepository, stateRepo *repository.StrategyStateRepository) *Service {
-	return &Service{js: js, strategyConfigRepo: strategyConfigRepo, ruleRepo: ruleRepo, stateRepo: stateRepo}
+	service := &Service{js: js, strategyConfigRepo: strategyConfigRepo, ruleRepo: ruleRepo, stateRepo: stateRepo}
+	snapshot := strategyCacheSnapshot{}
+	service.cache.Store(&snapshot)
+	return service
+}
+
+func (s *Service) StartPeriodicSync(ctx context.Context) {
+	ticker := time.NewTicker(strategyCacheSyncInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.refreshStrategyCache(ctx)
+			}
+		}
+	}()
 }
 
 func (s *Service) Subscribe(ctx context.Context) error {
 	if err := ensureStream(ctx, s.js); err != nil {
 		return err
 	}
+	workers := s.startWorkers(ctx)
 	_, err := s.js.QueueSubscribe(
 		constant.KlineIndicatorStreamSubjectAll,
 		consumerName,
 		func(msg *nats.Msg) {
-			if err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], config.Env.NatsJetstream.MaxRetries, msg, s.handleKline); err != nil {
-				logrus.WithError(err).Error("failed to process strategy rule")
+			queue := workers[workerIndex(msg.Subject, len(workers))]
+			select {
+			case queue <- msg:
+			case <-ctx.Done():
+				_ = msg.Nak()
+			default:
+				if err := msg.NakWithDelay(time.Second); err != nil {
+					logrus.WithError(err).Warn("failed to requeue strategy message")
+				}
 			}
 		},
 		nats.ManualAck(),
 		nats.Durable(consumerName),
 		nats.DeliverNew(),
+		nats.MaxAckPending(strategyWorkerCount*strategyWorkerQueueSize),
 	)
 	return err
+}
+
+func (s *Service) startWorkers(ctx context.Context) []chan *nats.Msg {
+	workers := make([]chan *nats.Msg, strategyWorkerCount)
+	for i := range workers {
+		queue := make(chan *nats.Msg, strategyWorkerQueueSize)
+		workers[i] = queue
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg := <-queue:
+					if err := util.ProcessWithTimeout(config.Env.NatsJetstream.TimeoutHandler["insert_kline"], config.Env.NatsJetstream.MaxRetries, msg, s.handleKline); err != nil {
+						logrus.WithError(err).Error("failed to process strategy rule")
+					}
+				}
+			}
+		}()
+	}
+	return workers
+}
+
+func workerIndex(subject string, workerCount int) int {
+	if workerCount <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(subject))
+	return int(h.Sum32() % uint32(workerCount))
 }
 
 func ensureStream(ctx context.Context, js nats.JetStreamContext) error {
@@ -92,17 +162,7 @@ func (s *Service) handleKline(ctx context.Context, msg *nats.Msg) error {
 		return nil
 	}
 
-	configs, err := s.strategyConfigRepo.ListEnabledByPair(ctx, event.Data.Exchange, event.Data.MarketType, event.Data.Symbol, event.Data.Interval)
-	if err != nil {
-		return err
-	}
-	ids := make([]string, 0, len(configs))
-	configByID := make(map[string]entity.StrategyConfig, len(configs))
-	for _, cfg := range configs {
-		ids = append(ids, cfg.ID)
-		configByID[cfg.ID] = cfg
-	}
-	rules, err := s.ruleRepo.ListEnabledByStrategyConfigIDs(ctx, ids)
+	strategies, err := s.strategySetForPair(ctx, event.Data.Exchange, event.Data.MarketType, event.Data.Symbol, event.Data.Interval)
 	if err != nil {
 		return err
 	}
@@ -112,8 +172,8 @@ func (s *Service) handleKline(ctx context.Context, msg *nats.Msg) error {
 	if err != nil {
 		return err
 	}
-	for _, rule := range rules {
-		cfg := configByID[rule.StrategyConfigID]
+	for _, rule := range strategies.rules {
+		cfg := strategies.configBy[rule.StrategyConfigID]
 		if !ruleMatches(rule, values, prev) {
 			continue
 		}
@@ -126,6 +186,95 @@ func (s *Service) handleKline(ctx context.Context, msg *nats.Msg) error {
 		}
 	}
 	return s.setPreviousValues(ctx, event.Data, values)
+}
+
+func (s *Service) strategySetForPair(ctx context.Context, exchange, marketType, symbol, interval string) (cachedStrategySet, error) {
+	key := strategyPairKey(exchange, marketType, symbol, interval)
+	cached, ok := s.cacheSnapshot()[key]
+	if ok {
+		return cached, nil
+	}
+	return s.syncStrategySet(ctx, key, exchange, marketType, symbol, interval)
+}
+
+func (s *Service) syncStrategySet(ctx context.Context, key, exchange, marketType, symbol, interval string) (cachedStrategySet, error) {
+	configs, err := s.strategyConfigRepo.ListEnabledByPair(ctx, exchange, marketType, symbol, interval)
+	if err != nil {
+		return cachedStrategySet{}, err
+	}
+	ids := make([]string, 0, len(configs))
+	configByID := make(map[string]entity.StrategyConfig, len(configs))
+	for _, cfg := range configs {
+		ids = append(ids, cfg.ID)
+		configByID[cfg.ID] = cfg
+	}
+	rules, err := s.ruleRepo.ListEnabledByStrategyConfigIDs(ctx, ids)
+	if err != nil {
+		return cachedStrategySet{}, err
+	}
+	cached := cachedStrategySet{rules: rules, configBy: configByID}
+	s.storeStrategySet(key, cached)
+	return cached, nil
+}
+
+func (s *Service) refreshStrategyCache(ctx context.Context) {
+	snapshot := s.cacheSnapshot()
+	keys := make([]string, 0, len(snapshot))
+	for key := range snapshot {
+		keys = append(keys, key)
+	}
+	for _, key := range keys {
+		exchange, marketType, symbol, interval, ok := splitStrategyPairKey(key)
+		if !ok {
+			continue
+		}
+		if _, err := s.syncStrategySet(ctx, key, exchange, marketType, symbol, interval); err != nil {
+			logrus.WithError(err).WithField("pair", key).Warn("failed to sync strategy cache")
+		}
+	}
+}
+
+func (s *Service) cacheSnapshot() strategyCacheSnapshot {
+	snapshot := s.cache.Load()
+	if snapshot == nil {
+		return strategyCacheSnapshot{}
+	}
+	return *snapshot
+}
+
+func (s *Service) storeStrategySet(key string, cached cachedStrategySet) {
+	for {
+		currentPtr := s.cache.Load()
+		current := strategyCacheSnapshot{}
+		if currentPtr != nil {
+			current = *currentPtr
+		}
+		next := make(strategyCacheSnapshot, len(current)+1)
+		for existingKey, existingValue := range current {
+			next[existingKey] = existingValue
+		}
+		next[key] = cached
+		if s.cache.CompareAndSwap(currentPtr, &next) {
+			return
+		}
+	}
+}
+
+func strategyPairKey(exchange, marketType, symbol, interval string) string {
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(exchange)),
+		strings.ToLower(strings.TrimSpace(marketType)),
+		strings.TrimSpace(symbol),
+		strings.TrimSpace(interval),
+	}, "|")
+}
+
+func splitStrategyPairKey(key string) (exchange, marketType, symbol, interval string, ok bool) {
+	parts := strings.Split(key, "|")
+	if len(parts) != 4 {
+		return "", "", "", "", false
+	}
+	return parts[0], parts[1], parts[2], parts[3], true
 }
 
 func valuesForEvent(event entity.MarketKlineIndicatorEvent) map[string]float64 {

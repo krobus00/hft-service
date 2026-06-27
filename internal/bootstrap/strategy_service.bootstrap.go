@@ -29,6 +29,7 @@ func StartStrategyService(cmd *cobra.Command, args []string) {
 		repository.NewStrategyStateRepository(db),
 	)
 	util.ContinueOrFatal(service.Subscribe(ctx))
+	service.StartPeriodicSync(ctx)
 
 	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
 		"database": func(ctx context.Context) error {
