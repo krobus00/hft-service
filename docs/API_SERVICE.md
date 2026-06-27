@@ -214,7 +214,7 @@ entry_order_id, side, type, status, strategy_id, trade_condition,
 is_paper_trading, created_at, updated_at
 ```
 
-`GET /api/v1/order-reports/strategy-performance` requires `order_report:read`. It uses paired trade PnL for ENTRY/EXIT strategies and cashflow plus latest inventory value for legacy unpaired spot SIGNAL strategies.
+`GET /api/v1/order-reports/strategy-performance` requires `order_report:read`. PnL reports use `order_trades` rows only; each closed trade is one ENTRY order paired with one EXIT/close order.
 
 Orders and recent positions return running entries before closed entries. Micro Grid orders created by the current strategy runtime use the standard ENTRY/EXIT pairing and therefore appear in trade history, daily PnL, and strategy performance.
 
@@ -233,6 +233,16 @@ Common filter fields:
 exchange, market_type, event_type, symbol, interval, open_time, close_time,
 is_closed, created_at, updated_at
 ```
+
+### Market Backfills
+
+Read requires `market:read`. Starting a backfill requires `market_config:write`. Backfill jobs run in the background and are persisted in the API database.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/market/backfills` | Recent backfill job history. |
+| `POST` | `/api/v1/market/backfills` | Start an async market kline backfill job. |
+| `GET` | `/api/v1/market/backfills/{id}` | Backfill job status. |
 
 ### Symbol Mappings
 

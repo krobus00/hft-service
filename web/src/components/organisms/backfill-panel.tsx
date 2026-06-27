@@ -11,6 +11,7 @@ import { Select } from "@/components/ui/select";
 import {
   getFormEnums,
   getMarketBackfill,
+  listMarketBackfills,
   startMarketBackfill,
 } from "@/lib/api-client";
 import type { BackfillJob } from "@/lib/api-client";
@@ -37,6 +38,7 @@ export function BackfillPanel({ resource, user }: BackfillPanelProps) {
   const [form, setForm] = useState<BackfillFormState>(() => defaultBackfillForm());
   const [enums, setEnums] = useState<Record<string, string[]>>({});
   const [job, setJob] = useState<BackfillJob | null>(null);
+  const [history, setHistory] = useState<BackfillJob[]>([]);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isActive = job?.status === "pending" || job?.status === "running";
@@ -68,6 +70,10 @@ export function BackfillPanel({ resource, user }: BackfillPanelProps) {
   }, []);
 
   useEffect(() => {
+    void loadHistory();
+  }, []);
+
+  useEffect(() => {
     if (!job || !isActive) {
       return;
     }
@@ -78,6 +84,7 @@ export function BackfillPanel({ resource, user }: BackfillPanelProps) {
         const result = await getMarketBackfill(jobId, 20);
         if (!cancelled) {
           setJob(result);
+          void loadHistory();
           setError("");
         }
       } catch (caught) {
@@ -110,6 +117,7 @@ export function BackfillPanel({ resource, user }: BackfillPanelProps) {
         end_time: datetimeLocalToISO(form.end_time),
       });
       setJob(nextJob);
+      await loadHistory();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to start backfill.");
     } finally {
@@ -123,9 +131,18 @@ export function BackfillPanel({ resource, user }: BackfillPanelProps) {
     }
     try {
       setJob(await getMarketBackfill(job.id));
+      await loadHistory();
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to refresh backfill status.");
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      setHistory(await listMarketBackfills());
+    } catch {
+      setHistory([]);
     }
   }
 
@@ -228,6 +245,41 @@ export function BackfillPanel({ resource, user }: BackfillPanelProps) {
           </CardContent>
         </Card>
       ) : null}
+
+      <Card className="rounded-md">
+        <CardHeader>
+          <CardTitle className="text-base">Backfill history</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Market</th>
+                  <th className="px-3 py-2">Window</th>
+                  <th className="px-3 py-2">Inserted</th>
+                  <th className="px-3 py-2">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((item) => (
+                  <tr key={item.id} className="border-t">
+                    <td className="px-3 py-2">{statusLabel(item.status)}</td>
+                    <td className="px-3 py-2">{item.request.exchange} {item.request.symbol} {item.request.interval}</td>
+                    <td className="px-3 py-2">{formatDateTime(item.request.start_time)} - {formatDateTime(item.request.end_time)}</td>
+                    <td className="px-3 py-2">{item.inserted_count}</td>
+                    <td className="px-3 py-2">{formatDateTime(item.updated_at)}</td>
+                  </tr>
+                ))}
+                {history.length === 0 ? (
+                  <tr><td className="px-3 py-6 text-center text-muted-foreground" colSpan={5}>No backfill history</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
     </section>
   );
 }

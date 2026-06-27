@@ -401,26 +401,31 @@ func (h *Handler) PriceReferenceByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) MarketBackfills(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodPost) {
-		return
+	switch r.Method {
+	case http.MethodGet:
+		items, err := h.backfillService.List(50)
+		writeDataResult(w, items, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionMarketConfigWrite) {
+			return
+		}
+		var body marketBackfillRequest
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		req, ok := parseMarketBackfillRequest(w, body)
+		if !ok {
+			return
+		}
+		job, err := h.backfillService.Start(req)
+		if err != nil {
+			apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, err.Error())
+			return
+		}
+		apiutil.WriteSuccess(w, job)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
-	if !requirePermission(w, r, constant.PermissionMarketConfigWrite) {
-		return
-	}
-	var body marketBackfillRequest
-	if !decodeBody(w, r, &body) {
-		return
-	}
-	req, ok := parseMarketBackfillRequest(w, body)
-	if !ok {
-		return
-	}
-	job, err := h.backfillService.Start(req)
-	if err != nil {
-		apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, err.Error())
-		return
-	}
-	apiutil.WriteSuccess(w, job)
 }
 
 func (h *Handler) MarketBackfillByID(w http.ResponseWriter, r *http.Request) {

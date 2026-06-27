@@ -54,7 +54,7 @@ func StartAPI(cmd *cobra.Command, args []string) {
 	marketDataGRPCAddr := marketDataGatewayGRPCAddress()
 	marketDataGRPCConn, err := grpc.NewClient(marketDataGRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	util.ContinueOrFatal(err)
-	backfillService := apiservice.NewBackfillService(pb.NewMarketDataServiceClient(marketDataGRPCConn))
+	backfillService := apiservice.NewBackfillService(pb.NewMarketDataServiceClient(marketDataGRPCConn), repository.NewAPIBackfillJobRepository(apiDB))
 
 	apiHTTPHandler := apiHandler.NewAPIHTTPHandler(authService, dataService, backfillService, config.Env.DashboardAuth)
 	httpMux := http.NewServeMux()

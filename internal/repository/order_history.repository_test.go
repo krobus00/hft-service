@@ -75,14 +75,12 @@ func TestTradeReportFiltersByRealizationTime(t *testing.T) {
 	}
 }
 
-func TestStrategyPerformanceIncludesUnpairedSignalInventory(t *testing.T) {
+func TestStrategyPerformanceUsesOnlyPairedTrades(t *testing.T) {
 	query, args := strategyPerformanceQuery(entity.OrderReportFilter{StrategyID: "go-micro-grid"})
-	for _, want := range []string{"oh.status = 'FILLED'", "oh.trade_condition = 'SIGNAL'", "LEFT JOIN price_references", "sp.sell_proceeds + sp.inventory_quantity"} {
-		if !strings.Contains(query, want) {
-			t.Fatalf("strategy performance query missing %q", want)
-		}
+	if !strings.Contains(query, "FROM order_trades") || strings.Contains(query, "order_histories oh") || strings.Contains(query, "price_references") {
+		t.Fatalf("strategy performance must use only paired trades: %s", query)
 	}
-	if len(args) != 2 || args[0] != "go-micro-grid" || args[1] != "go-micro-grid" {
+	if len(args) != 1 || args[0] != "go-micro-grid" {
 		t.Fatalf("unexpected strategy filters: %v", args)
 	}
 }

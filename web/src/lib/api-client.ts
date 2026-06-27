@@ -517,6 +517,15 @@ export async function startMarketBackfill(body: BackfillRequest) {
   );
 }
 
+export async function listMarketBackfills() {
+  return withSession((session) =>
+    apiRequest<BackfillJob[]>("/market/backfills", {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
 export async function getMarketBackfill(id: string, waitSeconds = 0) {
   const wait = Math.max(0, Math.min(30, waitSeconds));
   const path = wait > 0 ? `/market/backfills/${encodeURIComponent(id)}?wait=${wait}` : `/market/backfills/${encodeURIComponent(id)}`;

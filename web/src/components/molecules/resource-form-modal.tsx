@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import type { ResourceConfig } from "@/types/api";
 
-type FieldValue = string | number | boolean | string[] | Record<string, string>;
+type FieldValue = string | number | boolean | string[] | Record<string, unknown>;
 
 type ResourceFormModalProps = {
   title: string;
@@ -68,7 +68,13 @@ export function ResourceFormModal({
             return (
               <div key={field} className="grid gap-2">
                 <Label htmlFor={field}>{humanize(field)}</Label>
-                {renderField({
+                {resource.key === "strategyRules" && field === "conditions" ? (
+                  <StrategyConditionField
+                    value={values[field]}
+                    disabled={disabled || isSubmitting}
+                    onChange={(nextValue) => updateField(field, nextValue)}
+                  />
+                ) : renderField({
                   field,
                   sampleValue,
                   value,
@@ -98,6 +104,125 @@ export function ResourceFormModal({
       </form>
     </ModalShell>
   );
+}
+
+type SimpleCondition = {
+  left: string;
+  op: string;
+  rightMode: "field" | "value";
+  right: string;
+};
+
+const conditionFields = [
+  "close",
+  "high",
+  "low",
+  "volume",
+  "indicators.ema_21",
+  "indicators.ema_50",
+  "indicators.ema_200",
+  "indicators.rsi_14",
+  "indicators.vwap_100",
+  "indicators.macd_12_26_9",
+  "indicators.macd_12_26_9_signal",
+  "indicators.bb_20_2_upper",
+  "indicators.bb_20_2_lower",
+];
+
+const conditionOps = [
+  ["cross_above", "Crosses above"],
+  ["cross_below", "Crosses below"],
+  ["gt", "Is greater than"],
+  ["gte", "Is greater or equal"],
+  ["lt", "Is less than"],
+  ["lte", "Is less or equal"],
+  ["eq", "Equals"],
+  ["neq", "Does not equal"],
+];
+
+function StrategyConditionField({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: FieldValue | undefined;
+  disabled?: boolean;
+  onChange: (value: FieldValue) => void;
+}) {
+  const rows = simpleConditions(value);
+  function update(index: number, next: SimpleCondition) {
+    const copy = rows.slice();
+    copy[index] = next;
+    onChange(conditionsPayload(copy));
+  }
+  function add() {
+    onChange(conditionsPayload([...rows, { left: "close", op: "gt", rightMode: "field", right: "indicators.ema_21" }]));
+  }
+  function remove(index: number) {
+    onChange(conditionsPayload(rows.filter((_, rowIndex) => rowIndex !== index)));
+  }
+  return (
+    <div className="grid gap-2 rounded-md border p-2 md:col-span-2">
+      {rows.map((row, index) => (
+        <div key={index} className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
+          <Select value={row.left} disabled={disabled} onChange={(event) => update(index, { ...row, left: event.target.value })}>
+            {conditionFields.map((field) => <option key={field} value={field}>{conditionLabel(field)}</option>)}
+          </Select>
+          <Select value={row.op} disabled={disabled} onChange={(event) => update(index, { ...row, op: event.target.value })}>
+            {conditionOps.map(([op, label]) => <option key={op} value={op}>{label}</option>)}
+          </Select>
+          {row.rightMode === "field" ? (
+            <Select value={row.right} disabled={disabled} onChange={(event) => update(index, { ...row, right: event.target.value })}>
+              {conditionFields.map((field) => <option key={field} value={field}>{conditionLabel(field)}</option>)}
+            </Select>
+          ) : (
+            <Input value={row.right} disabled={disabled} type="number" onChange={(event) => update(index, { ...row, right: event.target.value })} />
+          )}
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => update(index, { ...row, rightMode: row.rightMode === "field" ? "value" : "field", right: row.rightMode === "field" ? "0" : "indicators.ema_21" })}>
+              {row.rightMode === "field" ? "Value" : "Field"}
+            </Button>
+            <Button type="button" variant="outline" size="icon" disabled={disabled} onClick={() => remove(index)}>
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      ))}
+      <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={add}>
+        <Plus className="h-4 w-4" />
+        Add condition
+      </Button>
+    </div>
+  );
+}
+
+function simpleConditions(value: unknown): SimpleCondition[] {
+  const raw = isPlainObject(value) && Array.isArray(value.all) ? value.all : [];
+  const rows = raw.map((item) => {
+    if (!isPlainObject(item)) {
+      return null;
+    }
+    const hasRight = typeof item.right === "string" && item.right !== "";
+    return {
+      left: String(item.left || "close"),
+      op: String(item.op || "gt"),
+      rightMode: hasRight ? "field" : "value",
+      right: hasRight ? String(item.right) : String(item.value ?? "0"),
+    } as SimpleCondition;
+  }).filter(Boolean) as SimpleCondition[];
+  return rows.length > 0 ? rows : [{ left: "close", op: "gt", rightMode: "field", right: "indicators.ema_21" }];
+}
+
+function conditionsPayload(rows: SimpleCondition[]) {
+  return {
+    all: rows.map((row) => row.rightMode === "field"
+      ? { left: row.left, op: row.op, right: row.right }
+      : { left: row.left, op: row.op, value: Number(row.right) }),
+  };
+}
+
+function conditionLabel(value: string) {
+  return value.replace("indicators.", "").replaceAll("_", " ").toUpperCase();
 }
 
 function renderField(props: {
@@ -250,7 +375,7 @@ function ObjectField({
   disabled,
   onChange,
 }: {
-  value: Record<string, string>;
+  value: Record<string, unknown>;
   disabled?: boolean;
   onChange: (value: FieldValue) => void;
 }) {
@@ -295,7 +420,7 @@ function ObjectField({
             onChange={(event) => updateKey(index, event.target.value)}
           />
           <Input
-            value={nestedValue}
+            value={String(nestedValue ?? "")}
             disabled={disabled}
             aria-label="Object value"
             onChange={(event) => updateValue(key, event.target.value)}
@@ -491,8 +616,8 @@ function normalizeObjectField(value: unknown) {
   if (!isPlainObject(parsed)) {
     return {};
   }
-  return Object.entries(parsed).reduce<Record<string, string>>((result, [key, nestedValue]) => {
-    result[key] = nestedValue == null ? "" : String(nestedValue);
+  return Object.entries(parsed).reduce<Record<string, unknown>>((result, [key, nestedValue]) => {
+    result[key] = nestedValue == null ? "" : nestedValue;
     return result;
   }, {});
 }

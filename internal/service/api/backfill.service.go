@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/krobus00/hft-service/internal/repository"
 	pb "github.com/krobus00/hft-service/pb/market_data"
 )
 
@@ -22,6 +24,7 @@ const (
 
 type BackfillService struct {
 	client pb.MarketDataServiceClient
+	repo   *repository.APIBackfillJobRepository
 	mu     sync.RWMutex
 	jobs   map[string]*BackfillJob
 }
@@ -47,9 +50,10 @@ type BackfillJob struct {
 	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
-func NewBackfillService(client pb.MarketDataServiceClient) *BackfillService {
+func NewBackfillService(client pb.MarketDataServiceClient, repo *repository.APIBackfillJobRepository) *BackfillService {
 	return &BackfillService{
 		client: client,
+		repo:   repo,
 		jobs:   map[string]*BackfillJob{},
 	}
 }
@@ -75,6 +79,11 @@ func (s *BackfillService) Start(req BackfillRequest) (*BackfillJob, error) {
 	s.mu.Lock()
 	s.jobs[job.ID] = job
 	s.mu.Unlock()
+	if s.repo != nil {
+		if err := s.repo.Create(context.Background(), backfillJobRecord(job)); err != nil {
+			return nil, err
+		}
+	}
 
 	go s.run(job.ID)
 
@@ -86,9 +95,37 @@ func (s *BackfillService) Get(id string) (*BackfillJob, bool) {
 	defer s.mu.RUnlock()
 	job, ok := s.jobs[id]
 	if !ok {
-		return nil, false
+		if s.repo == nil {
+			return nil, false
+		}
+		record, err := s.repo.FindByID(context.Background(), id)
+		if err != nil || record == nil {
+			return nil, false
+		}
+		return backfillJobFromRecord(*record), true
 	}
 	return cloneBackfillJob(job), true
+}
+
+func (s *BackfillService) List(limit int) ([]BackfillJob, error) {
+	if s.repo == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]BackfillJob, 0, len(s.jobs))
+		for _, job := range s.jobs {
+			items = append(items, *cloneBackfillJob(job))
+		}
+		return items, nil
+	}
+	records, err := s.repo.ListRecent(context.Background(), limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]BackfillJob, 0, len(records))
+	for _, record := range records {
+		items = append(items, *backfillJobFromRecord(record))
+	}
+	return items, nil
 }
 
 func (s *BackfillService) Wait(ctx context.Context, id string, timeout time.Duration) (*BackfillJob, bool) {
@@ -144,6 +181,7 @@ func (s *BackfillService) markRunning(id string) (*BackfillJob, bool) {
 	job.Status = BackfillJobRunning
 	job.StartedAt = &now
 	job.UpdatedAt = now
+	s.persistLocked(job)
 	return cloneBackfillJob(job), true
 }
 
@@ -156,6 +194,7 @@ func (s *BackfillService) markSucceeded(id string, insertedCount int64) {
 		job.InsertedCount = insertedCount
 		job.CompletedAt = &now
 		job.UpdatedAt = now
+		s.persistLocked(job)
 	}
 }
 
@@ -168,6 +207,13 @@ func (s *BackfillService) markFailed(id string, err error) {
 		job.Error = err.Error()
 		job.CompletedAt = &now
 		job.UpdatedAt = now
+		s.persistLocked(job)
+	}
+}
+
+func (s *BackfillService) persistLocked(job *BackfillJob) {
+	if s.repo != nil {
+		_ = s.repo.UpdateStatus(context.Background(), backfillJobRecord(job))
 	}
 }
 
@@ -213,6 +259,47 @@ func cloneBackfillJob(job *BackfillJob) *BackfillJob {
 	}
 	copy := *job
 	return &copy
+}
+
+func backfillJobRecord(job *BackfillJob) repository.APIBackfillJob {
+	record := repository.APIBackfillJob{
+		ID: job.ID, Status: job.Status, Exchange: job.Request.Exchange, MarketType: job.Request.MarketType,
+		Symbol: job.Request.Symbol, Interval: job.Request.Interval, InsertedCount: job.InsertedCount,
+		Error:     sql.NullString{String: job.Error, Valid: true},
+		StartTime: sql.NullTime{Time: job.Request.StartTime, Valid: true},
+		EndTime:   sql.NullTime{Time: job.Request.EndTime, Valid: true},
+		CreatedAt: sql.NullTime{Time: job.CreatedAt, Valid: true},
+		UpdatedAt: sql.NullTime{Time: job.UpdatedAt, Valid: true},
+	}
+	if job.StartedAt != nil {
+		record.StartedAt = sql.NullTime{Time: *job.StartedAt, Valid: true}
+	}
+	if job.CompletedAt != nil {
+		record.CompletedAt = sql.NullTime{Time: *job.CompletedAt, Valid: true}
+	}
+	return record
+}
+
+func backfillJobFromRecord(record repository.APIBackfillJob) *BackfillJob {
+	job := &BackfillJob{
+		ID: record.ID, Status: record.Status, InsertedCount: record.InsertedCount,
+		Error:     record.Error.String,
+		Request:   BackfillRequest{Exchange: record.Exchange, MarketType: record.MarketType, Symbol: record.Symbol, Interval: record.Interval},
+		CreatedAt: record.CreatedAt.Time, UpdatedAt: record.UpdatedAt.Time,
+	}
+	if record.StartTime.Valid {
+		job.Request.StartTime = record.StartTime.Time
+	}
+	if record.EndTime.Valid {
+		job.Request.EndTime = record.EndTime.Time
+	}
+	if record.StartedAt.Valid {
+		job.StartedAt = &record.StartedAt.Time
+	}
+	if record.CompletedAt.Valid {
+		job.CompletedAt = &record.CompletedAt.Time
+	}
+	return job
 }
 
 func newJobID() string {
