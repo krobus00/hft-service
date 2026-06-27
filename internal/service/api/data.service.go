@@ -30,7 +30,9 @@ type DataService struct {
 	marketKlineRepo       *repository.MarketKlineRepository
 	symbolMappingRepo     *repository.SymbolMappingRepository
 	klineSubscriptionRepo *repository.KlineSubscriptionRepository
+	indicatorConfigRepo   *repository.IndicatorConfigRepository
 	strategyConfigRepo    *repository.StrategyConfigRepository
+	strategyRuleRepo      *repository.StrategyRuleRepository
 	js                    nats.JetStreamContext
 }
 
@@ -73,7 +75,9 @@ func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext)
 		marketKlineRepo:       repository.NewMarketKlineRepository(marketDB),
 		symbolMappingRepo:     repository.NewSymbolMappingRepository(marketDB),
 		klineSubscriptionRepo: repository.NewKlineSubscriptionRepository(marketDB),
+		indicatorConfigRepo:   repository.NewIndicatorConfigRepository(marketDB),
 		strategyConfigRepo:    repository.NewStrategyConfigRepository(marketDB),
+		strategyRuleRepo:      repository.NewStrategyRuleRepository(marketDB),
 		js:                    js,
 	}
 }
@@ -137,7 +141,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"exchange":         exchanges,
 		"role":             roles,
 		"permission":       permissions,
-		"dashboard_page":   {"orders", "orderPnL", "dailyReports", "strategyPerformance", "strategyConfigs", "strategyMonitors", "marketKlines", "priceReferences", "marketBackfills", "symbolMappings", "klineSubscriptions", "users", "roles", "permissions", "settings", "dashboardPages"},
+		"dashboard_page":   {"orders", "orderPnL", "dailyReports", "strategyPerformance", "strategyConfigs", "strategyRules", "strategyMonitors", "marketKlines", "priceReferences", "marketBackfills", "symbolMappings", "klineSubscriptions", "indicatorConfigs", "users", "roles", "permissions", "settings", "dashboardPages"},
 		"market_type":      {"spot", "futures"},
 		"position_side":    {"BOTH", "LONG", "SHORT"},
 		"order_side":       {"BUY", "SELL", "LONG", "SHORT"},
@@ -148,6 +152,8 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"exit_type":        {"", "TAKE_PROFIT", "STOP_LOSS", "TRAILING_STOP"},
 		"interval":         {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"},
 		"kline_event_type": {"kline"},
+		"indicator":        {"ema", "vwap", "macd", "atr", "rsi", "bollinger_bands", "stochastic", "volume_mean"},
+		"condition_op":     {"gt", "gte", "lt", "lte", "eq", "neq", "cross_above", "cross_below"},
 		"source":           {"dashboard", "api", "strategy"},
 		"boolean":          {"true", "false"},
 	}, nil
@@ -459,6 +465,41 @@ func (s *DataService) DeleteKlineSubscription(ctx context.Context, id string) er
 	return s.klineSubscriptionRepo.Delete(ctx, id)
 }
 
+func (s *DataService) ListIndicatorConfigs(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	return s.indicatorConfigRepo.GetPagination(ctx, req)
+}
+
+func (s *DataService) GetIndicatorConfig(ctx context.Context, id string) (*entity.IndicatorConfig, error) {
+	item, err := s.indicatorConfigRepo.FindByID(ctx, id)
+	return ensureFound(item, err)
+}
+
+func (s *DataService) CreateIndicatorConfig(ctx context.Context, values map[string]any) (*entity.IndicatorConfig, error) {
+	item := mapIndicatorConfig(values, nil)
+	if err := s.indicatorConfigRepo.Create(ctx, item); err != nil {
+		return nil, err
+	}
+	return s.GetIndicatorConfig(ctx, item.ID)
+}
+
+func (s *DataService) UpdateIndicatorConfig(ctx context.Context, id string, values map[string]any) (*entity.IndicatorConfig, error) {
+	current, err := s.indicatorConfigRepo.FindByID(ctx, id)
+	if current == nil || err != nil {
+		_, err := ensureFound(current, err)
+		return nil, err
+	}
+	item := mapIndicatorConfig(values, current)
+	item.ID = current.ID
+	if err := s.indicatorConfigRepo.Update(ctx, item); err != nil {
+		return nil, err
+	}
+	return s.GetIndicatorConfig(ctx, id)
+}
+
+func (s *DataService) DeleteIndicatorConfig(ctx context.Context, id string) error {
+	return s.indicatorConfigRepo.Delete(ctx, id)
+}
+
 func (s *DataService) ListStrategyConfigs(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
 	resp, err := s.strategyConfigRepo.GetPagination(ctx, req)
 	if err != nil {
@@ -506,6 +547,41 @@ func (s *DataService) UpdateStrategyConfig(ctx context.Context, id string, value
 
 func (s *DataService) DeleteStrategyConfig(ctx context.Context, id string) error {
 	return s.strategyConfigRepo.Delete(ctx, id)
+}
+
+func (s *DataService) ListStrategyRules(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
+	return s.strategyRuleRepo.GetPagination(ctx, req)
+}
+
+func (s *DataService) GetStrategyRule(ctx context.Context, id string) (*entity.StrategyRule, error) {
+	item, err := s.strategyRuleRepo.FindByID(ctx, id)
+	return ensureFound(item, err)
+}
+
+func (s *DataService) CreateStrategyRule(ctx context.Context, values map[string]any) (*entity.StrategyRule, error) {
+	item := mapStrategyRule(values, nil)
+	if err := s.strategyRuleRepo.Create(ctx, item); err != nil {
+		return nil, err
+	}
+	return s.GetStrategyRule(ctx, item.ID)
+}
+
+func (s *DataService) UpdateStrategyRule(ctx context.Context, id string, values map[string]any) (*entity.StrategyRule, error) {
+	current, err := s.strategyRuleRepo.FindByID(ctx, id)
+	if current == nil || err != nil {
+		_, err := ensureFound(current, err)
+		return nil, err
+	}
+	item := mapStrategyRule(values, current)
+	item.ID = current.ID
+	if err := s.strategyRuleRepo.Update(ctx, item); err != nil {
+		return nil, err
+	}
+	return s.GetStrategyRule(ctx, id)
+}
+
+func (s *DataService) DeleteStrategyRule(ctx context.Context, id string) error {
+	return s.strategyRuleRepo.Delete(ctx, id)
 }
 
 func (s *DataService) closeOpenTradesForDisabledStrategy(ctx context.Context, config *entity.StrategyConfig) error {
@@ -897,6 +973,24 @@ func mapKlineSubscription(values map[string]any, current *entity.KlineSubscripti
 	return item
 }
 
+func mapIndicatorConfig(values map[string]any, current *entity.IndicatorConfig) *entity.IndicatorConfig {
+	now := time.Now().UTC()
+	item := &entity.IndicatorConfig{Params: "{}", Enabled: true, CreatedAt: now, UpdatedAt: now}
+	if current != nil {
+		item = current
+		item.UpdatedAt = now
+	}
+	item.Exchange = stringValue(values, "exchange", item.Exchange)
+	item.MarketType = stringValue(values, "market_type", item.MarketType)
+	item.Symbol = stringValue(values, "symbol", item.Symbol)
+	item.Interval = stringValue(values, "interval", item.Interval)
+	item.Indicator = strings.ToLower(stringValue(values, "indicator", item.Indicator))
+	item.OutputName = stringValue(values, "output_name", item.OutputName)
+	item.Params = jsonStringValue(values, "params", item.Params)
+	item.Enabled = boolValue(values, "enabled", item.Enabled)
+	return item
+}
+
 func mapStrategyConfig(values map[string]any, current *entity.StrategyConfig) *entity.StrategyConfig {
 	now := time.Now().UTC()
 	item := &entity.StrategyConfig{
@@ -953,6 +1047,30 @@ func mapStrategyConfig(values map[string]any, current *entity.StrategyConfig) *e
 	item.MaxHoldBars = intValue(values, "max_hold_bars", item.MaxHoldBars)
 	item.MaxPositions = intValue(values, "max_positions", item.MaxPositions)
 	item.EnableIntrabarRiskExit = boolValue(values, "enable_intrabar_risk_exit", item.EnableIntrabarRiskExit)
+	return item
+}
+
+func mapStrategyRule(values map[string]any, current *entity.StrategyRule) *entity.StrategyRule {
+	now := time.Now().UTC()
+	item := &entity.StrategyRule{
+		Conditions:     `{"all":[]}`,
+		TradeCondition: string(entity.TradeConditionEntry),
+		Enabled:        true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if current != nil {
+		item = current
+		item.UpdatedAt = now
+	}
+	item.StrategyConfigID = stringValue(values, "strategy_config_id", item.StrategyConfigID)
+	item.Name = stringValue(values, "name", item.Name)
+	item.Side = strings.ToUpper(stringValue(values, "side", item.Side))
+	item.TradeCondition = string(entity.NormalizeTradeCondition(stringValue(values, "trade_condition", item.TradeCondition)))
+	item.ExitType = string(entity.NormalizeExitType(stringValue(values, "exit_type", item.ExitType)))
+	item.OrderReason = stringValue(values, "order_reason", item.OrderReason)
+	item.Conditions = jsonStringValue(values, "conditions", item.Conditions)
+	item.Enabled = boolValue(values, "enabled", item.Enabled)
 	return item
 }
 

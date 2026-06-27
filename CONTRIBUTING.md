@@ -15,7 +15,6 @@ Thank you for contributing.
 
 ```bash
 copy config.yml.example config.yml
-copy strategy\config.yml.example strategy\config.yml
 ```
 
 2. Start local infrastructure:
@@ -37,7 +36,6 @@ Run these checks before opening a PR:
 
 ```bash
 go build ./...
-python -m py_compile strategy/core/framework.py strategy/ai.py strategy/krobot01.py strategy/krobot02.py
 ```
 
 If you changed SQL or strategy routing logic, include test/verification notes in your PR.

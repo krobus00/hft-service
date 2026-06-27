@@ -280,6 +280,37 @@ Body:
 }
 ```
 
+### Indicator Configs
+
+Read requires `market:read`. Create, update, and delete require `market_config:write`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/market/indicator-configs` | Paginated shared indicator configs. |
+| `POST` | `/api/v1/market/indicator-configs` | Create an indicator config. |
+| `GET` | `/api/v1/market/indicator-configs/{id}` | Indicator config detail. |
+| `PUT/PATCH` | `/api/v1/market/indicator-configs/{id}` | Update an indicator config. |
+| `DELETE` | `/api/v1/market/indicator-configs/{id}` | Delete an indicator config. |
+
+Body:
+
+```json
+{
+  "exchange": "binance",
+  "market_type": "futures",
+  "symbol": "BTC_USDT",
+  "interval": "1m",
+  "indicator": "ema",
+  "output_name": "ema_21",
+  "params": {
+    "period": 21
+  },
+  "enabled": true
+}
+```
+
+Supported `indicator` values are `ema`, `vwap`, `macd`, `atr`, `rsi`, `bollinger_bands`, `stochastic`, and `volume_mean`. The indicator service calculates enabled rows with `github.com/cinar/indicator/v2` and publishes values in the `indicators` object on `KLINE_INDICATOR.<EXCHANGE>.<SYMBOL>.<INTERVAL>`.
+
 ### Strategy Configs
 
 Read requires `strategy_config:read`. Create, update, and delete require `strategy_config:write`.
@@ -296,7 +327,7 @@ Body:
 
 ```json
 {
-  "strategy": "python-krobot01-ema200-vwap-macd",
+  "strategy": "go-ema-cross",
   "exchange": "binance",
   "market_type": "futures",
   "symbol": "BTC_USDT",
@@ -304,7 +335,7 @@ Body:
   "user_id": "minimax-01",
   "position_side": "BOTH",
   "source": "dashboard",
-  "monitor_url": "http://localhost:19011",
+  "monitor_url": "",
   "need_notification": true,
   "is_paper_trading": true,
   "order_type": "MARKET",
@@ -323,6 +354,39 @@ Body:
   "enable_intrabar_risk_exit": true
 }
 ```
+
+### Strategy Rules
+
+Read requires `strategy_config:read`. Create, update, and delete require `strategy_config:write`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/strategy/rules` | Paginated Go strategy rules. |
+| `POST` | `/api/v1/strategy/rules` | Create a Go strategy rule. |
+| `GET` | `/api/v1/strategy/rules/{id}` | Strategy rule detail. |
+| `PUT/PATCH` | `/api/v1/strategy/rules/{id}` | Update a strategy rule. |
+| `DELETE` | `/api/v1/strategy/rules/{id}` | Delete a strategy rule. |
+
+Body:
+
+```json
+{
+  "strategy_config_id": "strategy-config-id",
+  "name": "EMA cross long",
+  "side": "BUY",
+  "trade_condition": "ENTRY",
+  "order_reason": "EMA_CROSS_LONG",
+  "conditions": {
+    "all": [
+      { "left": "indicators.ema_21", "op": "cross_above", "right": "indicators.ema_50" },
+      { "left": "close", "op": "gt", "right": "indicators.vwap_100" }
+    ]
+  },
+  "enabled": true
+}
+```
+
+Supported condition operators are `gt`, `gte`, `lt`, `lte`, `eq`, `neq`, `cross_above`, and `cross_below`. Available fields include candle values (`close`, `high`, `low`, `volume`) and indicator values as `indicators.<output_name>`.
 
 ### Strategy Monitors
 

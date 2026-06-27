@@ -59,10 +59,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/market/symbol-mappings/", h.withPermission(constant.PermissionMarketRead, h.SymbolMappingByID))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptions))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions/", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptionByID))
+	mux.HandleFunc("/api/v1/market/indicator-configs", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigs))
+	mux.HandleFunc("/api/v1/market/indicator-configs/", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigByID))
 	mux.HandleFunc("/api/v1/strategy/monitors", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMonitors))
 	mux.HandleFunc("/api/v1/strategy/monitors/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMonitorByName))
 	mux.HandleFunc("/api/v1/strategy/configs", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigs))
 	mux.HandleFunc("/api/v1/strategy/configs/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigByID))
+	mux.HandleFunc("/api/v1/strategy/rules", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyRules))
+	mux.HandleFunc("/api/v1/strategy/rules/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyRuleByID))
 	mux.HandleFunc("/api/v1/settings", h.withPermission(constant.PermissionSettingsRead, h.Settings))
 	mux.HandleFunc("/api/v1/settings/", h.withPermission(constant.PermissionSettingsRead, h.SettingByID))
 	mux.HandleFunc("/api/v1/users", h.withPermission(constant.PermissionUserRead, h.Users))
@@ -515,6 +519,59 @@ func (h *Handler) KlineSubscriptionByID(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (h *Handler) IndicatorConfigs(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.IndicatorConfig{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListIndicatorConfigs(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionMarketConfigWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateIndicatorConfig(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) IndicatorConfigByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/market/indicator-configs/")
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetIndicatorConfig(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionMarketConfigWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateIndicatorConfig(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionMarketConfigWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteIndicatorConfig(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
 func (h *Handler) StrategyConfigs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -563,6 +620,59 @@ func (h *Handler) StrategyConfigByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeDeleteResult(w, h.dataService.DeleteStrategyConfig(r.Context(), id))
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) StrategyRules(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		req, ok := parsePagination(w, r, &entity.StrategyRule{})
+		if !ok {
+			return
+		}
+		result, err := h.dataService.ListStrategyRules(r.Context(), req)
+		writeDataResult(w, result, err)
+	case http.MethodPost:
+		if !requirePermission(w, r, constant.PermissionStrategyConfigWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.CreateStrategyRule(r.Context(), body)
+		writeDataResult(w, result, err)
+	default:
+		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
+	}
+}
+
+func (h *Handler) StrategyRuleByID(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/strategy/rules/")
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		result, err := h.dataService.GetStrategyRule(r.Context(), id)
+		writeDataResult(w, result, err)
+	case http.MethodPut, http.MethodPatch:
+		if !requirePermission(w, r, constant.PermissionStrategyConfigWrite) {
+			return
+		}
+		var body map[string]any
+		if !decodeBody(w, r, &body) {
+			return
+		}
+		result, err := h.dataService.UpdateStrategyRule(r.Context(), id, body)
+		writeDataResult(w, result, err)
+	case http.MethodDelete:
+		if !requirePermission(w, r, constant.PermissionStrategyConfigWrite) {
+			return
+		}
+		writeDeleteResult(w, h.dataService.DeleteStrategyRule(r.Context(), id))
 	default:
 		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}

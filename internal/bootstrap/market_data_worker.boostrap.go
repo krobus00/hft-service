@@ -8,6 +8,7 @@ import (
 	"github.com/krobus00/hft-service/internal/infrastructure"
 	"github.com/krobus00/hft-service/internal/repository"
 	"github.com/krobus00/hft-service/internal/service/exchange"
+	"github.com/krobus00/hft-service/internal/service/indicator"
 	"github.com/krobus00/hft-service/internal/util"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -26,6 +27,8 @@ func StartMarketDataWorker(cmd *cobra.Command, args []string) {
 
 	symbolMappingRepo := repository.NewSymbolMappingRepository(db)
 	marketKlineRepo := repository.NewMarketKlineRepository(db)
+	indicatorConfigRepo := repository.NewIndicatorConfigRepository(db)
+	indicatorResultRepo := repository.NewIndicatorResultRepository(db)
 
 	initConfiguredExchanges(ctx, symbolMappingRepo, nil, js, marketKlineRepo)
 
@@ -51,6 +54,9 @@ func StartMarketDataWorker(cmd *cobra.Command, args []string) {
 			util.ContinueOrFatal(err)
 		}
 	}
+
+	indicatorService := indicator.NewService(js, marketKlineRepo, indicatorConfigRepo, indicatorResultRepo)
+	util.ContinueOrFatal(indicatorService.Subscribe(ctx))
 
 	wait := gracefulShutdown(ctx, config.Env.GracefulShutdownTimeout, map[string]operation{
 		"database": func(ctx context.Context) error {

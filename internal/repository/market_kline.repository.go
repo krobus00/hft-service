@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
@@ -156,6 +157,31 @@ func (r *MarketKlineRepository) FindByID(ctx context.Context, id string) (*entit
 		return nil, err
 	}
 	return &item, nil
+}
+
+func (r *MarketKlineRepository) ListRecentClosedBefore(ctx context.Context, exchange, marketType, symbol, interval string, beforeCloseTime time.Time, limit int) ([]entity.MarketKline, error) {
+	items := []entity.MarketKline{}
+	if limit <= 0 {
+		return items, nil
+	}
+
+	query := `
+SELECT *
+FROM (
+	SELECT *
+	FROM market_klines
+	WHERE lower(exchange) = lower($1)
+	  AND lower(market_type) = lower($2)
+	  AND symbol = $3
+	  AND interval = $4
+	  AND is_closed IS TRUE
+	  AND close_time < $5
+	ORDER BY close_time DESC
+	LIMIT $6
+) recent
+ORDER BY close_time ASC`
+	err := r.db.SelectContext(ctx, &items, query, exchange, marketType, symbol, interval, beforeCloseTime, limit)
+	return items, err
 }
 
 func (r *MarketKlineRepository) Update(ctx context.Context, data *entity.MarketKline) error {

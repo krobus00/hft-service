@@ -37,13 +37,14 @@ Most of the code in this repository was written with AI assistance.
 This project follows an event-driven HFT loop:
 
 1. Market data gateway subscribes to exchange websocket kline streams.
-2. Incoming candles are normalized and published to NATS JetStream (`kline.data`).
+2. Incoming candles are normalized and published to NATS JetStream (`KLINE.<EXCHANGE>.<SYMBOL>.<INTERVAL>`).
 3. Worker persists market data into the `market_data` database.
-4. Strategy consumes closed candles and decides buy/sell/hold.
-5. If action is needed, strategy publishes `order_engine.place_order`.
-6. Order engine gateway executes the order to the exchange.
-7. Order engine worker continuously reconciles order status until terminal state.
-8. Notification service emits Discord alerts for important events.
+4. Indicator service consumes raw kline events, calculates enabled `indicator_configs` with `github.com/cinar/indicator/v2`, and publishes shared values to `KLINE_INDICATOR.<EXCHANGE>.<SYMBOL>.<INTERVAL>`.
+5. `strategy-service` consumes enriched closed candles and decides buy/sell/hold from web/API-configured rules.
+6. If action is needed, strategy publishes `order_engine.place_order`.
+7. Order engine gateway executes the order to the exchange.
+8. Order engine worker continuously reconciles order status until terminal state.
+9. Notification service emits Discord alerts for important events.
 
 In short: low-latency event ingestion + deterministic signal execution + robust post-trade reconciliation.
 
@@ -52,15 +53,16 @@ In short: low-latency event ingestion + deterministic signal execution + robust 
 ### Event Flow
 
 1. `market-data-gateway` consumes exchange kline data.
-2. `market-data-gateway` publishes `kline.data` events.
-3. `market-data-worker` consumes `kline.data` and stores records in `market_data` DB.
-4. `strategy` consumes `kline.data` and decides: buy, sell, or no action.
-5. If execution is required, `strategy` publishes `order_engine.place_order`.
-6. `order-engine-gateway` consumes order events and executes to exchange.
-7. `order-engine-gateway` stores initial order history in `order_engine` DB.
-8. `order-engine-worker` polls tracked orders and fetches latest execution state from exchange.
-9. `order-engine-worker` updates `order_histories` status in `order_engine` DB.
-10. `notification-service` consumes notification events and sends Discord alerts.
+2. `market-data-gateway` publishes `KLINE` events.
+3. `market-data-worker` consumes `KLINE` and stores records in `market_data` DB.
+4. Indicator service consumes `KLINE` and publishes enriched `KLINE_INDICATOR` events.
+5. `strategy-service` consumes `KLINE_INDICATOR` and decides: buy, sell, or no action.
+6. If execution is required, `strategy` publishes `order_engine.place_order`.
+7. `order-engine-gateway` consumes order events and executes to exchange.
+8. `order-engine-gateway` stores initial order history in `order_engine` DB.
+9. `order-engine-worker` polls tracked orders and fetches latest execution state from exchange.
+10. `order-engine-worker` updates `order_histories` status in `order_engine` DB.
+11. `notification-service` consumes notification events and sends Discord alerts.
 
 ### Diagram
 
@@ -70,7 +72,8 @@ flowchart TB
   NATS[(NATS JetStream)]
   MDG[market-data-gateway]
   MDW[market-data-worker]
-  STRAT[strategy]
+  IND[indicator service]
+  STRAT[strategy-service]
   OEG[order-engine-gateway]
   OEW[order-engine-worker]
   NS[notification-service]
@@ -79,9 +82,11 @@ flowchart TB
   DISCORD[(Discord)]
 
   EX -->|kline websocket| MDG
-  MDG -->|publish kline.data| NATS
-  NATS -->|consume kline.data| MDW
-  NATS -->|consume kline.data| STRAT
+  MDG -->|publish KLINE| NATS
+  NATS -->|consume KLINE| MDW
+  NATS -->|consume KLINE| IND
+  IND -->|publish KLINE_INDICATOR| NATS
+  NATS -->|consume KLINE_INDICATOR| STRAT
   MDW -->|insert kline| MDB
   STRAT -->|publish order_engine.place_order| NATS
   NATS -->|consume place_order| OEG
@@ -103,19 +108,23 @@ flowchart TB
 - Normalizes incoming kline payload.
 - Resolves exchange kline symbols into canonical internal symbols from `symbol_mappings.symbol`.
 - For Binance, runs spot and futures websocket subscriptions in parallel by default.
-- Publishes `kline.data` to JetStream.
+- Publishes `KLINE.<EXCHANGE>.<SYMBOL>.<INTERVAL>` to JetStream.
 
 ### `market-data-worker`
 
-- Consumes `kline.data` events.
+- Consumes `KLINE` events.
 - Persists market kline records using canonical internal symbol.
 - Retries failed processing (bounded by config).
+- Calculates shared indicator values from `indicator_configs` and publishes enriched kline events for strategies.
 
-### `strategy`
+### `strategy-service`
 
-- Consumes closed kline events.
-- Runs strategy logic (buy/sell/hold).
-- Publishes `order_engine.place_order` when execution is needed.
+- Go strategy runner for web/API-built rules.
+- Consumes `KLINE_INDICATOR` events.
+- Loads enabled `strategy_configs` and `strategy_rules`.
+- Publishes `order_engine.place_order` when rule conditions match.
+- Supports condition operators `gt`, `gte`, `lt`, `lte`, `eq`, `neq`, `cross_above`, and `cross_below`.
+- Horizontally scales with NATS queue subscription; run multiple replicas of the same service.
 
 ### `order-engine-gateway`
 
@@ -141,7 +150,7 @@ flowchart TB
 - Provides the centralized dashboard HTTP API.
 - Handles dashboard authentication, refresh tokens, and RBAC.
 - Exposes read APIs for orders and market data.
-- Exposes CRUD APIs for symbol mappings, kline subscriptions, strategy configs, and dashboard settings.
+- Exposes CRUD APIs for symbol mappings, kline subscriptions, indicator configs, strategy configs, strategy rules, and dashboard settings.
 - Full endpoint documentation: [docs/API_SERVICE.md](docs/API_SERVICE.md).
 
 ### `migrate`
@@ -157,7 +166,7 @@ Dashboard capabilities:
 - First-admin setup flow at `/setup`.
 - Login, refresh-token session handling, and logout.
 - RBAC-aware navigation and protected dashboard pages.
-- Orders, market data, symbol mappings, kline subscriptions, strategy configs, dashboard settings, users, roles, permissions, and dashboard page management.
+- Orders, market data, symbol mappings, kline subscriptions, indicator configs, strategy configs, dashboard settings, users, roles, permissions, and dashboard page management.
 
 ### Screenshot
 
@@ -379,7 +388,7 @@ VALUES
 
 ### 7) Seed `strategy_configs` (required)
 
-`user_id` and risk controls are now sourced per pair from this table. Strategy runtime no longer reads `user_id` and shared risk controls from `strategy/config.yml`.
+`user_id`, order sizing, and risk controls are sourced per pair from this table.
 
 Example:
 
@@ -389,50 +398,29 @@ INSERT INTO strategy_configs
  cooldown_bars, sl_cooldown_bars, max_consecutive_stop_losses, sl_pause_bars, take_profit_pct, stop_loss_pct, trailing_stop_pct, trailing_stop_trigger_pct, max_hold_bars, max_positions, enable_intrabar_risk_exit,
  created_at, updated_at)
 VALUES
-('7f5f6d39-fd5b-4c94-b9f4-41c9b92e2c01', 'python-krobot01-ema200-vwap-macd', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02,
+('7f5f6d39-fd5b-4c94-b9f4-41c9b92e2c01', 'go-ema-cross', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02,
  2, 3, 2, 10, 0.25, 0.15, 0.12, 0.20, 24, 1, true,
  NOW(), NOW()),
-('f0e8d75f-77de-448b-9eb3-9948e3a0d742', 'python-krobot02-vwap-volume', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-02', true, true, 'LIMIT', 10, 0.02,
+('f0e8d75f-77de-448b-9eb3-9948e3a0d742', 'go-vwap-volume', 'tokocrypto', 'spot', 'TKO_IDR', '1m', 'paper-02', true, true, 'LIMIT', 10, 0.02,
  2, 3, 2, 10, 0.25, 0.15, 0.12, 0.20, 24, 1, true,
  NOW(), NOW()),
-('96c50cef-07ea-42e2-b4f7-bf9f12c11a82', 'python-ai-minimax-m2-7-hybrid', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02,
+('96c50cef-07ea-42e2-b4f7-bf9f12c11a82', 'go-btc-futures', 'binance', 'futures', 'BTC_USDT', '1m', 'minimax-01', true, false, 'MARKET', 10, 0.02,
  2, 3, 2, 10, 0.25, 0.15, 0.12, 0.20, 24, 1, true,
  NOW(), NOW()),
-('a0320598-131f-4b44-8400-7ab1810bfc50', 'python-capital-guard', 'binance', 'futures', 'BTC_USDT', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02,
+('a0320598-131f-4b44-8400-7ab1810bfc50', 'go-capital-guard', 'binance', 'futures', 'BTC_USDT', '1m', 'paper-1', true, true, 'LIMIT', 10, 0.02,
  2, 5, 2, 30, 0.35, 0.18, 0.12, 0.18, 18, 1, true,
  NOW(), NOW());
 ```
 
 Important rules:
 
-- `strategy` must match your strategy runtime `strategy_id`.
+- `strategy` is the strategy name used in orders and reports.
 - `exchange/market_type/symbol/interval` must match active kline subscription + symbol mapping.
 - `user_id` must match your exchange account key path, for example `exchanges.binance.accounts.minimax-01`.
 
-### 8) Configure strategy runtime (`strategy/config.yml`)
+### 8) Configure strategy rules
 
-Copy and update strategy config:
-
-```bash
-cp strategy/config.yml.example strategy/config.yml
-```
-
-Minimum required settings in `strategy/config.yml`:
-
-- `global.nats_url`
-- `global.db_dsn`
-- `global.redis_url`
-- `<strategy>.monitor_enabled`
-- `<strategy>.monitor_host`
-- `<strategy>.monitor_port`
-- `<strategy>.historical_limit`
-
-Notes:
-
-- Do not set `user_id` in strategy config anymore.
-- Strategy user routing is now pair-based from `strategy_configs.user_id`.
-- Pair-level risk controls are now sourced from `strategy_configs` columns.
-- For Docker Compose, set strategy monitor hosts to `0.0.0.0` so mapped ports are reachable from the host.
+Create `indicator_configs` and `strategy_rules` from the dashboard or API. A rule condition can reference candle fields (`close`, `high`, `low`, `volume`) and shared indicators (`indicators.<output_name>`).
 
 ### 9) Run services (separate terminals)
 
@@ -448,6 +436,12 @@ go run . market-data-gateway
 go run . market-data-worker
 ```
 
+Run Go strategy rules built through API/web:
+
+```bash
+go run . strategy-service
+```
+
 ```bash
 go run . order-engine-gateway
 ```
@@ -461,8 +455,7 @@ go run . notification-service
 ```
 
 ```bash
-make build-strategy
-make run-strategy
+go run . strategy-service
 ```
 
 ## Production Docker Compose
@@ -481,7 +474,6 @@ Default image tags:
 
 - `krobus00/hft-service:${HFT_VERSION:-latest}`
 - `krobus00/krobot-web:${WEB_VERSION:-latest}`
-- `krobus00/python-strategy:${STRATEGY_VERSION:-latest}`
 
 Build and push release images:
 
@@ -492,30 +484,22 @@ make push-images VERSION=1.0.0
 
 Run released images:
 
-Set `HFT_VERSION`, `WEB_VERSION`, and `STRATEGY_VERSION` in `.env`, then run:
+Set `HFT_VERSION` and `WEB_VERSION` in `.env`, then run:
 
 ```bash
 make compose-pull
 make up-service
 ```
 
-Default profiles are `infra app web`. To also run strategies:
+Default profiles are `infra app web`. The app profile includes the Go `strategy-service`.
 
-Set this in `.env`:
-
-```env
-PROFILES=infra app web strategy
-```
-
-Then run:
+Scale the strategy executor horizontally:
 
 ```bash
-make up-service
+docker compose --profile infra --profile app up -d --scale strategy-service=3
 ```
 
-The strategy profile includes `strategy-krobot01`, `strategy-krobot02`, `strategy-krobot03`, `strategy-ai`, `strategy-supertrend`, `strategy-capital-guard`, and `strategy-micro-grid`. The Micro Grid monitor uses `${STRATEGY_MICRO_GRID_PORT:-19018}` and its `strategy_configs` key is `python-micro-grid`.
-
-Redis and NATS passwords are optional. If you set them in Compose, also update `config.yml` and `strategy/config.yml` URLs to match.
+Redis and NATS passwords are optional. If you set them in Compose, also update `config.yml` URLs to match.
 
 Set these in `.env`:
 
@@ -565,7 +549,6 @@ Local image names can be overridden in `.env`:
 ```env
 HFT_LOCAL_IMAGE=hft-service:local
 WEB_LOCAL_IMAGE=krobot-web:local
-STRATEGY_LOCAL_IMAGE=python-strategy:local
 ```
 
 ## Database Backups
@@ -669,56 +652,30 @@ make restore-databases \
 
 ## How to Run Strategy
 
-There are two common ways to run strategy in this repository.
+Strategies are configured through the dashboard/API:
 
-### Option A: Run via Makefile (recommended)
+1. Create or enable `indicator_configs`.
+2. Create a `strategy_configs` row for the pair, user, order sizing, and risk settings.
+3. Create enabled `strategy_rules` for entry/exit conditions.
+4. Run `strategy-service`.
 
-This is the main runtime strategy flow used by this repository.
-
-1. Start infrastructure and required services first:
-  - `market-data-gateway`
-  - `market-data-worker`
-  - `order-engine-gateway`
-  - `order-engine-worker`
-2. Build strategy runner image:
+Local command:
 
 ```bash
-make build-strategy
+go run . strategy-service
 ```
 
-3. Run strategy:
+Compose command:
 
 ```bash
-make run-strategy
+make up-service
 ```
 
-4. Verify the container is running:
+Scale executor workers:
 
 ```bash
-docker ps --filter "name=-runner"
+docker compose --profile infra --profile app up -d --scale strategy-service=3
 ```
-
-5. Verify logs show strategy consuming closed kline events and publishing `order_engine.place_order` when signals fire.
-
-```bash
-docker logs -f krobot01-runner
-```
-
-### Option B: Run a specific Python strategy file
-
-For Python-based strategy scripts under `strategy/`:
-
-```bash
-make run-strategy STRATEGY_FILE=krobot01
-```
-
-Supertrend example:
-
-```bash
-make run-strategy STRATEGY_FILE=supertrend
-```
-
-This uses Docker image `python-strategy` and mounts local `strategy/` into `/app`.
 
 ### Configuration Checklist
 
@@ -727,38 +684,7 @@ This uses Docker image `python-strategy` and mounts local `strategy/` into `/app
 - Ensure every active `strategy_configs` row has non-empty `user_id`.
 - Ensure each `strategy_configs.user_id` maps to configured exchange credentials.
 - Set required API keys and NATS/database hosts in `config.yml`.
-- For Python strategy tuning, update risk control values in `strategy_configs` row columns.
-
-## Profit Results
-
-All strategies below were run with approximately $30 margin and 20x leverage.
-
-Performance snapshot:
-
-- Runtime window: 2026-05-31 00:30:00 to 2026-06-01 14:47:59 (38h 17m 59s)
-- Gross profit: $56.673
-- Gross loss: $32.424
-- Net PnL: +$24.249
-
-| strategy_id   | symbol      | start_trade_date    | end_trade_date      |   total_profit |   win_rate |    avg_size |   total_trades |   winning_trades |   losing_trades |
-|:--------------|:------------|:--------------------|:--------------------|---------------:|-----------:|------------:|---------------:|-----------------:|----------------:|
-| krobot01      | BNB_USDT.P  | 2026-05-31 00:30:00 | 2026-06-01 13:44:02 |          9.647 |   0.545455 |    0.841545 |             11 |                8 |               3 |
-| krobot02      | TRX_USDT.P  | 2026-05-31 15:30:02 | 2026-06-01 07:15:04 |          8.492 |   1        | 1722.68     |              2 |                2 |               0 |
-| krobot02      | HYPE_USDT.P | 2026-05-31 07:00:04 | 2026-06-01 14:15:00 |          8.031 |   0.692308 |    8.57495  |             13 |                9 |               4 |
-| krobot02      | ETH_USDT.P  | 2026-05-31 04:30:00 | 2026-06-01 14:15:00 |          7.112 |   0.6      |    0.298091 |             10 |                6 |               4 |
-| krobot01      | TRX_USDT.P  | 2026-05-31 00:45:00 | 2026-06-01 07:09:16 |          6.456 |   0.666667 | 1721.7      |              3 |                2 |               1 |
-| ai            | ETH_USDT.P  | 2026-05-31 03:00:34 | 2026-06-01 14:47:59 |          5.596 |   0.714286 |    0.29854  |              7 |                5 |               2 |
-| krobot01      | SOL_USDT.P  | 2026-05-31 00:30:00 | 2026-06-01 13:49:45 |          5     |   0.545455 |    7.27711  |             11 |                6 |               5 |
-| ai            | HYPE_USDT.P | 2026-05-31 11:31:05 | 2026-06-01 03:12:34 |          3.113 |   0.666667 |    8.67509  |              3 |                2 |               1 |
-| krobot01      | ETH_USDT.P  | 2026-05-31 04:30:00 | 2026-06-01 14:05:09 |          2.173 |   0.444444 |    0.298796 |              9 |                4 |               5 |
-| ai            | SOL_USDT.P  | 2026-05-31 13:01:13 | 2026-06-01 12:27:27 |          1.025 |   0.5      |    7.28626  |              6 |                3 |               3 |
-| ai            | BNB_USDT.P  | 2026-05-31 23:15:41 | 2026-06-01 05:55:50 |          0.028 |   0.5      |    0.836655 |              2 |                1 |               1 |
-| ai            | TRX_USDT.P  | 2026-05-31 12:32:02 | 2026-06-01 02:16:23 |         -0.072 |   0.333333 | 1722.99     |              3 |                1 |               2 |
-| krobot01      | HYPE_USDT.P | 2026-05-31 02:30:00 | 2026-06-01 00:34:26 |         -0.847 |   0.428571 |    8.75397  |              7 |                3 |               4 |
-| krobot02      | SOL_USDT.P  | 2026-05-31 04:15:00 | 2026-06-01 14:00:04 |        -11.927 |   0.181818 |    7.27353  |             11 |                2 |               9 |
-| krobot02      | BNB_USDT.P  | 2026-05-31 01:00:00 | 2026-06-01 14:00:04 |        -19.578 |   0.181818 |    0.832617 |             11 |                2 |               9 |
-
-Final result: this service generated a net profit of approximately +$24.249 in about 38.3 hours.
+- Tune indicators in `indicator_configs` and rule conditions in `strategy_rules`.
 
 ## Test Order API
 

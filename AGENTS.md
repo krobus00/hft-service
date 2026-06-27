@@ -8,10 +8,10 @@ Read this file before exploring the repository. It is the project map and change
 
 - Preserve the user's working tree. Check `rtk git status --short` before editing and do not rewrite, revert, or format unrelated changes.
 - Prefix shell commands with `rtk` as required by the imported RTK instructions.
-- Never commit `config.yml`, `strategy/config.yml`, `.env`, credentials, tokens, Discord URLs, database dumps, or private exchange/account data. Edit the `*.example` templates when configuration shape changes.
+- Never commit `config.yml`, `.env`, credentials, tokens, Discord URLs, database dumps, or private exchange/account data. Edit the `*.example` templates when configuration shape changes.
 - Keep changes focused. Follow existing direct constructors and concrete types; do not add speculative interfaces, factories, packages, or dependencies.
 - Trading, authentication, RBAC, migrations, and money calculations are high-risk. Preserve validation and error handling, use `decimal.Decimal` in Go money paths, and add/run a focused test.
-- Treat `README.md`, `docs/API_SERVICE.md`, `strategy/README.md`, config examples, and Compose files as runtime contracts. Update only the documents affected by the change.
+- Treat `README.md`, `docs/API_SERVICE.md`, config examples, and Compose files as runtime contracts. Update only the documents affected by the change.
 - Root `AGENT.md` is an untracked/user-owned file as of this guide's creation. Do not assume it duplicates or replaces this file, and do not modify it unless explicitly requested.
 
 ## Project in one page
@@ -19,7 +19,7 @@ Read this file before exploring the repository. It is the project map and change
 This is an event-driven crypto trading system with three runtimes:
 
 - Go 1.25 services: exchange market data, persistence, order execution/reconciliation, notifications, migrations, and the dashboard API.
-- Python strategies: consume closed candles, calculate signals/risk, persist runtime state in Redis, and publish order requests.
+- Go strategy executor: consumes enriched indicator candles, evaluates database-configured rules, and publishes order requests.
 - Next.js 15/React 19 dashboard: authentication, RBAC-aware navigation, CRUD resources, manual orders, backfills, and reports.
 
 Infrastructure is PostgreSQL 16, NATS JetStream, and Redis. There are three application databases with separate migration histories:
@@ -53,8 +53,7 @@ Authoritative architecture details live near the top of `README.md`. API endpoin
 | Dashboard API | `internal/handler/api/http/api.http.go` | `internal/service/api/`, relevant repository/entity, `docs/API_SERVICE.md` |
 | Auth/RBAC | `internal/service/api/auth.service.go`, `internal/constant/api.go` | API auth repository, handler middleware, API migrations, web RBAC |
 | Pagination/filtering | `internal/api/pagination.go` | entity `GetColumn`/`DefaultSort`/`SearchableFields`, repository helpers |
-| Python strategy runtime | `strategy/core/framework.py`, `models.py` | one strategy file, `strategy/config.yml.example`, `strategy/README.md` |
-| Strategy algorithm | target `strategy/*.py` | `core/indicators.py`, `core/models.py`; avoid reading unrelated strategies |
+| Strategy rules | `internal/service/strategy/strategy.service.go` | strategy rule entity/repository, dashboard resource metadata |
 | Dashboard resource | `web/src/lib/resources.ts` | `api-client.ts`, `types/api.ts`, generic resource components |
 | Custom dashboard panel | relevant `web/src/components/organisms/*-panel.tsx` | `dashboard-app.tsx`, API client/types |
 | Styling/UI primitive | `web/src/app/globals.css`, relevant component | existing `web/src/components/ui/`; reuse installed primitives |
@@ -98,14 +97,14 @@ These fields form a pair identity and usually must remain consistent across subs
 - `market_type` normalizes to `spot` when omitted; Binance supports spot/futures, Tokocrypto is currently spot.
 - `user_id` selects `exchanges.<exchange>.accounts.<user_id>` credentials, with top-level exchange credentials as fallback.
 - Strategy DB rows—not strategy YAML—own pair routing, user, source, position side, paper mode, order sizing, notification choice, and risk controls.
-- `strategy_configs.strategy` must match the Python runtime's strategy key exactly.
+- `strategy_configs.strategy` is the strategy name used in Go rule executor orders and reports.
 
-NATS contracts are defined in `internal/constant/kline.go` and mirrored in `strategy/core/framework.py`:
+NATS contracts are defined in `internal/constant/kline.go` and used by Go services:
 
 - Stream `KLINE`, subjects `KLINE.>` and `KLINE.<EXCHANGE>.<SYMBOL>.<INTERVAL>`.
 - Stream `order_engine`, subject `order_engine.place_order` for orders and `order_engine.notification_alert` for alerts.
 - Stream `strategy_control`, subject `strategy_control.position_closed` for external position closure.
-- Event JSON uses an outer `{ "data": ... }` envelope. Keep Go `entity` JSON tags and Python publish payloads aligned.
+- Event JSON uses an outer `{ "data": ... }` envelope. Keep Go `entity` JSON tags aligned.
 - JetStream queue/durable names affect delivery semantics. Do not casually rename them or change retention policies.
 
 Order semantics are centralized in `internal/entity/order_engine.go`:
@@ -131,17 +130,14 @@ Additional migration flags are declared in `cmd/migrate.go`; inspect that file r
 - RBAC changes normally require all of: permission constant, API migration seed/update, route middleware, dashboard resource permission, and API docs.
 - Validate destructive or backfill migrations against realistic data volume and lock behavior; never run reset/down against user data without explicit authorization.
 
-## Python strategy runtime
+## Go strategy executor
 
-The framework is asyncio-based and uses `asyncpg`, `nats-py`, `redis.asyncio`, and `orjson`. `strategy/core/framework.py` owns warmup, live subscription, per-pair config reconciliation, order publication, Redis state, position-close events, and monitor HTTP endpoints. Strategy files should contain only indicators and decision/state logic that differs by strategy.
+`internal/service/strategy/strategy.service.go` owns database-configured strategy execution. It consumes `KLINE_INDICATOR`, loads enabled `strategy_configs` and `strategy_rules`, evaluates rule JSON, and publishes `order_engine.place_order`.
 
-- Start new strategies from `strategy/standard_strategy_template.py`.
-- Keep configuration split: YAML contains runtime/algorithm/monitor settings; `strategy_configs` contains pair/order/risk/user settings.
-- Process closed candles and retain the framework's duplicate/out-of-order candle guard.
-- Preserve Redis state compatibility when changing stored strategy state, or implement an explicit migration/fallback.
-- Monitor endpoints are `/`, `/health`, `/metrics`, and `/state`; Docker monitor hosts should be `0.0.0.0`, local examples commonly use `127.0.0.1`.
-- The framework's order and control subjects must match Go constants.
-- AI strategy changes may use the existing pinned OpenAI client range; do not add another LLM SDK. Never log API keys or full sensitive payloads.
+- Configure indicators in `indicator_configs`.
+- Configure strategy pair/order/risk/user settings in `strategy_configs`.
+- Configure entry/exit conditions in `strategy_rules`.
+- Use NATS queue subscription semantics for horizontal scaling; multiple `strategy-service` instances share work.
 
 ## Web dashboard
 
@@ -175,14 +171,14 @@ After a proto change, update every Go handler/client conversion and event/API co
 
 ## Local runtime and deployment
 
-Templates are `config.yml.example`, `strategy/config.yml.example`, and `.env.example`. Runtime copies are intentionally untracked.
+Templates are `config.yml.example` and `.env.example`. Runtime copies are intentionally untracked.
 
-- Local Go/Python processes use `localhost` for PostgreSQL/NATS/Redis/gRPC.
+- Local Go processes use `localhost` for PostgreSQL/NATS/Redis/gRPC.
 - Containers use Compose service names: `postgresql`, `nats`, `redis`, and `market-data-gateway`.
 - `compose-dev.yaml` is infrastructure-oriented local development.
 - `compose-local.yaml` runs locally built application images.
 - `compose.yaml` runs versioned published images and profiles (`infra app web strategy` by default in the Makefile).
-- Root `Dockerfile` builds the Go binary, `web/Dockerfile` builds Next.js, and `tools/python-strategy/Dockerfile` builds strategies.
+- Root `Dockerfile` builds the Go binary, and `web/Dockerfile` builds Next.js.
 - Default ports: order-engine gRPC `9800`, order-engine HTTP `9801`, market-data gRPC `9802`, API HTTP `9804`, dashboard `3000`, strategy monitors `19011+`.
 
 Do not start the full stack for a code-only change. If Compose changes, validate rendering with the matching `make compose-config` or `make compose-local-config`; note that it may require local environment values.
@@ -198,13 +194,6 @@ rtk gofmt -w <changed-go-files>
 rtk go test ./<changed-package>
 rtk go test ./...
 rtk go build ./...
-```
-
-Python (stdlib unittest; no pytest requirement):
-
-```bash
-rtk python -m unittest strategy.core.test_framework strategy.core.test_micro_grid
-rtk python -m py_compile <changed-python-files>
 ```
 
 Web:
@@ -242,11 +231,11 @@ Migration/Compose/protobuf changes also require the domain-specific validation d
 ### New order/event field
 
 1. Trace producer to consumer before editing.
-2. Update Go entity JSON tags and Python payload/model.
+2. Update Go entity JSON tags and event payloads.
 3. Update DB migration/entity/repository when persisted.
 4. Update protobuf only if the gRPC boundary uses the field, then regenerate.
 5. Update API/web/report DTOs only where exposed.
-6. Add a focused contract/behavior test and run `go test ./...` plus relevant Python tests.
+6. Add a focused contract/behavior test and run `go test ./...`.
 
 ### New exchange behavior
 

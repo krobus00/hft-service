@@ -9,18 +9,6 @@ x-hft-service: &hft-service
   networks:
     - hft-network
 
-x-strategy-service: &strategy-service
-  image: ${STRATEGY_LOCAL_IMAGE:-python-strategy:local}
-  working_dir: /app
-  volumes:
-    - ./strategy/config.yml:/app/config.yml:ro
-  restart: unless-stopped
-  cpus: "1.0"
-  security_opt:
-    - no-new-privileges:true
-  networks:
-    - hft-network
-
 services:
   market-data-gateway:
     <<: *hft-service
@@ -45,6 +33,19 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      nats:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      migrate-market-data:
+        condition: service_completed_successfully
+    profiles:
+      - app
+
+  strategy-service:
+    <<: *hft-service
+    command: ["strategy-service"]
+    depends_on:
       nats:
         condition: service_healthy
       postgresql:
@@ -131,125 +132,6 @@ services:
       - no-new-privileges:true
     networks:
       - hft-network
-
-  strategy-krobot01:
-    <<: *strategy-service
-    command: ["bash", "-c", "python krobot01.py"]
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-      migrate-order-engine:
-        condition: service_completed_successfully
-    ports:
-      - "${STRATEGY_KROBOT01_PORT:-19011}:19011"
-    profiles:
-      - strategy
-
-  strategy-krobot02:
-    <<: *strategy-service
-    command: ["bash", "-c", "python krobot02.py"]
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-      migrate-order-engine:
-        condition: service_completed_successfully
-    ports:
-      - "${STRATEGY_KROBOT02_PORT:-19012}:19012"
-    profiles:
-      - strategy
-
-  strategy-krobot03:
-    <<: *strategy-service
-    command: ["bash", "-c", "python krobot03.py"]
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-      migrate-order-engine:
-        condition: service_completed_successfully
-    ports:
-      - "${STRATEGY_KROBOT03_PORT:-19013}:19013"
-    profiles:
-      - strategy
-
-  strategy-ai:
-    <<: *strategy-service
-    command: ["bash", "-c", "python ai.py"]
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-      migrate-order-engine:
-        condition: service_completed_successfully
-    ports:
-      - "${STRATEGY_AI_PORT:-19015}:19015"
-    profiles:
-      - strategy
-
-  strategy-supertrend:
-    <<: *strategy-service
-    command: ["bash", "-c", "python supertrend.py"]
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-      migrate-order-engine:
-        condition: service_completed_successfully
-    ports:
-      - "${STRATEGY_SUPERTREND_PORT:-19016}:19016"
-    profiles:
-      - strategy
-
-  strategy-capital-guard:
-    <<: *strategy-service
-    command: ["bash", "-c", "python capital_guard.py"]
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-      migrate-order-engine:
-        condition: service_completed_successfully
-    ports:
-      - "${STRATEGY_CAPITAL_GUARD_PORT:-19017}:19017"
-    profiles:
-      - strategy
-
-  strategy-micro-grid:
-    <<: *strategy-service
-    command: ["bash", "-c", "python micro_grid.py"]
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      migrate-market-data:
-        condition: service_completed_successfully
-      migrate-order-engine:
-        condition: service_completed_successfully
-    ports:
-      - "${STRATEGY_MICRO_GRID_PORT:-19018}:19018"
-    profiles:
-      - strategy
 
   redis:
     image: redis:7-alpine

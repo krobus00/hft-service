@@ -126,6 +126,20 @@ func (r *StrategyConfigRepository) ListMonitors(ctx context.Context) ([]entity.S
 	return items, err
 }
 
+func (r *StrategyConfigRepository) ListEnabledByPair(ctx context.Context, exchange, marketType, symbol, interval string) ([]entity.StrategyConfig, error) {
+	items := []entity.StrategyConfig{}
+	err := r.db.SelectContext(ctx, &items, `
+SELECT *
+FROM strategy_configs
+WHERE enabled
+  AND lower(exchange) = lower($1)
+  AND lower(market_type) = lower($2)
+  AND symbol = $3
+  AND interval = $4
+ORDER BY strategy, id`, exchange, marketType, symbol, interval)
+	return items, err
+}
+
 func (r *StrategyConfigRepository) GetPagination(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {
 	model := &entity.StrategyConfig{}
 	baseSelect := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).

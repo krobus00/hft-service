@@ -9,8 +9,10 @@ const (
 	KlineQueueNameInsert   = "KLINE_INSERT"
 	KlineQueueNameStrategy = "KLINE_STRATEGY"
 
-	KlineStreamName       = "KLINE"
-	KlineStreamSubjectAll = "KLINE.>"
+	KlineStreamName                = "KLINE"
+	KlineStreamSubjectAll          = "KLINE.>"
+	KlineIndicatorStreamName       = "KLINE_INDICATOR"
+	KlineIndicatorStreamSubjectAll = "KLINE_INDICATOR.>"
 
 	OrderEngineQueueName   = "order_engine_queue"
 	OrderEngineQueueGroup  = "order_engine_group"
@@ -28,6 +30,11 @@ const (
 
 func GetKlineStreamSubject(exchange, symbol, interval string) string {
 	subject := fmt.Sprintf("KLINE.%s.%s.%s", exchange, symbol, interval)
+	return strings.ToUpper(subject)
+}
+
+func GetKlineIndicatorStreamSubject(exchange, symbol, interval string) string {
+	subject := fmt.Sprintf("KLINE_INDICATOR.%s.%s.%s", exchange, symbol, interval)
 	return strings.ToUpper(subject)
 }
 
