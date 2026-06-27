@@ -73,8 +73,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 UPDATE order_trades trade
-SET exit_history_id = closed_order.id
-FROM LATERAL (
+SET exit_history_id = (
     SELECT id
     FROM order_histories
     WHERE entry_order_id = trade.entry_order_id
@@ -83,7 +82,7 @@ FROM LATERAL (
       AND COALESCE(avg_fill_price, price) IS NOT NULL
     ORDER BY created_at DESC
     LIMIT 1
-) closed_order
+)
 WHERE trade.exit_time IS NOT NULL;
 -- +goose StatementEnd
 
