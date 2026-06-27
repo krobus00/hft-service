@@ -103,8 +103,8 @@ func (s *Service) handleKline(ctx context.Context, msg *nats.Msg) error {
 	if err := json.Unmarshal(msg.Data, &event); err != nil {
 		return err
 	}
-	if err := s.klineRepo.Create(ctx, &event.Data); err != nil {
-		return err
+	if !event.Data.IsClosed {
+		return nil
 	}
 
 	indicators, err := s.calculate(ctx, event.Data)
