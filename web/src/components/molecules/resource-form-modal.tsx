@@ -59,16 +59,17 @@ export function ResourceFormModal({
   }
 
   return (
-    <ModalShell title={title} onClose={onClose}>
+    <ModalShell title={title} size={resource.key === "strategyRules" ? "wide" : "md"} onClose={onClose}>
       <form className="grid gap-4" onSubmit={handleSubmit}>
         <div className="grid gap-4 md:grid-cols-2">
           {fields.map((field) => {
             const sampleValue = resource.sampleBody?.[field] ?? initialValue[field];
             const value = values[field];
+            const isConditionField = resource.key === "strategyRules" && field === "conditions";
             return (
-              <div key={field} className="grid gap-2">
+              <div key={field} className={isConditionField ? "grid gap-2 md:col-span-2" : "grid gap-2"}>
                 <Label htmlFor={field}>{humanize(field)}</Label>
-                {resource.key === "strategyRules" && field === "conditions" ? (
+                {isConditionField ? (
                   <StrategyConditionField
                     value={values[field]}
                     disabled={disabled || isSubmitting}
@@ -162,23 +163,23 @@ function StrategyConditionField({
     onChange(conditionsPayload(rows.filter((_, rowIndex) => rowIndex !== index)));
   }
   return (
-    <div className="grid gap-2 rounded-md border p-2 md:col-span-2">
+    <div className="grid gap-3 rounded-md border p-3">
       {rows.map((row, index) => (
-        <div key={index} className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
-          <Select value={row.left} disabled={disabled} onChange={(event) => update(index, { ...row, left: event.target.value })}>
+        <div key={index} className="grid gap-2 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1.15fr)_minmax(0,1.35fr)_auto]">
+          <Select className="min-w-0" value={row.left} disabled={disabled} onChange={(event) => update(index, { ...row, left: event.target.value })}>
             {conditionFields.map((field) => <option key={field} value={field}>{conditionLabel(field)}</option>)}
           </Select>
-          <Select value={row.op} disabled={disabled} onChange={(event) => update(index, { ...row, op: event.target.value })}>
+          <Select className="min-w-0" value={row.op} disabled={disabled} onChange={(event) => update(index, { ...row, op: event.target.value })}>
             {conditionOps.map(([op, label]) => <option key={op} value={op}>{label}</option>)}
           </Select>
           {row.rightMode === "field" ? (
-            <Select value={row.right} disabled={disabled} onChange={(event) => update(index, { ...row, right: event.target.value })}>
+            <Select className="min-w-0" value={row.right} disabled={disabled} onChange={(event) => update(index, { ...row, right: event.target.value })}>
               {conditionFields.map((field) => <option key={field} value={field}>{conditionLabel(field)}</option>)}
             </Select>
           ) : (
-            <Input value={row.right} disabled={disabled} type="number" onChange={(event) => update(index, { ...row, right: event.target.value })} />
+            <Input className="min-w-0" value={row.right} disabled={disabled} type="number" onChange={(event) => update(index, { ...row, right: event.target.value })} />
           )}
-          <div className="flex gap-2">
+          <div className="flex gap-2 lg:justify-end">
             <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => update(index, { ...row, rightMode: row.rightMode === "field" ? "value" : "field", right: row.rightMode === "field" ? "0" : "indicators.ema_21" })}>
               {row.rightMode === "field" ? "Value" : "Field"}
             </Button>
