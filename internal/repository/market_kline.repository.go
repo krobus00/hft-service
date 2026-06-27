@@ -184,6 +184,21 @@ ORDER BY close_time ASC`
 	return items, err
 }
 
+func (r *MarketKlineRepository) ListMissingIndicatorResults(ctx context.Context, limit int) ([]entity.MarketKline, error) {
+	items := []entity.MarketKline{}
+	if limit <= 0 {
+		return items, nil
+	}
+	err := r.db.SelectContext(ctx, &items, `
+SELECT k.*
+FROM market_klines k
+LEFT JOIN market_kline_indicator_results r ON r.kline_id = k.id
+WHERE r.kline_id IS NULL
+ORDER BY k.close_time ASC
+LIMIT $1`, limit)
+	return items, err
+}
+
 func (r *MarketKlineRepository) Update(ctx context.Context, data *entity.MarketKline) error {
 	query := `UPDATE market_klines
 SET exchange = :exchange,

@@ -288,6 +288,8 @@ Read requires `market:read`. Create, update, and delete require `market_config:w
 | --- | --- | --- |
 | `GET` | `/api/v1/market/indicator-configs` | Paginated shared indicator configs. |
 | `POST` | `/api/v1/market/indicator-configs` | Create an indicator config. |
+| `POST` | `/api/v1/market/indicator-results/recalculate-missing?limit=1000` | Start an async missing indicator recalculation job. |
+| `GET` | `/api/v1/market/indicator-results/recalculate-missing/{id}` | Read missing indicator recalculation job status. |
 | `GET` | `/api/v1/market/indicator-configs/{id}` | Indicator config detail. |
 | `PUT/PATCH` | `/api/v1/market/indicator-configs/{id}` | Update an indicator config. |
 | `DELETE` | `/api/v1/market/indicator-configs/{id}` | Delete an indicator config. |

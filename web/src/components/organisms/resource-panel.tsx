@@ -12,9 +12,12 @@ import {
   deleteResource,
   getResourceDetail,
   getFormEnums,
+  getIndicatorRecalculateJob,
   listResource,
+  recalculateMissingIndicators,
   updateResource,
 } from "@/lib/api-client";
+import { Button } from "@/components/ui/button";
 import { canWriteResource } from "@/lib/rbac";
 import type { ListQuery, PaginationMeta, ResourceConfig } from "@/types/api";
 import type { AuthUser } from "@/types/auth";
@@ -44,6 +47,8 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const [editor, setEditor] = useState<EditorState>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [indicatorJobId, setIndicatorJobId] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState("");
   const [enums, setEnums] = useState<Record<string, string[]>>({});
@@ -86,11 +91,47 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
     };
   }, [resource]);
 
+  useEffect(() => {
+    if (!indicatorJobId) {
+      return;
+    }
+    let cancelled = false;
+    async function poll() {
+      try {
+        const job = await getIndicatorRecalculateJob(indicatorJobId, 20);
+        if (cancelled) {
+          return;
+        }
+        if (job.status === "pending" || job.status === "running") {
+          setNotice(`Recalculating missing indicator results... ${job.processed ?? 0} processed.`);
+          return;
+        }
+        setIndicatorJobId("");
+        if (job.status === "succeeded") {
+          setNotice(job.processed === 0 ? "No missing indicator results found." : `Recalculated ${job.processed} missing indicator result rows.`);
+        } else {
+          setError(job.error || "Indicator recalculation failed.");
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setIndicatorJobId("");
+          setError(caught instanceof Error ? caught.message : "Unable to refresh indicator recalculation status.");
+        }
+      }
+    }
+    const timeout = globalThis.setTimeout(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      globalThis.clearTimeout(timeout);
+    };
+  }, [indicatorJobId]);
+
   const loadItems = useCallback(async (nextQuery = debouncedQuery) => {
     const seq = loadSeq.current + 1;
     loadSeq.current = seq;
     setIsLoading(true);
     setError("");
+    setNotice("");
     try {
       const result = await listResource(resource, nextQuery);
       if (loadSeq.current === seq) {
@@ -166,6 +207,24 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
     }
   }
 
+  async function handleRecalculateMissingIndicators() {
+    if (!canWrite || pendingAction) {
+      return;
+    }
+    setPendingAction("recalculate-indicators");
+    setError("");
+    setNotice("");
+    try {
+      const job = await recalculateMissingIndicators();
+      setIndicatorJobId(job.id);
+      setNotice("Indicator recalculation job started.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to recalculate missing indicators.");
+    } finally {
+      setPendingAction("");
+    }
+  }
+
   async function submitEditor(value: Record<string, unknown>) {
     if (!editor || !canWrite || pendingAction) {
       return;
@@ -220,6 +279,13 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
         isLoading={isLoading}
         onRefresh={() => loadItems(query)}
         onCreate={openCreate}
+        extraAction={
+          resource.key === "indicatorConfigs" && canWrite ? (
+            <Button type="button" variant="outline" size="sm" onClick={handleRecalculateMissingIndicators} disabled={Boolean(pendingAction || indicatorJobId)}>
+              Recalculate Missing
+            </Button>
+          ) : null
+        }
         onKeywordChange={(keyword) =>
           setQuery((current) => ({
             ...current,
@@ -239,6 +305,11 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
       {error ? (
         <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+          {notice}
         </p>
       ) : null}
 

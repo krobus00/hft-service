@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -17,6 +18,7 @@ import (
 	"github.com/krobus00/hft-service/internal/constant"
 	"github.com/krobus00/hft-service/internal/entity"
 	"github.com/krobus00/hft-service/internal/repository"
+	"github.com/krobus00/hft-service/internal/service/indicator"
 	"github.com/krobus00/hft-service/internal/util"
 	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
@@ -31,6 +33,10 @@ type DataService struct {
 	symbolMappingRepo     *repository.SymbolMappingRepository
 	klineSubscriptionRepo *repository.KlineSubscriptionRepository
 	indicatorConfigRepo   *repository.IndicatorConfigRepository
+	indicatorResultRepo   *repository.IndicatorResultRepository
+	indicatorService      *indicator.Service
+	indicatorJobs         map[string]*IndicatorRecalculateJob
+	indicatorJobsMu       sync.RWMutex
 	strategyConfigRepo    *repository.StrategyConfigRepository
 	strategyRuleRepo      *repository.StrategyRuleRepository
 	js                    nats.JetStreamContext
@@ -66,7 +72,21 @@ type ManualOrderResult struct {
 	Status     string `json:"status"`
 }
 
+type IndicatorRecalculateJob struct {
+	ID          string     `json:"id"`
+	Status      string     `json:"status"`
+	Limit       int        `json:"limit"`
+	Processed   int        `json:"processed"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
 func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext) *DataService {
+	indicatorConfigRepo := repository.NewIndicatorConfigRepository(marketDB)
+	indicatorResultRepo := repository.NewIndicatorResultRepository(marketDB)
 	return &DataService{
 		authRepo:              repository.NewAPIAuthRepository(apiDB),
 		settingRepo:           repository.NewAPISettingRepository(apiDB),
@@ -75,11 +95,116 @@ func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext)
 		marketKlineRepo:       repository.NewMarketKlineRepository(marketDB),
 		symbolMappingRepo:     repository.NewSymbolMappingRepository(marketDB),
 		klineSubscriptionRepo: repository.NewKlineSubscriptionRepository(marketDB),
-		indicatorConfigRepo:   repository.NewIndicatorConfigRepository(marketDB),
+		indicatorConfigRepo:   indicatorConfigRepo,
+		indicatorResultRepo:   indicatorResultRepo,
+		indicatorService:      indicator.NewService(nil, repository.NewMarketKlineRepository(marketDB), indicatorConfigRepo, indicatorResultRepo),
+		indicatorJobs:         map[string]*IndicatorRecalculateJob{},
 		strategyConfigRepo:    repository.NewStrategyConfigRepository(marketDB),
 		strategyRuleRepo:      repository.NewStrategyRuleRepository(marketDB),
 		js:                    js,
 	}
+}
+
+func (s *DataService) StartMissingIndicatorRecalculation(limit int) *IndicatorRecalculateJob {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	now := time.Now().UTC()
+	job := &IndicatorRecalculateJob{ID: newJobID(), Status: BackfillJobPending, Limit: limit, CreatedAt: now, UpdatedAt: now}
+	s.indicatorJobsMu.Lock()
+	s.indicatorJobs[job.ID] = job
+	s.indicatorJobsMu.Unlock()
+	go s.runMissingIndicatorRecalculation(job.ID)
+	return cloneIndicatorJob(job)
+}
+
+func (s *DataService) GetMissingIndicatorRecalculation(id string) (*IndicatorRecalculateJob, bool) {
+	s.indicatorJobsMu.RLock()
+	defer s.indicatorJobsMu.RUnlock()
+	job, ok := s.indicatorJobs[id]
+	if !ok {
+		return nil, false
+	}
+	return cloneIndicatorJob(job), true
+}
+
+func (s *DataService) WaitMissingIndicatorRecalculation(ctx context.Context, id string, timeout time.Duration) (*IndicatorRecalculateJob, bool) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		job, ok := s.GetMissingIndicatorRecalculation(id)
+		if !ok || isBackfillTerminal(job.Status) {
+			return job, ok
+		}
+		select {
+		case <-ctx.Done():
+			return job, ok
+		case <-deadline.C:
+			return job, ok
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *DataService) runMissingIndicatorRecalculation(id string) {
+	job, ok := s.markIndicatorJobRunning(id)
+	if !ok {
+		return
+	}
+	count, err := s.indicatorService.RecalculateMissing(context.Background(), job.Limit)
+	if err != nil {
+		s.markIndicatorJobFailed(id, err)
+		return
+	}
+	s.markIndicatorJobSucceeded(id, count)
+}
+
+func (s *DataService) markIndicatorJobRunning(id string) (*IndicatorRecalculateJob, bool) {
+	now := time.Now().UTC()
+	s.indicatorJobsMu.Lock()
+	defer s.indicatorJobsMu.Unlock()
+	job, ok := s.indicatorJobs[id]
+	if !ok {
+		return nil, false
+	}
+	job.Status = BackfillJobRunning
+	job.StartedAt = &now
+	job.UpdatedAt = now
+	return cloneIndicatorJob(job), true
+}
+
+func (s *DataService) markIndicatorJobSucceeded(id string, processed int) {
+	now := time.Now().UTC()
+	s.indicatorJobsMu.Lock()
+	defer s.indicatorJobsMu.Unlock()
+	if job, ok := s.indicatorJobs[id]; ok {
+		job.Status = BackfillJobSucceeded
+		job.Processed = processed
+		job.CompletedAt = &now
+		job.UpdatedAt = now
+	}
+}
+
+func (s *DataService) markIndicatorJobFailed(id string, err error) {
+	now := time.Now().UTC()
+	s.indicatorJobsMu.Lock()
+	defer s.indicatorJobsMu.Unlock()
+	if job, ok := s.indicatorJobs[id]; ok {
+		job.Status = BackfillJobFailed
+		job.Error = err.Error()
+		job.CompletedAt = &now
+		job.UpdatedAt = now
+	}
+}
+
+func cloneIndicatorJob(job *IndicatorRecalculateJob) *IndicatorRecalculateJob {
+	if job == nil {
+		return nil
+	}
+	copy := *job
+	return &copy
 }
 
 func (s *DataService) GetAuthConfig(ctx context.Context) (*AuthConfigResponse, error) {

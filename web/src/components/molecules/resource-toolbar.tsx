@@ -1,4 +1,5 @@
 import { Plus, RefreshCw, Search } from "lucide-react";
+import type React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,7 @@ type ResourceToolbarProps = {
   onFilterChange: (field: string, value: string) => void;
   onRefresh: () => void;
   onCreate: () => void;
+  extraAction?: React.ReactNode;
 };
 
 export function ResourceToolbar({
@@ -30,6 +32,7 @@ export function ResourceToolbar({
   onFilterChange,
   onRefresh,
   onCreate,
+  extraAction,
 }: ResourceToolbarProps) {
   return (
     <div className="flex flex-col gap-3">
@@ -75,6 +78,7 @@ export function ResourceToolbar({
           })}
         </div>
       <div className="flex gap-2">
+        {extraAction}
         <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={isLoading}>
           <RefreshCw className={isLoading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
           Refresh

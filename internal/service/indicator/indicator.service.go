@@ -24,9 +24,8 @@ import (
 )
 
 const (
-	consumerName    = "KLINE_INDICATOR"
-	configCacheTTL  = 10 * time.Second
-	defaultLookback = 300
+	consumerName   = "KLINE_INDICATOR"
+	configCacheTTL = 10 * time.Second
 )
 
 type Service struct {
@@ -39,8 +38,15 @@ type Service struct {
 }
 
 type cachedConfigs struct {
-	until   time.Time
-	configs []entity.IndicatorConfig
+	until    time.Time
+	specs    []indicatorSpec
+	lookback int
+}
+
+type indicatorSpec struct {
+	indicator string
+	name      string
+	params    map[string]any
 }
 
 func NewService(js nats.JetStreamContext, klineRepo *repository.MarketKlineRepository, configRepo *repository.IndicatorConfigRepository, resultRepo *repository.IndicatorResultRepository) *Service {
@@ -115,12 +121,28 @@ func (s *Service) handleKline(ctx context.Context, msg *nats.Msg) error {
 	})
 }
 
+func (s *Service) RecalculateMissing(ctx context.Context, limit int) (int, error) {
+	rows, err := s.klineRepo.ListMissingIndicatorResults(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	for _, row := range rows {
+		indicators, err := s.calculate(ctx, row)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.resultRepo.Upsert(ctx, row.ID, indicators); err != nil {
+			return 0, err
+		}
+	}
+	return len(rows), nil
+}
+
 func (s *Service) calculate(ctx context.Context, k entity.MarketKline) (map[string]float64, error) {
-	cfgs, err := s.configsForPair(ctx, k)
+	specs, lookback, err := s.specsForPair(ctx, k)
 	if err != nil {
 		return nil, err
 	}
-	lookback := maxLookback(cfgs)
 	rows, err := s.klineRepo.ListRecentClosedBefore(ctx, k.Exchange, k.MarketType, k.Symbol, k.Interval, k.CloseTime, lookback)
 	if err != nil {
 		return nil, err
@@ -128,34 +150,37 @@ func (s *Service) calculate(ctx context.Context, k entity.MarketKline) (map[stri
 	if k.IsClosed {
 		rows = append(rows, k)
 	}
-	return calculateLatest(ctx, rows, cfgs), nil
+	return calculateLatest(ctx, rows, specs), nil
 }
 
-func (s *Service) configsForPair(ctx context.Context, k entity.MarketKline) ([]entity.IndicatorConfig, error) {
+func (s *Service) specsForPair(ctx context.Context, k entity.MarketKline) ([]indicatorSpec, int, error) {
 	key := pairKey(k)
 	now := time.Now().UTC()
 
 	s.mu.Lock()
 	cached, ok := s.cache[key]
 	if ok && now.Before(cached.until) {
-		cfgs := cached.configs
+		specs := cached.specs
+		lookback := cached.lookback
 		s.mu.Unlock()
-		return cfgs, nil
+		return specs, lookback, nil
 	}
 	s.mu.Unlock()
 
 	cfgs, err := s.configRepo.ListForPair(ctx, k.Exchange, k.MarketType, k.Symbol, k.Interval)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(cfgs) == 0 {
 		cfgs = defaultConfigs(k)
 	}
+	specs := prepareSpecs(cfgs)
+	lookback := maxLookback(specs)
 
 	s.mu.Lock()
-	s.cache[key] = cachedConfigs{until: now.Add(configCacheTTL), configs: cfgs}
+	s.cache[key] = cachedConfigs{until: now.Add(configCacheTTL), specs: specs, lookback: lookback}
 	s.mu.Unlock()
-	return cfgs, nil
+	return specs, lookback, nil
 }
 
 func pairKey(k entity.MarketKline) string {
@@ -204,12 +229,70 @@ func defaultConfigs(k entity.MarketKline) []entity.IndicatorConfig {
 	return cfgs
 }
 
-func calculateLatest(ctx context.Context, rows []entity.MarketKline, cfgs []entity.IndicatorConfig) map[string]float64 {
-	out := map[string]float64{}
+func calculateLatest(ctx context.Context, rows []entity.MarketKline, specs []indicatorSpec) map[string]float64 {
+	out := make(map[string]float64, len(specs)*2)
 	if len(rows) == 0 {
 		return out
 	}
-	series := newSeries(rows)
+	series := newSeries(rows, seriesNeedsFor(specs))
+	for _, spec := range specs {
+		switch spec.indicator {
+		case "ema":
+			setLatest(out, spec.name, trend.NewEmaWithPeriod[float64](positiveParam(spec.params, "period", 20)).ComputeWithContext(ctx, floats(series.close)))
+		case "vwap":
+			setLatest(out, spec.name, volume.NewVwapWithPeriod[float64](positiveParam(spec.params, "period", 14)).ComputeWithContext(ctx, floats(series.close), floats(series.volume)))
+		case "macd":
+			macd, signal := trend.NewMacdWithPeriod[float64](
+				positiveParam(spec.params, "fast", 12),
+				positiveParam(spec.params, "slow", 26),
+				positiveParam(spec.params, "signal", 9),
+			).ComputeWithContext(ctx, floats(series.close))
+			line, okLine, sig, okSignal := latest2(macd, signal)
+			if okLine && okSignal {
+				out[spec.name] = line
+				out[spec.name+"_signal"] = sig
+				out[spec.name+"_hist"] = line - sig
+			}
+		case "atr":
+			if v, ok := latest(volatility.NewAtrWithPeriod[float64](positiveParam(spec.params, "period", 14)).ComputeWithContext(ctx, floats(series.high), floats(series.low), floats(series.close))); ok {
+				out[spec.name] = v
+				closePx := series.close[len(series.close)-1]
+				if closePx > 0 {
+					out[spec.name+"_pct"] = v / closePx * 100
+				}
+			}
+		case "rsi":
+			setLatest(out, spec.name, momentum.NewRsiWithPeriod[float64](positiveParam(spec.params, "period", 14)).ComputeWithContext(ctx, floats(series.close)))
+		case "bollinger_bands":
+			upper, mid, lower := volatility.NewBollingerBandsWithPeriod[float64](positiveParam(spec.params, "period", 20)).ComputeWithContext(ctx, floats(series.close))
+			up, okUp, m, okMid, lo, okLow := latest3(upper, mid, lower)
+			if okUp && okMid && okLow {
+				out[spec.name+"_upper"] = up
+				out[spec.name+"_mid"] = m
+				out[spec.name+"_lower"] = lo
+			}
+		case "stochastic":
+			so := momentum.NewStochasticOscillator[float64]()
+			period := positiveParam(spec.params, "period", 14)
+			signal := positiveParam(spec.params, "signal", 3)
+			so.Max = trend.NewMovingMaxWithPeriod[float64](period)
+			so.Min = trend.NewMovingMinWithPeriod[float64](period)
+			so.Sma = trend.NewSmaWithPeriod[float64](signal)
+			k, d := so.ComputeWithContext(ctx, floats(series.high), floats(series.low), floats(series.close))
+			kv, okK, dv, okD := latest2(k, d)
+			if okK && okD {
+				out[spec.name+"_k"] = kv
+				out[spec.name+"_d"] = dv
+			}
+		case "volume_mean":
+			setLatest(out, spec.name, trend.NewSmaWithPeriod[float64](positiveParam(spec.params, "period", 20)).ComputeWithContext(ctx, floats(series.volume)))
+		}
+	}
+	return out
+}
+
+func prepareSpecs(cfgs []entity.IndicatorConfig) []indicatorSpec {
+	specs := make([]indicatorSpec, 0, len(cfgs))
 	for _, cfg := range cfgs {
 		if !cfg.Enabled {
 			continue
@@ -218,60 +301,13 @@ func calculateLatest(ctx context.Context, rows []entity.MarketKline, cfgs []enti
 		if name == "" {
 			continue
 		}
-		params := parseParams(cfg.Params)
-		switch strings.ToLower(strings.TrimSpace(cfg.Indicator)) {
-		case "ema":
-			setLatest(out, name, trend.NewEmaWithPeriod[float64](positiveParam(params, "period", 20)).ComputeWithContext(ctx, floats(series.close)))
-		case "vwap":
-			setLatest(out, name, volume.NewVwapWithPeriod[float64](positiveParam(params, "period", 14)).ComputeWithContext(ctx, floats(series.close), floats(series.volume)))
-		case "macd":
-			macd, signal := trend.NewMacdWithPeriod[float64](
-				positiveParam(params, "fast", 12),
-				positiveParam(params, "slow", 26),
-				positiveParam(params, "signal", 9),
-			).ComputeWithContext(ctx, floats(series.close))
-			line, okLine, sig, okSignal := latest2(macd, signal)
-			if okLine && okSignal {
-				out[name] = line
-				out[name+"_signal"] = sig
-				out[name+"_hist"] = line - sig
-			}
-		case "atr":
-			if v, ok := latest(volatility.NewAtrWithPeriod[float64](positiveParam(params, "period", 14)).ComputeWithContext(ctx, floats(series.high), floats(series.low), floats(series.close))); ok {
-				out[name] = v
-				closePx := series.close[len(series.close)-1]
-				if closePx > 0 {
-					out[name+"_pct"] = v / closePx * 100
-				}
-			}
-		case "rsi":
-			setLatest(out, name, momentum.NewRsiWithPeriod[float64](positiveParam(params, "period", 14)).ComputeWithContext(ctx, floats(series.close)))
-		case "bollinger_bands":
-			upper, mid, lower := volatility.NewBollingerBandsWithPeriod[float64](positiveParam(params, "period", 20)).ComputeWithContext(ctx, floats(series.close))
-			up, okUp, m, okMid, lo, okLow := latest3(upper, mid, lower)
-			if okUp && okMid && okLow {
-				out[name+"_upper"] = up
-				out[name+"_mid"] = m
-				out[name+"_lower"] = lo
-			}
-		case "stochastic":
-			so := momentum.NewStochasticOscillator[float64]()
-			period := positiveParam(params, "period", 14)
-			signal := positiveParam(params, "signal", 3)
-			so.Max = trend.NewMovingMaxWithPeriod[float64](period)
-			so.Min = trend.NewMovingMinWithPeriod[float64](period)
-			so.Sma = trend.NewSmaWithPeriod[float64](signal)
-			k, d := so.ComputeWithContext(ctx, floats(series.high), floats(series.low), floats(series.close))
-			kv, okK, dv, okD := latest2(k, d)
-			if okK && okD {
-				out[name+"_k"] = kv
-				out[name+"_d"] = dv
-			}
-		case "volume_mean":
-			setLatest(out, name, trend.NewSmaWithPeriod[float64](positiveParam(params, "period", 20)).ComputeWithContext(ctx, floats(series.volume)))
-		}
+		specs = append(specs, indicatorSpec{
+			indicator: strings.ToLower(strings.TrimSpace(cfg.Indicator)),
+			name:      name,
+			params:    parseParams(cfg.Params),
+		})
 	}
-	return out
+	return specs
 }
 
 type priceSeries struct {
@@ -281,22 +317,55 @@ type priceSeries struct {
 	volume []float64
 }
 
-func newSeries(rows []entity.MarketKline) priceSeries {
+type seriesNeeds struct {
+	high   bool
+	low    bool
+	volume bool
+}
+
+func seriesNeedsFor(specs []indicatorSpec) seriesNeeds {
+	var needs seriesNeeds
+	for _, spec := range specs {
+		switch spec.indicator {
+		case "atr", "stochastic":
+			needs.high = true
+			needs.low = true
+		}
+		if spec.indicator == "vwap" || spec.indicator == "volume_mean" {
+			needs.volume = true
+		}
+	}
+	return needs
+}
+
+func newSeries(rows []entity.MarketKline, needs seriesNeeds) priceSeries {
 	s := priceSeries{
-		close:  make([]float64, 0, len(rows)),
-		high:   make([]float64, 0, len(rows)),
-		low:    make([]float64, 0, len(rows)),
-		volume: make([]float64, 0, len(rows)),
+		close: make([]float64, 0, len(rows)),
+	}
+	if needs.high {
+		s.high = make([]float64, 0, len(rows))
+	}
+	if needs.low {
+		s.low = make([]float64, 0, len(rows))
+	}
+	if needs.volume {
+		s.volume = make([]float64, 0, len(rows))
 	}
 	for _, row := range rows {
 		closePx, _ := row.ClosePrice.Float64()
-		highPx, _ := row.HighPrice.Float64()
-		lowPx, _ := row.LowPrice.Float64()
-		volumePx, _ := row.QuoteVolume.Float64()
 		s.close = append(s.close, closePx)
-		s.high = append(s.high, highPx)
-		s.low = append(s.low, lowPx)
-		s.volume = append(s.volume, volumePx)
+		if needs.high {
+			highPx, _ := row.HighPrice.Float64()
+			s.high = append(s.high, highPx)
+		}
+		if needs.low {
+			lowPx, _ := row.LowPrice.Float64()
+			s.low = append(s.low, lowPx)
+		}
+		if needs.volume {
+			volumePx, _ := row.QuoteVolume.Float64()
+			s.volume = append(s.volume, volumePx)
+		}
 	}
 	return s
 }
@@ -404,23 +473,22 @@ func positiveParam(params map[string]any, key string, fallback int) int {
 	return parsed
 }
 
-func maxLookback(cfgs []entity.IndicatorConfig) int {
-	maximum := defaultLookback
-	for _, cfg := range cfgs {
-		params := parseParams(cfg.Params)
-		switch strings.ToLower(strings.TrimSpace(cfg.Indicator)) {
+func maxLookback(specs []indicatorSpec) int {
+	maximum := 1
+	for _, spec := range specs {
+		switch spec.indicator {
 		case "macd":
-			needed := positiveParam(params, "slow", 26) + positiveParam(params, "signal", 9)
+			needed := positiveParam(spec.params, "slow", 26) + positiveParam(spec.params, "signal", 9)
 			if needed > maximum {
 				maximum = needed
 			}
 		case "stochastic":
-			needed := positiveParam(params, "period", 14) + positiveParam(params, "signal", 3)
+			needed := positiveParam(spec.params, "period", 14) + positiveParam(spec.params, "signal", 3)
 			if needed > maximum {
 				maximum = needed
 			}
 		default:
-			period := positiveParam(params, "period", 0)
+			period := positiveParam(spec.params, "period", 0)
 			if period > maximum {
 				maximum = period
 			}

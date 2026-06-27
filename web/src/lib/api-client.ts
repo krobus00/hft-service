@@ -121,6 +121,18 @@ export type StrategyMonitor = {
   payload?: Record<string, unknown>;
 };
 
+export type IndicatorRecalculateJob = {
+  id: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  limit: number;
+  processed: number;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  updated_at: string;
+};
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9804/api/v1";
 
@@ -474,6 +486,28 @@ export async function runStrategyMonitorAction(name: string, action: "reset" | "
   return withSession((session) =>
     apiRequest<StrategyMonitor>(`/strategy/monitors/${encodeURIComponent(name)}/${action}`, {
       method: "POST",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function recalculateMissingIndicators(limit = 1000) {
+  return withSession((session) =>
+    apiRequest<IndicatorRecalculateJob>(`/market/indicator-results/recalculate-missing?limit=${limit}`, {
+      method: "POST",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
+export async function getIndicatorRecalculateJob(id: string, waitSeconds = 0) {
+  const wait = Math.max(0, Math.min(30, waitSeconds));
+  const path = wait > 0
+    ? `/market/indicator-results/recalculate-missing/${encodeURIComponent(id)}?wait=${wait}`
+    : `/market/indicator-results/recalculate-missing/${encodeURIComponent(id)}`;
+  return withSession((session) =>
+    apiRequest<IndicatorRecalculateJob>(path, {
+      method: "GET",
       accessToken: session.tokens.access_token,
     }),
   );

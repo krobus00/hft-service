@@ -59,6 +59,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/market/symbol-mappings/", h.withPermission(constant.PermissionMarketRead, h.SymbolMappingByID))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptions))
 	mux.HandleFunc("/api/v1/market/kline-subscriptions/", h.withPermission(constant.PermissionMarketRead, h.KlineSubscriptionByID))
+	mux.HandleFunc("/api/v1/market/indicator-results/recalculate-missing", h.withPermission(constant.PermissionMarketRead, h.RecalculateMissingIndicators))
+	mux.HandleFunc("/api/v1/market/indicator-results/recalculate-missing/", h.withPermission(constant.PermissionMarketRead, h.RecalculateMissingIndicatorJob))
 	mux.HandleFunc("/api/v1/market/indicator-configs", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigs))
 	mux.HandleFunc("/api/v1/market/indicator-configs/", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigByID))
 	mux.HandleFunc("/api/v1/strategy/monitors", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMonitors))
@@ -517,6 +519,40 @@ func (h *Handler) KlineSubscriptionByID(w http.ResponseWriter, r *http.Request) 
 	default:
 		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
+}
+
+func (h *Handler) RecalculateMissingIndicators(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !requirePermission(w, r, constant.PermissionMarketConfigWrite) {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	apiutil.WriteSuccess(w, h.dataService.StartMissingIndicatorRecalculation(limit))
+}
+
+func (h *Handler) RecalculateMissingIndicatorJob(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "/api/v1/market/indicator-results/recalculate-missing/")
+	if !ok {
+		return
+	}
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	wait := parseWaitDuration(r)
+	var job *apiservice.IndicatorRecalculateJob
+	var found bool
+	if wait > 0 {
+		job, found = h.dataService.WaitMissingIndicatorRecalculation(r.Context(), id, wait)
+	} else {
+		job, found = h.dataService.GetMissingIndicatorRecalculation(id)
+	}
+	if !found {
+		apiutil.WriteError(w, http.StatusNotFound, constant.NotFoundStatusCode, "indicator recalculation job not found")
+		return
+	}
+	apiutil.WriteSuccess(w, job)
 }
 
 func (h *Handler) IndicatorConfigs(w http.ResponseWriter, r *http.Request) {
