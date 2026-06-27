@@ -47,6 +47,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/order-reports/trades", h.withPermission(constant.PermissionOrderReportRead, h.OrderTradePnL))
 	mux.HandleFunc("/api/v1/order-reports/daily", h.withPermission(constant.PermissionOrderReportRead, h.DailyOrderReports))
 	mux.HandleFunc("/api/v1/order-reports/strategy-performance", h.withPermission(constant.PermissionOrderReportRead, h.StrategyPerformanceReports))
+	mux.HandleFunc("/api/v1/orders/actions/", h.withPermission(constant.PermissionOrderWrite, h.OrderActions))
 	mux.HandleFunc("/api/v1/orders", h.withPermission(constant.PermissionOrderRead, h.Orders))
 	mux.HandleFunc("/api/v1/orders/", h.withPermission(constant.PermissionOrderRead, h.OrderByID))
 	mux.HandleFunc("/api/v1/market/backfills", h.withPermission(constant.PermissionMarketRead, h.MarketBackfills))
@@ -63,8 +64,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/market/indicator-results/recalculate-missing/", h.withPermission(constant.PermissionMarketRead, h.RecalculateMissingIndicatorJob))
 	mux.HandleFunc("/api/v1/market/indicator-configs", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigs))
 	mux.HandleFunc("/api/v1/market/indicator-configs/", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigByID))
-	mux.HandleFunc("/api/v1/strategy/monitors", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMonitors))
-	mux.HandleFunc("/api/v1/strategy/monitors/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMonitorByName))
 	mux.HandleFunc("/api/v1/strategy/configs", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigs))
 	mux.HandleFunc("/api/v1/strategy/configs/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigByID))
 	mux.HandleFunc("/api/v1/strategy/rules", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyRules))
@@ -288,6 +287,27 @@ func (h *Handler) StrategyPerformanceReports(w http.ResponseWriter, r *http.Requ
 	writeDataResult(w, result, err)
 }
 
+func (h *Handler) OrderActions(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	action := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/orders/actions/"), "/")
+	var result *apiservice.ManualOrderBulkResult
+	var err error
+	switch action {
+	case "clone-running":
+		result, err = h.dataService.CloneRunningTrades(r.Context())
+	case "close-profitable":
+		result, err = h.dataService.CloseRunningTrades(r.Context(), true)
+	case "close-all":
+		result, err = h.dataService.CloseRunningTrades(r.Context(), false)
+	default:
+		apiutil.WriteError(w, http.StatusNotFound, constant.NotFoundStatusCode, "not found")
+		return
+	}
+	writeOrderBulkActionResult(w, result, err)
+}
+
 func (h *Handler) OrderByID(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "/api/v1/orders/")
 	if !ok {
@@ -306,6 +326,18 @@ func (h *Handler) OrderByID(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.dataService.GetOrder(r.Context(), id)
 	writeDataResult(w, result, err)
+}
+
+func writeOrderBulkActionResult(w http.ResponseWriter, result *apiservice.ManualOrderBulkResult, err error) {
+	if err == nil {
+		apiutil.WriteSuccess(w, result)
+		return
+	}
+	if errors.Is(err, apiservice.ErrInvalidManualOrder) || errors.Is(err, apiservice.ErrPositionNotRunning) {
+		apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, err.Error())
+		return
+	}
+	writeDataResult(w, nil, err)
 }
 
 func writeOrderActionResult(w http.ResponseWriter, result *apiservice.ManualOrderResult, err error) {
@@ -712,31 +744,6 @@ func (h *Handler) StrategyRuleByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		apiutil.WriteError(w, http.StatusMethodNotAllowed, constant.BadRequestStatusCode, "method not allowed")
 	}
-}
-
-func (h *Handler) StrategyMonitors(w http.ResponseWriter, r *http.Request) {
-	if !requireMethod(w, r, http.MethodGet) {
-		return
-	}
-	result, err := h.dataService.ListStrategyMonitors(r.Context())
-	writeDataResult(w, result, err)
-}
-
-func (h *Handler) StrategyMonitorByName(w http.ResponseWriter, r *http.Request) {
-	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/strategy/monitors/"), "/")
-	parts := strings.Split(rest, "/")
-	if len(parts) != 2 || parts[0] == "" || (parts[1] != "reset" && parts[1] != "restart") {
-		apiutil.WriteError(w, http.StatusNotFound, constant.NotFoundStatusCode, "not found")
-		return
-	}
-	if !requireMethod(w, r, http.MethodPost) {
-		return
-	}
-	if !requirePermission(w, r, constant.PermissionStrategyConfigWrite) {
-		return
-	}
-	result, err := h.dataService.StrategyMonitorAction(r.Context(), parts[0], parts[1])
-	writeDataResult(w, result, err)
 }
 
 func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {

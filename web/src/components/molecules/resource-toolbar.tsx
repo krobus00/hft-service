@@ -77,7 +77,7 @@ export function ResourceToolbar({
             );
           })}
         </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {extraAction}
         <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={isLoading}>
           <RefreshCw className={isLoading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />

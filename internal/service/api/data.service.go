@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,19 +46,6 @@ type AuthConfigResponse struct {
 
 type FormEnumsResponse map[string][]string
 
-type StrategyMonitorResponse struct {
-	Name    string         `json:"name"`
-	URL     string         `json:"url"`
-	Online  bool           `json:"online"`
-	Error   string         `json:"error,omitempty"`
-	Payload map[string]any `json:"payload,omitempty"`
-}
-
-type strategyMonitorConfig struct {
-	Name string
-	URL  string
-}
-
 var (
 	ErrInvalidManualOrder = errors.New("invalid manual order")
 	ErrPositionNotRunning = errors.New("position is not running")
@@ -70,6 +55,13 @@ type ManualOrderResult struct {
 	RequestID  string `json:"request_id"`
 	StrategyID string `json:"strategy_id"`
 	Status     string `json:"status"`
+}
+
+type ManualOrderBulkResult struct {
+	Status  string              `json:"status"`
+	Queued  int                 `json:"queued"`
+	Skipped int                 `json:"skipped"`
+	Results []ManualOrderResult `json:"results"`
 }
 
 type IndicatorRecalculateJob struct {
@@ -266,7 +258,7 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"exchange":         exchanges,
 		"role":             roles,
 		"permission":       permissions,
-		"dashboard_page":   {"orders", "orderPnL", "dailyReports", "strategyPerformance", "strategyConfigs", "strategyRules", "strategyMonitors", "marketKlines", "priceReferences", "marketBackfills", "symbolMappings", "klineSubscriptions", "indicatorConfigs", "users", "roles", "permissions", "settings", "dashboardPages"},
+		"dashboard_page":   {"orders", "orderPnL", "dailyReports", "strategyPerformance", "strategyConfigs", "strategyRules", "marketKlines", "priceReferences", "marketBackfills", "symbolMappings", "klineSubscriptions", "indicatorConfigs", "users", "roles", "permissions", "settings", "dashboardPages"},
 		"market_type":      {"spot", "futures"},
 		"position_side":    {"BOTH", "LONG", "SHORT"},
 		"order_side":       {"BUY", "SELL", "LONG", "SHORT"},
@@ -282,81 +274,6 @@ func (s *DataService) GetFormEnums(ctx context.Context) (FormEnumsResponse, erro
 		"source":           {"dashboard", "api", "strategy"},
 		"boolean":          {"true", "false"},
 	}, nil
-}
-
-func (s *DataService) ListStrategyMonitors(ctx context.Context) ([]StrategyMonitorResponse, error) {
-	monitors, err := s.configuredStrategyMonitors(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]StrategyMonitorResponse, 0, len(monitors))
-	for _, monitor := range monitors {
-		result = append(result, s.fetchStrategyMonitor(ctx, monitor, http.MethodGet, ""))
-	}
-	return result, nil
-}
-
-func (s *DataService) StrategyMonitorAction(ctx context.Context, name, action string) (*StrategyMonitorResponse, error) {
-	if action != "reset" && action != "restart" {
-		return nil, fmt.Errorf("%w: invalid strategy monitor action", ErrInvalidManualOrder)
-	}
-	monitors, err := s.configuredStrategyMonitors(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, monitor := range monitors {
-		if monitor.Name == strings.TrimSpace(name) {
-			resp := s.fetchStrategyMonitor(ctx, monitor, http.MethodPost, action)
-			return &resp, nil
-		}
-	}
-	return nil, sql.ErrNoRows
-}
-
-func (s *DataService) fetchStrategyMonitor(ctx context.Context, monitor strategyMonitorConfig, method, action string) StrategyMonitorResponse {
-	resp := StrategyMonitorResponse{Name: monitor.Name, URL: monitor.URL}
-	target := strings.TrimRight(monitor.URL, "/")
-	if action != "" {
-		target += "/" + action
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, nil)
-	if err != nil {
-		resp.Error = err.Error()
-		return resp
-	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	httpResp, err := client.Do(req)
-	if err != nil {
-		resp.Error = err.Error()
-		return resp
-	}
-	defer httpResp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
-	if err != nil {
-		resp.Error = err.Error()
-		return resp
-	}
-	if err := json.Unmarshal(body, &resp.Payload); err != nil {
-		resp.Error = err.Error()
-		return resp
-	}
-	resp.Online = httpResp.StatusCode >= 200 && httpResp.StatusCode < 300
-	if !resp.Online && resp.Error == "" {
-		resp.Error = httpResp.Status
-	}
-	return resp
-}
-
-func (s *DataService) configuredStrategyMonitors(ctx context.Context) ([]strategyMonitorConfig, error) {
-	configs, err := s.strategyConfigRepo.ListMonitors(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]strategyMonitorConfig, 0, len(configs))
-	for _, cfg := range configs {
-		result = append(result, strategyMonitorConfig{Name: cfg.Strategy, URL: strings.TrimSpace(cfg.MonitorURL)})
-	}
-	return result, nil
 }
 
 func (s *DataService) listExchangeEnums(ctx context.Context) ([]string, error) {
@@ -427,15 +344,8 @@ func (s *DataService) CloseOrder(ctx context.Context, id string) (*ManualOrderRe
 	if err != nil {
 		return nil, err
 	}
-	if order.IsPaperTrading {
-		price, err := s.priceReferenceRepo.FindByMarket(ctx, order.Exchange, order.MarketType, order.Symbol)
-		if err != nil {
-			return nil, err
-		}
-		if price == nil || !price.Price.IsPositive() {
-			return nil, fmt.Errorf("%w: current paper-trading price is unavailable", ErrInvalidManualOrder)
-		}
-		order.Price = price.Price
+	if err := s.applyPaperMarketPrice(ctx, &order); err != nil {
+		return nil, err
 	}
 	if err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{Data: order}); err != nil {
 		return nil, err
@@ -445,6 +355,63 @@ func (s *DataService) CloseOrder(ctx context.Context, id string) (*ManualOrderRe
 		strategyID = *order.StrategyID
 	}
 	return &ManualOrderResult{RequestID: order.RequestID, StrategyID: strategyID, Status: "queued"}, nil
+}
+
+func (s *DataService) CloneRunningTrades(ctx context.Context) (*ManualOrderBulkResult, error) {
+	return s.runRunningTradeAction(ctx, false, buildCloneRunningOrder)
+}
+
+func (s *DataService) CloseRunningTrades(ctx context.Context, profitOnly bool) (*ManualOrderBulkResult, error) {
+	return s.runRunningTradeAction(ctx, profitOnly, func(entry entity.OrderHistoryWithMetrics) (entity.OrderRequest, error) {
+		return buildManualCloseOrder(entry.OrderHistory)
+	})
+}
+
+func (s *DataService) runRunningTradeAction(ctx context.Context, profitOnly bool, build func(entity.OrderHistoryWithMetrics) (entity.OrderRequest, error)) (*ManualOrderBulkResult, error) {
+	if s.js == nil {
+		return nil, errors.New("order publisher is not configured")
+	}
+	entries, err := s.orderHistoryRepo.ListRunningEntries(ctx, profitOnly)
+	if err != nil {
+		return nil, err
+	}
+	result := &ManualOrderBulkResult{Status: "queued", Results: make([]ManualOrderResult, 0, len(entries))}
+	for _, entry := range entries {
+		order, err := build(entry)
+		if err != nil {
+			result.Skipped++
+			continue
+		}
+		if err := s.applyPaperMarketPrice(ctx, &order); err != nil {
+			result.Skipped++
+			continue
+		}
+		if err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{Data: order}); err != nil {
+			return nil, err
+		}
+		result.Queued++
+		strategyID := ""
+		if order.StrategyID != nil {
+			strategyID = *order.StrategyID
+		}
+		result.Results = append(result.Results, ManualOrderResult{RequestID: order.RequestID, StrategyID: strategyID, Status: "queued"})
+	}
+	return result, nil
+}
+
+func (s *DataService) applyPaperMarketPrice(ctx context.Context, order *entity.OrderRequest) error {
+	if !order.IsPaperTrading {
+		return nil
+	}
+	price, err := s.priceReferenceRepo.FindByMarket(ctx, order.Exchange, order.MarketType, order.Symbol)
+	if err != nil {
+		return err
+	}
+	if price == nil || !price.Price.IsPositive() {
+		return fmt.Errorf("%w: current paper-trading price is unavailable", ErrInvalidManualOrder)
+	}
+	order.Price = price.Price
+	return nil
 }
 
 func buildManualEntryOrder(userID, requestID string, values map[string]any) (entity.OrderRequest, error) {
@@ -466,6 +433,42 @@ func buildManualEntryOrder(userID, requestID string, values map[string]any) (ent
 		RequestedAt: time.Now().UTC().UnixMilli(), Source: "dashboard", StrategyID: &strategyID, StrategyName: strategyID,
 		TradeCondition: string(entity.TradeConditionEntry), OrderReason: "manual_entry",
 		NeedNotification: boolValue(values, "need_notification", true), IsPaperTrading: isPaperTrading,
+	}, nil
+}
+
+func buildCloneRunningOrder(entry entity.OrderHistoryWithMetrics) (entity.OrderRequest, error) {
+	quantity := entry.FilledQuantity
+	if quantity.IsZero() {
+		quantity = entry.Quantity
+	}
+	if !quantity.IsPositive() {
+		return entity.OrderRequest{}, ErrInvalidManualOrder
+	}
+	strategyID := strings.TrimSpace(entry.StrategyID.String)
+	if strategyID == "" {
+		strategyID = "manual"
+	}
+	requestID := fmt.Sprintf("manual-clone-%s-%d", entry.ID, time.Now().UTC().UnixMilli())
+	return entity.OrderRequest{
+		RequestID:        requestID,
+		UserID:           entry.UserID,
+		EntryOrderID:     requestID,
+		Exchange:         entry.Exchange,
+		MarketType:       entry.MarketType,
+		PositionSide:     entry.PositionSide,
+		Symbol:           entry.Symbol,
+		Type:             entity.OrderTypeMarket,
+		Side:             entry.Side,
+		Price:            decimal.Zero,
+		Quantity:         quantity,
+		RequestedAt:      time.Now().UTC().UnixMilli(),
+		Source:           "dashboard",
+		StrategyID:       &strategyID,
+		StrategyName:     strategyID,
+		TradeCondition:   string(entity.TradeConditionEntry),
+		OrderReason:      "manual_clone",
+		NeedNotification: true,
+		IsPaperTrading:   entry.IsPaperTrading,
 	}, nil
 }
 
@@ -1155,7 +1158,6 @@ func mapStrategyConfig(values map[string]any, current *entity.StrategyConfig) *e
 	item.PositionSide = stringValue(values, "position_side", item.PositionSide)
 	item.Source = stringValue(values, "source", item.Source)
 	item.Enabled = boolValue(values, "enabled", item.Enabled)
-	item.MonitorURL = stringValue(values, "monitor_url", item.MonitorURL)
 	item.NeedNotification = boolValue(values, "need_notification", item.NeedNotification)
 	item.IsPaperTrading = boolValue(values, "is_paper_trading", item.IsPaperTrading)
 	item.OrderType = stringValue(values, "order_type", item.OrderType)

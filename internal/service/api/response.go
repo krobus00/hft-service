@@ -90,7 +90,6 @@ type StrategyConfigResponse struct {
 	PositionSide             string          `json:"position_side"`
 	Source                   string          `json:"source"`
 	Enabled                  bool            `json:"enabled"`
-	MonitorURL               string          `json:"monitor_url"`
 	NeedNotification         bool            `json:"need_notification"`
 	IsPaperTrading           bool            `json:"is_paper_trading"`
 	OrderType                string          `json:"order_type"`
@@ -193,7 +192,6 @@ func strategyConfigResponse(config *entity.StrategyConfig) *StrategyConfigRespon
 		PositionSide:             config.PositionSide,
 		Source:                   config.Source,
 		Enabled:                  config.Enabled,
-		MonitorURL:               config.MonitorURL,
 		NeedNotification:         config.NeedNotification,
 		IsPaperTrading:           config.IsPaperTrading,
 		OrderType:                config.OrderType,

@@ -113,14 +113,6 @@ export type DashboardOverview = {
   recent_orders: DashboardOrder[];
 };
 
-export type StrategyMonitor = {
-  name: string;
-  url: string;
-  online: boolean;
-  error?: string;
-  payload?: Record<string, unknown>;
-};
-
 export type IndicatorRecalculateJob = {
   id: string;
   status: "pending" | "running" | "succeeded" | "failed";
@@ -428,6 +420,15 @@ export async function closeOrder(id: string) {
   );
 }
 
+export async function runOrderBulkAction(action: "clone-running" | "close-profitable" | "close-all") {
+  return withSession((session) =>
+    apiRequest<{ status: string; queued: number; skipped: number }>(`/orders/actions/${action}`, {
+      method: "POST",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
 export async function getDashboardPagesMenu() {
   return withSession((session) =>
     apiRequest<DashboardPageConfig[]>("/dashboard/pages/menu", {
@@ -468,24 +469,6 @@ export async function listStrategyPerformanceReports(query: OrderReportQuery) {
   return withSession((session) =>
     apiRequest<StrategyPerformanceReport[]>(`/order-reports/strategy-performance?${buildReportParams(query)}`, {
       method: "GET",
-      accessToken: session.tokens.access_token,
-    }),
-  );
-}
-
-export async function listStrategyMonitors() {
-  return withSession((session) =>
-    apiRequest<StrategyMonitor[]>("/strategy/monitors", {
-      method: "GET",
-      accessToken: session.tokens.access_token,
-    }),
-  );
-}
-
-export async function runStrategyMonitorAction(name: string, action: "reset" | "restart") {
-  return withSession((session) =>
-    apiRequest<StrategyMonitor>(`/strategy/monitors/${encodeURIComponent(name)}/${action}`, {
-      method: "POST",
       accessToken: session.tokens.access_token,
     }),
   );

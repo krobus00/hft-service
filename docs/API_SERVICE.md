@@ -199,7 +199,12 @@ Requires `order:read`.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/v1/orders` | Paginated order history from `order_histories`. |
+| `POST` | `/api/v1/orders` | Publish a manual entry order request. |
 | `GET` | `/api/v1/orders/{id}` | Order history detail. |
+| `POST` | `/api/v1/orders/{id}/close` | Publish a market close request for one running position. |
+| `POST` | `/api/v1/orders/actions/clone-running` | Clone every running entry as a new market entry order. |
+| `POST` | `/api/v1/orders/actions/close-profitable` | Close running entries with current positive PnL. |
+| `POST` | `/api/v1/orders/actions/close-all` | Close every running entry. |
 
 Common filter fields:
 
@@ -337,7 +342,6 @@ Body:
   "user_id": "minimax-01",
   "position_side": "BOTH",
   "source": "dashboard",
-  "monitor_url": "",
   "need_notification": true,
   "is_paper_trading": true,
   "order_type": "MARKET",
@@ -389,16 +393,6 @@ Body:
 ```
 
 Supported condition operators are `gt`, `gte`, `lt`, `lte`, `eq`, `neq`, `cross_above`, and `cross_below`. Available fields include candle values (`close`, `high`, `low`, `volume`) and indicator values as `indicators.<output_name>`.
-
-### Strategy Monitors
-
-Configured from enabled `strategy_configs.monitor_url` values. Read requires `strategy_config:read`; reset/restart requires `strategy_config:write`.
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `GET` | `/api/v1/strategy/monitors` | Fetch all configured strategy runner monitor payloads. |
-| `POST` | `/api/v1/strategy/monitors/{name}/reset` | Clear runner strategy state while keeping market data. |
-| `POST` | `/api/v1/strategy/monitors/{name}/restart` | Clear runner strategy state and ask the runner to exit for supervisor restart. |
 
 ### Settings
 

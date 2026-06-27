@@ -15,6 +15,7 @@ import {
   getIndicatorRecalculateJob,
   listResource,
   recalculateMissingIndicators,
+  runOrderBulkAction,
   updateResource,
 } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -207,6 +208,28 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
     }
   }
 
+  async function handleOrderBulkAction(action: "clone-running" | "close-profitable" | "close-all") {
+    if (!canWrite || pendingAction) {
+      return;
+    }
+    const label = action === "clone-running" ? "clone all running trades" : action === "close-profitable" ? "close profitable running trades" : "close all running trades";
+    if (!window.confirm(`Confirm ${label}?`)) {
+      return;
+    }
+    setPendingAction(action);
+    setError("");
+    setNotice("");
+    try {
+      const result = await runOrderBulkAction(action);
+      setNotice(`Queued ${result.queued} orders. Skipped ${result.skipped}.`);
+      await loadItems();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to run order action.");
+    } finally {
+      setPendingAction("");
+    }
+  }
+
   async function handleRecalculateMissingIndicators() {
     if (!canWrite || pendingAction) {
       return;
@@ -280,7 +303,19 @@ export function ResourcePanel({ resource, user }: ResourcePanelProps) {
         onRefresh={() => loadItems(query)}
         onCreate={openCreate}
         extraAction={
-          resource.key === "indicatorConfigs" && canWrite ? (
+          resource.key === "orders" && canWrite ? (
+            <>
+              <Button type="button" variant="outline" size="sm" onClick={() => handleOrderBulkAction("clone-running")} disabled={Boolean(pendingAction)}>
+                Clone Running
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => handleOrderBulkAction("close-profitable")} disabled={Boolean(pendingAction)}>
+                Close Profit
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => handleOrderBulkAction("close-all")} disabled={Boolean(pendingAction)}>
+                Close All
+              </Button>
+            </>
+          ) : resource.key === "indicatorConfigs" && canWrite ? (
             <Button type="button" variant="outline" size="sm" onClick={handleRecalculateMissingIndicators} disabled={Boolean(pendingAction || indicatorJobId)}>
               Recalculate Missing
             </Button>

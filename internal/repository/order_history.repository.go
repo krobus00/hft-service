@@ -245,6 +245,26 @@ func (r *OrderHistoryRepository) ListOpenEntriesByStrategyConfig(ctx context.Con
 	return items, err
 }
 
+func (r *OrderHistoryRepository) ListRunningEntries(ctx context.Context, profitOnly bool) ([]entity.OrderHistoryWithMetrics, error) {
+	metrics := orderHistoryMetricsSelect().
+		Where(sq.Eq{"oh.trade_condition": string(entity.TradeConditionEntry)})
+	query := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("*").
+		FromSelect(metrics, "orders_with_metrics").
+		Where(sq.Eq{"state": "running"}).
+		OrderBy("created_at DESC")
+	if profitOnly {
+		query = query.Where("pnl > 0")
+	}
+	sqlQuery, args, err := query.ToSql()
+	if err != nil {
+		return nil, err
+	}
+	items := []entity.OrderHistoryWithMetrics{}
+	err = r.db.SelectContext(ctx, &items, sqlQuery, args...)
+	return items, err
+}
+
 func (r *OrderHistoryRepository) GetDashboardOverview(ctx context.Context, since time.Time, recentLimit uint64) (entity.DashboardOrderSummary, []entity.OrderHistoryWithMetrics, error) {
 	var summary entity.DashboardOrderSummary
 	if err := r.db.GetContext(ctx, &summary, `SELECT
