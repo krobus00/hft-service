@@ -1,6 +1,7 @@
 package infrastructure
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -242,6 +243,15 @@ type httpResponseRecorder struct {
 func (r *httpResponseRecorder) WriteHeader(statusCode int) {
 	r.statusCode = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *httpResponseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	r.statusCode = http.StatusSwitchingProtocols
+	return hijacker.Hijack()
 }
 
 func newRequestID() string {

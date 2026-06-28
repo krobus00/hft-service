@@ -1,6 +1,8 @@
 package infrastructure
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -74,4 +76,39 @@ func TestHTTPServerPassesThroughNonCORSOptions(t *testing.T) {
 	if !called {
 		t.Fatal("expected non-CORS OPTIONS request to reach the wrapped handler")
 	}
+}
+
+func TestHTTPResponseRecorderSupportsHijack(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	writer := &hijackResponseWriter{conn: serverConn}
+	recorder := &httpResponseRecorder{ResponseWriter: writer, statusCode: http.StatusOK}
+
+	conn, _, err := recorder.Hijack()
+	if err != nil {
+		t.Fatalf("expected hijack to succeed: %v", err)
+	}
+	defer conn.Close()
+	if recorder.statusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected status %d, got %d", http.StatusSwitchingProtocols, recorder.statusCode)
+	}
+}
+
+type hijackResponseWriter struct {
+	conn net.Conn
+}
+
+func (w *hijackResponseWriter) Header() http.Header {
+	return http.Header{}
+}
+
+func (w *hijackResponseWriter) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (w *hijackResponseWriter) WriteHeader(int) {}
+
+func (w *hijackResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
 }
