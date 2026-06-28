@@ -371,6 +371,16 @@ Body:
 }
 ```
 
+### Strategy Metrics
+
+Read requires `strategy_config:read`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/strategy/metrics/detail` | Candles, indicators, summary counts, and order history for one symbol/strategy window. |
+
+Query parameters: `exchange`, `market_type`, `symbol` (required), `interval`, `strategy`, `start_time`, `end_time`, `limit`.
+
 ### Strategy Rules
 
 Read requires `strategy_config:read`. Create, update, and delete require `strategy_config:write`.

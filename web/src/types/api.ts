@@ -33,6 +33,7 @@ export type ResourceKey =
   | "orderPnL"
   | "dailyReports"
   | "strategyPerformance"
+  | "strategyMetrics"
   | "marketKlines"
   | "priceReferences"
   | "marketBackfills"

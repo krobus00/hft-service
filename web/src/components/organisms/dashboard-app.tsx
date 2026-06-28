@@ -10,6 +10,7 @@ import { DailyReportPanel } from "@/components/organisms/daily-report-panel";
 import { DashboardOverviewPanel } from "@/components/organisms/dashboard-overview-panel";
 import { OrderPnLPanel } from "@/components/organisms/order-pnl-panel";
 import { ResourcePanel } from "@/components/organisms/resource-panel";
+import { StrategyMetricDetailPanel } from "@/components/organisms/strategy-metric-detail-panel";
 import { StrategyPerformancePanel } from "@/components/organisms/strategy-performance-panel";
 import { DashboardTemplate } from "@/components/templates/dashboard-template";
 import { Button } from "@/components/ui/button";
@@ -171,6 +172,8 @@ export function DashboardApp({ initialResourceKey = "orders" }: DashboardAppProp
             <DailyReportPanel key={activeResource.key} resource={activeResource} />
           ) : activeResource.key === "strategyPerformance" ? (
             <StrategyPerformancePanel key={activeResource.key} resource={activeResource} />
+          ) : activeResource.key === "strategyMetrics" ? (
+            <StrategyMetricDetailPanel key={activeResource.key} />
           ) : (
             <ResourcePanel key={activeResource.key} resource={activeResource} user={session.user} />
           )

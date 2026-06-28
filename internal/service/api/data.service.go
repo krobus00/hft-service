@@ -23,6 +23,8 @@ import (
 )
 
 type DataService struct {
+	marketDB              *sqlx.DB
+	orderDB               *sqlx.DB
 	authRepo              *repository.APIAuthRepository
 	settingRepo           *repository.APISettingRepository
 	orderHistoryRepo      *repository.OrderHistoryRepository
@@ -80,6 +82,8 @@ func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext)
 	indicatorConfigRepo := repository.NewIndicatorConfigRepository(marketDB)
 	indicatorResultRepo := repository.NewIndicatorResultRepository(marketDB)
 	return &DataService{
+		marketDB:              marketDB,
+		orderDB:               orderDB,
 		authRepo:              repository.NewAPIAuthRepository(apiDB),
 		settingRepo:           repository.NewAPISettingRepository(apiDB),
 		orderHistoryRepo:      repository.NewOrderHistoryRepository(orderDB),
@@ -95,6 +99,29 @@ func NewDataService(apiDB, marketDB, orderDB *sqlx.DB, js nats.JetStreamContext)
 		strategyRuleRepo:      repository.NewStrategyRuleRepository(marketDB),
 		js:                    js,
 	}
+}
+
+type StrategyMetricDetailFilter struct {
+	Exchange   string
+	MarketType string
+	Symbol     string
+	Interval   string
+	Strategy   string
+	StartTime  time.Time
+	EndTime    time.Time
+	Limit      int
+}
+
+type strategyMetricKlineRow struct {
+	ID         string          `db:"id"`
+	OpenTime   time.Time       `db:"open_time"`
+	CloseTime  time.Time       `db:"close_time"`
+	OpenPrice  decimal.Decimal `db:"open_price"`
+	HighPrice  decimal.Decimal `db:"high_price"`
+	LowPrice   decimal.Decimal `db:"low_price"`
+	ClosePrice decimal.Decimal `db:"close_price"`
+	Volume     decimal.Decimal `db:"volume"`
+	Indicators []byte          `db:"indicators"`
 }
 
 func (s *DataService) StartMissingIndicatorRecalculation(limit int) *IndicatorRecalculateJob {
@@ -514,6 +541,181 @@ func (s *DataService) ListDailyOrderReports(ctx context.Context, filter entity.O
 
 func (s *DataService) ListStrategyPerformanceReports(ctx context.Context, filter entity.OrderReportFilter) ([]entity.StrategyPerformanceReport, error) {
 	return s.orderHistoryRepo.ListStrategyPerformance(ctx, filter)
+}
+
+func (s *DataService) GetStrategyMetricDetail(ctx context.Context, filter StrategyMetricDetailFilter) (*StrategyMetricDetailResponse, error) {
+	filter = normalizeStrategyMetricFilter(filter)
+	rows := []strategyMetricKlineRow{}
+	err := s.marketDB.SelectContext(ctx, &rows, `
+SELECT mk.id, mk.open_time, mk.close_time, mk.open_price, mk.high_price, mk.low_price, mk.close_price,
+       mk.quote_volume AS volume, COALESCE(ir.indicators, '{}'::jsonb) AS indicators
+FROM market_klines mk
+LEFT JOIN market_kline_indicator_results ir ON ir.kline_id = mk.id
+WHERE lower(mk.exchange) = lower($1)
+  AND lower(mk.market_type) = lower($2)
+  AND mk.symbol = $3
+  AND mk.interval = $4
+  AND mk.is_closed
+  AND mk.close_time >= $5
+  AND mk.close_time <= $6
+ORDER BY mk.close_time DESC
+LIMIT $7`, filter.Exchange, filter.MarketType, filter.Symbol, filter.Interval, filter.StartTime, filter.EndTime, filter.Limit)
+	if err != nil {
+		return nil, err
+	}
+
+	klines := make([]StrategyMetricKlineResponse, 0, len(rows))
+	for i := len(rows) - 1; i >= 0; i-- {
+		indicators := map[string]float64{}
+		_ = json.Unmarshal(rows[i].Indicators, &indicators)
+		klines = append(klines, StrategyMetricKlineResponse{
+			ID: rows[i].ID, OpenTime: rows[i].OpenTime, CloseTime: rows[i].CloseTime,
+			OpenPrice: rows[i].OpenPrice, HighPrice: rows[i].HighPrice, LowPrice: rows[i].LowPrice,
+			ClosePrice: rows[i].ClosePrice, Volume: rows[i].Volume, Indicators: indicators,
+		})
+	}
+
+	orders := []entity.OrderHistoryWithMetrics{}
+	orderQuery, args, err := orderHistoryMetricsForStrategyDetail(filter)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.orderDB.SelectContext(ctx, &orders, orderQuery, args...); err != nil {
+		return nil, err
+	}
+	orderResponses := make([]OrderHistoryResponse, 0, len(orders))
+	for i := range orders {
+		orderResponses = append(orderResponses, *orderHistoryWithMetricsResponse(&orders[i]))
+	}
+
+	summary, err := s.strategyMetricSummary(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return &StrategyMetricDetailResponse{
+		Filters: StrategyMetricFiltersResponse{
+			Exchange: filter.Exchange, MarketType: filter.MarketType, Symbol: filter.Symbol,
+			Interval: filter.Interval, Strategy: filter.Strategy, StartTime: filter.StartTime,
+			EndTime: filter.EndTime, Limit: filter.Limit,
+		},
+		Summary: summary,
+		Klines:  klines,
+		Orders:  orderResponses,
+	}, nil
+}
+
+func normalizeStrategyMetricFilter(filter StrategyMetricDetailFilter) StrategyMetricDetailFilter {
+	filter.Exchange = strings.TrimSpace(filter.Exchange)
+	if filter.Exchange == "" {
+		filter.Exchange = "binance"
+	}
+	filter.MarketType = strings.TrimSpace(filter.MarketType)
+	if filter.MarketType == "" {
+		filter.MarketType = "futures"
+	}
+	filter.Interval = strings.TrimSpace(filter.Interval)
+	if filter.Interval == "" {
+		filter.Interval = "15m"
+	}
+	filter.Limit = clampInt(filter.Limit, 50, 500)
+	if filter.EndTime.IsZero() {
+		filter.EndTime = time.Now().UTC()
+	}
+	if filter.StartTime.IsZero() {
+		filter.StartTime = filter.EndTime.Add(-24 * time.Hour)
+	}
+	return filter
+}
+
+func orderHistoryMetricsForStrategyDetail(filter StrategyMetricDetailFilter) (string, []any, error) {
+	args := []any{filter.Exchange, filter.MarketType, filter.Symbol, filter.StartTime, filter.EndTime}
+	strategySQL := ""
+	if strings.TrimSpace(filter.Strategy) != "" {
+		args = append(args, filter.Strategy)
+		strategySQL = fmt.Sprintf(" AND oh.strategy_id = $%d", len(args))
+	}
+	args = append(args, filter.Limit)
+	query := fmt.Sprintf(`
+SELECT oh.*,
+       CASE WHEN trade.exit_price IS NOT NULL THEN 'closed' ELSE 'running' END AS state,
+       COALESCE(trade.entry_price, oh.avg_fill_price, oh.price) AS entry_price,
+       trade.exit_price AS exit_price,
+       CASE
+         WHEN COALESCE(trade.entry_price, oh.avg_fill_price, oh.price) IS NULL THEN NULL
+         WHEN trade.exit_price IS NOT NULL THEN trade.profit
+         WHEN pr.price IS NOT NULL THEN CASE
+           WHEN oh.side IN ('LONG','BUY') THEN (pr.price - COALESCE(trade.entry_price, oh.avg_fill_price, oh.price)) * COALESCE(trade.quantity, NULLIF(oh.filled_quantity, 0), oh.quantity)
+           WHEN oh.side IN ('SHORT','SELL') THEN (COALESCE(trade.entry_price, oh.avg_fill_price, oh.price) - pr.price) * COALESCE(trade.quantity, NULLIF(oh.filled_quantity, 0), oh.quantity)
+         END
+       END AS pnl
+FROM order_histories oh
+LEFT JOIN order_trades trade ON trade.entry_history_id = oh.id
+LEFT JOIN price_references pr ON pr.exchange = oh.exchange AND pr.market_type = oh.market_type AND pr.symbol = oh.symbol
+WHERE lower(oh.exchange) = lower($1)
+  AND lower(oh.market_type) = lower($2)
+  AND oh.symbol = $3
+  AND oh.created_at >= $4
+  AND oh.created_at <= $5%s
+ORDER BY oh.created_at DESC
+LIMIT $%d`, strategySQL, len(args))
+	return query, args, nil
+}
+
+func (s *DataService) strategyMetricSummary(ctx context.Context, filter StrategyMetricDetailFilter) (StrategyMetricSummaryResponse, error) {
+	var summary StrategyMetricSummaryResponse
+	var lastKline sql.NullTime
+	if err := s.marketDB.QueryRowxContext(ctx, `
+SELECT COUNT(*) AS kline_count,
+       COUNT(*) FILTER (WHERE ir.kline_id IS NULL) AS missing_indicator_results,
+       MAX(mk.close_time) AS last_kline_at
+FROM market_klines mk
+LEFT JOIN market_kline_indicator_results ir ON ir.kline_id = mk.id
+WHERE lower(mk.exchange) = lower($1)
+  AND lower(mk.market_type) = lower($2)
+  AND mk.symbol = $3
+  AND mk.interval = $4
+  AND mk.is_closed
+  AND mk.close_time >= $5
+  AND mk.close_time <= $6`, filter.Exchange, filter.MarketType, filter.Symbol, filter.Interval, filter.StartTime, filter.EndTime).
+		Scan(&summary.KlineCount, &summary.MissingResults, &lastKline); err != nil {
+		return summary, err
+	}
+	summary.LastKlineAt = nullTimePtr(lastKline)
+
+	var lastOrder sql.NullTime
+	args := []any{filter.Exchange, filter.MarketType, filter.Symbol, filter.StartTime, filter.EndTime}
+	strategySQL := ""
+	if strings.TrimSpace(filter.Strategy) != "" {
+		args = append(args, filter.Strategy)
+		strategySQL = fmt.Sprintf(" AND strategy_id = $%d", len(args))
+	}
+	query := fmt.Sprintf(`
+SELECT COUNT(*) AS order_count,
+       COUNT(*) FILTER (WHERE trade_condition = 'ENTRY') AS entry_count,
+       COUNT(*) FILTER (WHERE trade_condition <> 'ENTRY') AS exit_count,
+       MAX(created_at) AS last_order_at
+FROM order_histories
+WHERE lower(exchange) = lower($1)
+  AND lower(market_type) = lower($2)
+  AND symbol = $3
+  AND created_at >= $4
+  AND created_at <= $5%s`, strategySQL)
+	if err := s.orderDB.QueryRowxContext(ctx, query, args...).
+		Scan(&summary.OrderCount, &summary.EntryCount, &summary.ExitCount, &lastOrder); err != nil {
+		return summary, err
+	}
+	summary.LastOrderAt = nullTimePtr(lastOrder)
+	return summary, nil
+}
+
+func clampInt(value, fallback, maximum int) int {
+	if value <= 0 {
+		return fallback
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 func (s *DataService) ListMarketKlines(ctx context.Context, req *apiutil.PaginationReq) (*apiutil.PaginationResp, error) {

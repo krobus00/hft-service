@@ -110,6 +110,46 @@ type StrategyConfigResponse struct {
 	UpdatedAt                time.Time       `json:"updated_at"`
 }
 
+type StrategyMetricDetailResponse struct {
+	Filters StrategyMetricFiltersResponse `json:"filters"`
+	Summary StrategyMetricSummaryResponse `json:"summary"`
+	Klines  []StrategyMetricKlineResponse `json:"klines"`
+	Orders  []OrderHistoryResponse        `json:"orders"`
+}
+
+type StrategyMetricFiltersResponse struct {
+	Exchange   string    `json:"exchange"`
+	MarketType string    `json:"market_type"`
+	Symbol     string    `json:"symbol"`
+	Interval   string    `json:"interval"`
+	Strategy   string    `json:"strategy"`
+	StartTime  time.Time `json:"start_time"`
+	EndTime    time.Time `json:"end_time"`
+	Limit      int       `json:"limit"`
+}
+
+type StrategyMetricSummaryResponse struct {
+	KlineCount     int64      `json:"kline_count"`
+	OrderCount     int64      `json:"order_count"`
+	EntryCount     int64      `json:"entry_count"`
+	ExitCount      int64      `json:"exit_count"`
+	LastKlineAt    *time.Time `json:"last_kline_at,omitempty"`
+	LastOrderAt    *time.Time `json:"last_order_at,omitempty"`
+	MissingResults int64      `json:"missing_indicator_results"`
+}
+
+type StrategyMetricKlineResponse struct {
+	ID         string             `json:"id"`
+	OpenTime   time.Time          `json:"open_time"`
+	CloseTime  time.Time          `json:"close_time"`
+	OpenPrice  decimal.Decimal    `json:"open_price"`
+	HighPrice  decimal.Decimal    `json:"high_price"`
+	LowPrice   decimal.Decimal    `json:"low_price"`
+	ClosePrice decimal.Decimal    `json:"close_price"`
+	Volume     decimal.Decimal    `json:"volume"`
+	Indicators map[string]float64 `json:"indicators"`
+}
+
 func apiUserResponse(user *entity.APIUser) *APIUserResponse {
 	if user == nil {
 		return nil

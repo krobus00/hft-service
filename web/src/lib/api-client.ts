@@ -82,6 +82,66 @@ export type StrategyPerformanceReport = {
   last_trade_at: string;
 };
 
+export type StrategyMetricDetailQuery = {
+  exchange?: string;
+  market_type?: string;
+  symbol: string;
+  interval?: string;
+  strategy?: string;
+  start_time?: string;
+  end_time?: string;
+  limit?: number;
+};
+
+export type StrategyMetricKline = {
+  id: string;
+  open_time: string;
+  close_time: string;
+  open_price: string;
+  high_price: string;
+  low_price: string;
+  close_price: string;
+  volume: string;
+  indicators: Record<string, number>;
+};
+
+export type StrategyMetricOrder = {
+  id: string;
+  strategy_id?: string;
+  symbol: string;
+  side: string;
+  status: string;
+  trade_condition: string;
+  exit_type: string;
+  order_reason: string;
+  entry_price?: string;
+  exit_price?: string;
+  pnl?: string;
+  created_at: string;
+};
+
+export type StrategyMetricDetail = {
+  filters: StrategyMetricDetailQuery & {
+    exchange: string;
+    market_type: string;
+    interval: string;
+    start_time: string;
+    end_time: string;
+    limit: number;
+  };
+  summary: {
+    kline_count: number;
+    order_count: number;
+    entry_count: number;
+    exit_count: number;
+    last_kline_at?: string;
+    last_order_at?: string;
+    missing_indicator_results: number;
+  };
+  klines: StrategyMetricKline[];
+  orders: StrategyMetricOrder[];
+};
+
 export type DashboardOrder = {
   id: string;
   strategy_id?: string;
@@ -474,6 +534,15 @@ export async function listStrategyPerformanceReports(query: OrderReportQuery) {
   );
 }
 
+export async function getStrategyMetricDetail(query: StrategyMetricDetailQuery) {
+  return withSession((session) =>
+    apiRequest<StrategyMetricDetail>(`/strategy/metrics/detail?${buildReportParams(query)}`, {
+      method: "GET",
+      accessToken: session.tokens.access_token,
+    }),
+  );
+}
+
 export async function recalculateMissingIndicators(limit = 1000) {
   return withSession((session) =>
     apiRequest<IndicatorRecalculateJob>(`/market/indicator-results/recalculate-missing?limit=${limit}`, {
@@ -496,7 +565,7 @@ export async function getIndicatorRecalculateJob(id: string, waitSeconds = 0) {
   );
 }
 
-function buildReportParams(query: OrderReportQuery) {
+function buildReportParams(query: Record<string, string | number | undefined>) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value == null || value === "") {

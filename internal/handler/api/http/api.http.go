@@ -66,6 +66,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/market/indicator-configs/", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigByID))
 	mux.HandleFunc("/api/v1/strategy/configs", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigs))
 	mux.HandleFunc("/api/v1/strategy/configs/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigByID))
+	mux.HandleFunc("/api/v1/strategy/metrics/detail", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMetricDetail))
 	mux.HandleFunc("/api/v1/strategy/rules", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyRules))
 	mux.HandleFunc("/api/v1/strategy/rules/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyRuleByID))
 	mux.HandleFunc("/api/v1/settings", h.withPermission(constant.PermissionSettingsRead, h.Settings))
@@ -284,6 +285,18 @@ func (h *Handler) StrategyPerformanceReports(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	result, err := h.dataService.ListStrategyPerformanceReports(r.Context(), filter)
+	writeDataResult(w, result, err)
+}
+
+func (h *Handler) StrategyMetricDetail(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	filter, ok := parseStrategyMetricFilter(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.dataService.GetStrategyMetricDetail(r.Context(), filter)
 	writeDataResult(w, result, err)
 }
 
@@ -1136,6 +1149,39 @@ func parseOrderReportFilter(w http.ResponseWriter, r *http.Request) (entity.Orde
 			return filter, false
 		}
 		filter.EndTime = &parsed
+	}
+	return filter, true
+}
+
+func parseStrategyMetricFilter(w http.ResponseWriter, r *http.Request) (apiservice.StrategyMetricDetailFilter, bool) {
+	values := r.URL.Query()
+	filter := apiservice.StrategyMetricDetailFilter{
+		Exchange:   strings.TrimSpace(values.Get("exchange")),
+		MarketType: strings.TrimSpace(values.Get("market_type")),
+		Symbol:     strings.TrimSpace(values.Get("symbol")),
+		Interval:   strings.TrimSpace(values.Get("interval")),
+		Strategy:   strings.TrimSpace(values.Get("strategy")),
+		Limit:      int(parsePositiveInt64(values.Get("limit"), 200)),
+	}
+	if filter.Symbol == "" {
+		apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, "symbol is required")
+		return filter, false
+	}
+	if raw := strings.TrimSpace(values.Get("start_time")); raw != "" {
+		parsed, err := parseReportTime(raw)
+		if err != nil {
+			apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, "invalid start_time")
+			return filter, false
+		}
+		filter.StartTime = parsed
+	}
+	if raw := strings.TrimSpace(values.Get("end_time")); raw != "" {
+		parsed, err := parseReportTime(raw)
+		if err != nil {
+			apiutil.WriteError(w, http.StatusBadRequest, constant.BadRequestStatusCode, "invalid end_time")
+			return filter, false
+		}
+		filter.EndTime = parsed
 	}
 	return filter, true
 }
