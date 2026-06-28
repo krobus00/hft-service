@@ -106,6 +106,9 @@ func (s *Service) handleKline(ctx context.Context, msg *nats.Msg) error {
 	if !event.Data.IsClosed {
 		return nil
 	}
+	if err := s.klineRepo.Create(ctx, &event.Data); err != nil {
+		return err
+	}
 
 	indicators, err := s.calculate(ctx, event.Data)
 	if err != nil {

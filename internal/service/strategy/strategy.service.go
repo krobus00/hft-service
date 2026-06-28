@@ -390,6 +390,7 @@ func buildOrder(cfg entity.StrategyConfig, rule entity.StrategyRule, event entit
 	if err != nil {
 		return entity.OrderRequest{}, false
 	}
+	requestID := "go-strategy-" + requestToken
 	strategyID := cfg.Strategy
 	internal, _ := json.Marshal(map[string]string{"strategy_rule_id": rule.ID, "strategy_config_id": cfg.ID})
 	price := event.Data.ClosePrice
@@ -397,8 +398,9 @@ func buildOrder(cfg entity.StrategyConfig, rule entity.StrategyRule, event entit
 		price = decimal.Zero
 	}
 	return entity.OrderRequest{
-		RequestID:        "go-strategy-" + requestToken,
+		RequestID:        requestID,
 		UserID:           cfg.UserID.String,
+		EntryOrderID:     entryOrderID(requestID, rule.TradeCondition),
 		Exchange:         cfg.Exchange,
 		MarketType:       cfg.MarketType,
 		PositionSide:     cfg.PositionSide,
@@ -419,4 +421,11 @@ func buildOrder(cfg entity.StrategyConfig, rule entity.StrategyRule, event entit
 		NeedNotification: cfg.NeedNotification,
 		IsPaperTrading:   cfg.IsPaperTrading,
 	}, true
+}
+
+func entryOrderID(requestID string, tradeCondition string) string {
+	if entity.NormalizeTradeCondition(tradeCondition) == entity.TradeConditionEntry {
+		return requestID
+	}
+	return ""
 }
