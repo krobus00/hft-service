@@ -24,6 +24,7 @@ const consumerName = "GO_STRATEGY"
 const strategyCacheSyncInterval = 30 * time.Second
 const strategyWorkerCount = 8
 const strategyWorkerQueueSize = 64
+const strategyMaxAckPending = 1000
 
 type Service struct {
 	js                 nats.JetStreamContext
@@ -97,7 +98,7 @@ func (s *Service) Subscribe(ctx context.Context) error {
 		nats.ManualAck(),
 		nats.Durable(consumerName),
 		nats.DeliverNew(),
-		nats.MaxAckPending(strategyWorkerCount*strategyWorkerQueueSize),
+		nats.MaxAckPending(strategyMaxAckPending),
 	)
 	return err
 }

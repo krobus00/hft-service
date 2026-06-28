@@ -28,6 +28,7 @@ WHERE lower(exchange) = lower($1)
   AND lower(market_type) = lower($2)
   AND symbol = $3
   AND interval = $4
+  AND enabled IS TRUE
 ORDER BY output_name`, exchange, marketType, symbol, interval)
 	return items, err
 }

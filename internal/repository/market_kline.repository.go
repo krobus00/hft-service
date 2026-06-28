@@ -194,6 +194,7 @@ SELECT k.*
 FROM market_klines k
 LEFT JOIN market_kline_indicator_results r ON r.kline_id = k.id
 WHERE r.kline_id IS NULL
+  AND k.is_closed IS TRUE
 ORDER BY k.close_time ASC
 LIMIT $1`, limit)
 	return items, err
