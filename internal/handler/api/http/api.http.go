@@ -66,6 +66,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/market/indicator-configs/", h.withPermission(constant.PermissionMarketRead, h.IndicatorConfigByID))
 	mux.HandleFunc("/api/v1/strategy/configs", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigs))
 	mux.HandleFunc("/api/v1/strategy/configs/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyConfigByID))
+	mux.HandleFunc("/api/v1/strategy/metrics/detail/ws", h.StrategyMetricDetailWS)
 	mux.HandleFunc("/api/v1/strategy/metrics/detail", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyMetricDetail))
 	mux.HandleFunc("/api/v1/strategy/rules", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyRules))
 	mux.HandleFunc("/api/v1/strategy/rules/", h.withPermission(constant.PermissionStrategyConfigRead, h.StrategyRuleByID))

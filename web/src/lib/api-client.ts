@@ -543,6 +543,17 @@ export async function getStrategyMetricDetail(query: StrategyMetricDetailQuery) 
   );
 }
 
+export function buildStrategyMetricDetailWebSocketURL(query: StrategyMetricDetailQuery & { refresh?: number }) {
+  const session = readSession();
+  if (!session) {
+    throw new ApiError("Session is required", "UNAUTHORIZED", 401);
+  }
+  const url = new URL(`${API_BASE_URL}/strategy/metrics/detail/ws`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.search = buildReportParams({ ...query, token: session.tokens.access_token }).toString();
+  return url.toString();
+}
+
 export async function recalculateMissingIndicators(limit = 1000) {
   return withSession((session) =>
     apiRequest<IndicatorRecalculateJob>(`/market/indicator-results/recalculate-missing?limit=${limit}`, {
