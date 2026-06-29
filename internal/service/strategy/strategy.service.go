@@ -31,6 +31,7 @@ type Service struct {
 	strategyConfigRepo *repository.StrategyConfigRepository
 	ruleRepo           *repository.StrategyRuleRepository
 	stateRepo          *repository.StrategyStateRepository
+	orderHistoryRepo   *repository.OrderHistoryRepository
 	cache              atomic.Pointer[strategyCacheSnapshot]
 }
 
@@ -53,8 +54,8 @@ type condition struct {
 	Value float64 `json:"value"`
 }
 
-func NewService(js nats.JetStreamContext, strategyConfigRepo *repository.StrategyConfigRepository, ruleRepo *repository.StrategyRuleRepository, stateRepo *repository.StrategyStateRepository) *Service {
-	service := &Service{js: js, strategyConfigRepo: strategyConfigRepo, ruleRepo: ruleRepo, stateRepo: stateRepo}
+func NewService(js nats.JetStreamContext, strategyConfigRepo *repository.StrategyConfigRepository, ruleRepo *repository.StrategyRuleRepository, stateRepo *repository.StrategyStateRepository, orderHistoryRepo *repository.OrderHistoryRepository) *Service {
+	service := &Service{js: js, strategyConfigRepo: strategyConfigRepo, ruleRepo: ruleRepo, stateRepo: stateRepo, orderHistoryRepo: orderHistoryRepo}
 	snapshot := strategyCacheSnapshot{}
 	service.cache.Store(&snapshot)
 	return service
@@ -173,20 +174,76 @@ func (s *Service) handleKline(ctx context.Context, msg *nats.Msg) error {
 	if err != nil {
 		return err
 	}
+	openEntriesByConfig := map[string][]entity.OrderHistoryWithMetrics{}
+	queuedEntriesByConfig := map[string]int{}
 	for _, rule := range strategies.rules {
 		cfg := strategies.configBy[rule.StrategyConfigID]
 		if !ruleMatches(rule, values, prev) {
 			continue
 		}
-		order, ok := buildOrder(cfg, rule, event)
-		if !ok {
-			continue
-		}
-		if err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{Data: order}); err != nil {
+		orders, err := s.buildOrders(ctx, cfg, rule, event, openEntriesByConfig, queuedEntriesByConfig[cfg.ID])
+		if err != nil {
 			return err
+		}
+		for _, order := range orders {
+			if err := util.PublishEvent(s.js, constant.OrderEngineStreamSubjectPlaceOrder, entity.OrderRequestEvent{Data: order}); err != nil {
+				return err
+			}
+			if entity.NormalizeTradeCondition(order.TradeCondition) == entity.TradeConditionEntry {
+				queuedEntriesByConfig[cfg.ID]++
+			}
 		}
 	}
 	return s.setPreviousValues(ctx, event.Data, values)
+}
+
+func (s *Service) buildOrders(ctx context.Context, cfg entity.StrategyConfig, rule entity.StrategyRule, event entity.MarketKlineIndicatorEvent, openEntriesByConfig map[string][]entity.OrderHistoryWithMetrics, queuedEntries int) ([]entity.OrderRequest, error) {
+	tradeCondition := entity.NormalizeTradeCondition(rule.TradeCondition)
+	if tradeCondition == entity.TradeConditionUnknown {
+		return nil, nil
+	}
+	openEntries, err := s.openEntries(ctx, cfg, openEntriesByConfig)
+	if err != nil {
+		return nil, err
+	}
+	if tradeCondition == entity.TradeConditionEntry {
+		maxPositions := cfg.MaxPositions
+		if maxPositions <= 0 {
+			maxPositions = 1
+		}
+		if len(openEntries)+queuedEntries >= maxPositions {
+			return nil, nil
+		}
+		order, ok := buildEntryOrder(cfg, rule, event)
+		if !ok {
+			return nil, nil
+		}
+		return []entity.OrderRequest{order}, nil
+	}
+
+	orders := make([]entity.OrderRequest, 0, len(openEntries))
+	for _, entry := range openEntries {
+		order, ok := buildExitOrder(cfg, rule, event, entry.OrderHistory)
+		if ok {
+			orders = append(orders, order)
+		}
+	}
+	return orders, nil
+}
+
+func (s *Service) openEntries(ctx context.Context, cfg entity.StrategyConfig, cache map[string][]entity.OrderHistoryWithMetrics) ([]entity.OrderHistoryWithMetrics, error) {
+	if s.orderHistoryRepo == nil {
+		return nil, nil
+	}
+	if entries, ok := cache[cfg.ID]; ok {
+		return entries, nil
+	}
+	entries, err := s.orderHistoryRepo.ListOpenEntriesByStrategyConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	cache[cfg.ID] = entries
+	return entries, nil
 }
 
 func (s *Service) strategySetForPair(ctx context.Context, exchange, marketType, symbol, interval string) (cachedStrategySet, error) {
@@ -381,7 +438,7 @@ func conditionMatches(c condition, values, prev map[string]float64) bool {
 	}
 }
 
-func buildOrder(cfg entity.StrategyConfig, rule entity.StrategyRule, event entity.MarketKlineIndicatorEvent) (entity.OrderRequest, bool) {
+func buildEntryOrder(cfg entity.StrategyConfig, rule entity.StrategyRule, event entity.MarketKlineIndicatorEvent) (entity.OrderRequest, bool) {
 	marketType := entity.NormalizeMarketType(cfg.MarketType)
 	side := entity.NormalizeOrderSideByMarket(rule.Side, marketType)
 	if side == "" || strings.TrimSpace(cfg.ID) == "" || strings.TrimSpace(cfg.UserID.String) == "" || !cfg.OrderQty.IsPositive() {
@@ -429,4 +486,70 @@ func entryOrderID(requestID string, tradeCondition string) string {
 		return requestID
 	}
 	return ""
+}
+
+func buildExitOrder(cfg entity.StrategyConfig, rule entity.StrategyRule, event entity.MarketKlineIndicatorEvent, entry entity.OrderHistory) (entity.OrderRequest, bool) {
+	quantity := entry.FilledQuantity
+	if quantity.IsZero() {
+		quantity = entry.Quantity
+	}
+	side, ok := closeOrderSide(entry.Side, entity.NormalizeMarketType(entry.MarketType))
+	entryOrderID := strings.TrimSpace(entry.EntryOrderID)
+	if !ok || !quantity.IsPositive() || entryOrderID == "" || strings.TrimSpace(cfg.UserID.String) == "" {
+		return entity.OrderRequest{}, false
+	}
+	requestToken, err := apiutil.NewRandomToken()
+	if err != nil {
+		return entity.OrderRequest{}, false
+	}
+	strategyID := cfg.Strategy
+	internal, _ := json.Marshal(map[string]string{
+		"strategy_rule_id":   rule.ID,
+		"strategy_config_id": cfg.ID,
+		"entry_history_id":   entry.ID,
+		"entry_order_id":     entryOrderID,
+	})
+	price := event.Data.ClosePrice
+	if cfg.OrderType == string(entity.OrderTypeMarket) {
+		price = decimal.Zero
+	}
+	return entity.OrderRequest{
+		RequestID:        "go-strategy-close-" + requestToken,
+		UserID:           entry.UserID,
+		EntryOrderID:     entryOrderID,
+		Exchange:         entry.Exchange,
+		MarketType:       entry.MarketType,
+		PositionSide:     entry.PositionSide,
+		Symbol:           entry.Symbol,
+		Type:             entity.OrderType(cfg.OrderType),
+		Side:             side,
+		Price:            price,
+		Quantity:         quantity,
+		RequestedAt:      time.Now().UTC().UnixMilli(),
+		Source:           "go-strategy",
+		StrategyID:       &strategyID,
+		StrategyName:     cfg.Strategy,
+		Interval:         cfg.Interval,
+		Internal:         string(internal),
+		TradeCondition:   rule.TradeCondition,
+		OrderReason:      rule.OrderReason,
+		ExitType:         rule.ExitType,
+		NeedNotification: cfg.NeedNotification,
+		IsPaperTrading:   cfg.IsPaperTrading,
+	}, true
+}
+
+func closeOrderSide(side entity.OrderSide, marketType entity.MarketType) (entity.OrderSide, bool) {
+	switch entity.NormalizeOrderSideByMarket(string(side), marketType) {
+	case entity.OrderSideBuy:
+		return entity.OrderSideSell, true
+	case entity.OrderSideSell:
+		return entity.OrderSideBuy, true
+	case entity.OrderSideLong:
+		return entity.OrderSideShort, true
+	case entity.OrderSideShort:
+		return entity.OrderSideLong, true
+	default:
+		return "", false
+	}
 }
